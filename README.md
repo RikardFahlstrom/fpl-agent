@@ -128,7 +128,8 @@ FPL_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable \
 Test the server locally before connecting to Claude:
 
 ```bash
-uv run --env PYTHONPATH=src python -m fpl_server.main
+export PYTHONPATH=src
+uv run python -m fpl_server.main
 ```
 
 You should see:
@@ -201,12 +202,14 @@ Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-mcp-server` with your path):
       "command": "uv",
       "args": [
         "run",
-        "--env", "PYTHONPATH=src",
         "python",
         "-m",
         "fpl_server.main"
       ],
-      "cwd": "/ABSOLUTE/PATH/TO/fpl-mcp-server"
+      "cwd": "/ABSOLUTE/PATH/TO/fpl-mcp-server",
+      "env": {
+        "PYTHONPATH": "src"
+      }
     }
   }
 }
