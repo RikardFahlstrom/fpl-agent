@@ -23,6 +23,10 @@ class SessionStore:
         
         # Maps session_id (given to LLM) -> Authenticated FPLClient
         self.active_sessions: Dict[str, FPLClient] = {}
+
+        # Session established without a human present (cache restore or credential
+        # login). Tools fall back to this when no interactive login has happened.
+        self.active_session_id: Optional[str] = None
         
         # Bootstrap data loaded on-demand from API
         self.bootstrap_data: Optional[BootstrapData] = None

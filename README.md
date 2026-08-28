@@ -177,6 +177,68 @@ than passing through the FPLAgent React client or application API. The applicati
 `get_manager_snapshot`. Opening `http://127.0.0.1:8020` by itself only shows service status because
 there is no application login request to complete.
 
+### Unattended mode (scheduled agents)
+
+For a scheduled agent on a server with no human to complete the login form, the server can
+authenticate from credentials and keep the session across restarts. It is **off by default** —
+nothing below changes interactive use.
+
+```bash
+export FPL_AUTO_LOGIN=true          # restore from cache, else log in with credentials
+export FPL_READ_ONLY=true           # refuse make_transfers; analyse and report only
+export FPL_EMAIL=you@example.com
+export FPL_PASSWORD=...             # inject from your secret store, never commit
+export FPL_MCP_TRANSPORT=streamable-http
+PYTHONPATH=src uv run python -m fpl_server.main
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FPL_AUTO_LOGIN` | `false` | Enable session restore and credential login at startup |
+| `FPL_READ_ONLY` | `false` | Block `make_transfers`; everything else stays available |
+| `FPL_EMAIL` / `FPL_PASSWORD` | unset | Credentials for unattended login |
+| `FPL_TOKEN_CACHE` | `~/.config/fpl-mcp/session.json` | Where the session token is cached |
+
+On startup the server restores the cached session and validates it against `/me`, only falling back
+to a browser login when there is no usable token. If a token expires mid-run, the next API call
+returns 401, the session is renewed once, and the call is retried — so a long-lived process does not
+need babysitting.
+
+> ⚠️ **The token cache is an account credential.** It is written `0600`, and the token in it is
+> enough to execute transfers. Protect it like the password: never commit it, never include it in
+> backups. `FPL_READ_ONLY=true` is strongly recommended for any unattended deployment so an agent
+> cannot change your squad without you.
+
+Run it as a persistent service rather than starting it per task — that keeps the session warm and
+keeps browser logins rare:
+
+```ini
+# /etc/systemd/system/fpl-mcp.service
+[Service]
+WorkingDirectory=/opt/fpl-mcp-server
+Environment=PYTHONPATH=src
+Environment=FPL_AUTO_LOGIN=true
+Environment=FPL_READ_ONLY=true
+Environment=FPL_MCP_TRANSPORT=streamable-http
+EnvironmentFile=/etc/fpl-mcp/credentials.env   # 0600, holds FPL_EMAIL and FPL_PASSWORD
+ExecStart=/usr/bin/uv run python -m fpl_server.main
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Point the scheduled agent at `http://127.0.0.1:8021/mcp`. Keep the bind on `127.0.0.1`: the endpoint
+exposes account tools and has no authentication of its own, so the agent should run on the same host.
+
+The login browser needs Chromium on the server — `uv run playwright install chromium` plus
+`uv run playwright install-deps`, or set `FPL_BROWSER_EXECUTABLE` to an installed Chrome.
+
+**If unattended logins start failing:** the Premier League account service treats headless browsers
+differently, and a datacenter IP attracts more scrutiny. Run under `Xvfb` with
+`FPL_BROWSER_HEADLESS=false` so Chrome presents as headful. Keeping the token cache healthy matters
+most — every avoided browser login is one fewer chance to be challenged.
+
 ### 3. Connect to Claude Desktop
 
 #### Get Your Project Path
