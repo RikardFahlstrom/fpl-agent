@@ -193,7 +193,10 @@ Open Claude's config file:
 * **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 * **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-mcp-server` with your path):
+Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-mcp-server` with your path). Use `--directory`
+rather than a `cwd` field — Claude Desktop does not reliably apply `cwd` before `uv` resolves the
+project, which makes `uv run` fall back to a bare system Python that can't find the `fpl_server`
+module:
 
 ```json
 {
@@ -201,14 +204,15 @@ Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-mcp-server` with your path):
     "fpl": {
       "command": "uv",
       "args": [
+        "--directory",
+        "/ABSOLUTE/PATH/TO/fpl-mcp-server",
         "run",
         "python",
         "-m",
         "fpl_server.main"
       ],
-      "cwd": "/ABSOLUTE/PATH/TO/fpl-mcp-server",
       "env": {
-        "PYTHONPATH": "src"
+        "PYTHONPATH": "/ABSOLUTE/PATH/TO/fpl-mcp-server/src"
       }
     }
   }
