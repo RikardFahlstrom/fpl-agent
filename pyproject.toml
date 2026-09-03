@@ -1,7 +1,7 @@
 [project]
-name = "fpl-mcp-server"
+name = "fpl-agent"
 version = "0.1.0"
-description = "Secure FPL MCP Server with OOB Authentication"
+description = "FPL decision engine with an MCP server interface and OOB authentication"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,4 +20,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fpl_server"]
+packages = ["src/fpl_agent"]

@@ -1,9 +1,9 @@
 import unittest
 from types import SimpleNamespace
 
-from fpl_server import mcp_tools
-from fpl_server.models import TransfersData
-from fpl_server.state import store
+from fpl_agent import mcp_tools
+from fpl_agent.models import TransfersData
+from fpl_agent.state import store
 
 
 class _PreseasonClient:

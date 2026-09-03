@@ -1,6 +1,6 @@
 import asyncio
 import sys
-from src.fpl_server.auth import FPLAutomation
+from src.fpl_agent.auth import FPLAutomation
 
 # Hardcode credentials here for the test, or input them when running
 EMAIL = "someemail@example.com"

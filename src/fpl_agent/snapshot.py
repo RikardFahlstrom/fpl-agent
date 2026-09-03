@@ -3,10 +3,10 @@
 Run daily. Price changes resolve nightly (~01:30 UK), so a weekly capture would miss the
 price dynamics entirely - and none of it can be recovered after the fact.
 
-    python -m fpl_server.snapshot                 # capture, skip if already done today
-    python -m fpl_server.snapshot --force         # capture regardless
-    python -m fpl_server.snapshot --backfill      # also pull per-gameweek actuals
-    python -m fpl_server.snapshot --backfill-only # actuals only, no new snapshot
+    python -m fpl_agent.snapshot                 # capture, skip if already done today
+    python -m fpl_agent.snapshot --force         # capture regardless
+    python -m fpl_agent.snapshot --backfill      # also pull per-gameweek actuals
+    python -m fpl_agent.snapshot --backfill-only # actuals only, no new snapshot
 """
 
 import argparse
