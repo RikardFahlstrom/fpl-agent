@@ -52,6 +52,41 @@ class AvailabilityTests(unittest.TestCase):
                          projection.UNUSED_START_PROB)
         self.assertLess(projection.UNUSED_START_PROB, projection.BASE_START_PROB)
 
+    def test_a_published_lineup_overrides_the_historical_start_rate(self):
+        """Selection comes from the lineup; fitness still comes from FPL's flag."""
+        from fpl_agent.projection import project_player
+        from fpl_agent.scoring import Scoring
+        from test_scoring import WEIGHTS
+
+        history = {"appearances": 10.0, "starts": 10.0, "bonus": 0.0,
+                   "minutes": 900.0, "dc_rate": 0.0, "yellow_per_90": 0.0}
+        row = {"element_id": 1, "minutes": 900, "status": "a",
+               "chance_of_playing_next_round": None, "expected_goals_per_90": 0.5,
+               "expected_assists_per_90": 0.3, "expected_goals_conceded_per_90": 1.2}
+        args = ("MID", [{"difficulty": 3, "home": True}], history,
+                Scoring(WEIGHTS), {"xg90": 0.1, "xa90": 0.08}, 1.2)
+
+        without = project_player(row, *args, True)
+        left_out = project_player(row, *args, True, lineup_rate=0.15)
+        self.assertAlmostEqual(without["p_start"], 1.0)
+        self.assertAlmostEqual(left_out["p_start"], 0.15)
+        self.assertLess(left_out["expected_points"], without["expected_points"])
+
+    def test_an_unavailable_player_stays_out_even_if_a_lineup_names_him(self):
+        """Fitness and selection are different questions; the flag still applies."""
+        from fpl_agent.projection import project_player
+        from fpl_agent.scoring import Scoring
+        from test_scoring import WEIGHTS
+
+        row = {"element_id": 1, "minutes": 900, "status": "i",
+               "chance_of_playing_next_round": 0, "expected_goals_per_90": 0.5,
+               "expected_assists_per_90": 0.3, "expected_goals_conceded_per_90": 1.2}
+        result = project_player(row, "MID", [{"difficulty": 3, "home": True}], {},
+                                Scoring(WEIGHTS), {"xg90": 0.1, "xa90": 0.08}, 1.2,
+                                True, 0.90)
+        self.assertEqual(result["p_start"], 0.0)
+        self.assertEqual(result["expected_points"], 0.0)
+
     def test_a_player_with_appearances_is_unaffected_by_the_season_flag(self):
         history = {"appearances": 2.0, "starts": 2.0}
         self.assertEqual(start_rate(history, season_started=True), 1.0)

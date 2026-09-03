@@ -25,12 +25,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import config, storage
+from . import config, lineups, storage
 from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.2.0"
+MODEL_VERSION = "0.3.0"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
@@ -47,6 +47,13 @@ BASE_START_PROB = 0.85
 # choice: absence of appearances is evidence, not absence of evidence. Without this a
 # reserve goalkeeper reads as an 85% starter and ranks among the best value in the game.
 UNUSED_START_PROB = 0.10
+# From a published lineup. A prediction is not certainty - RotoWire is guessing at the
+# manager - so a predicted starter is not 1.0, and a confirmed one still leaves late
+# withdrawals. A player at a club with a published lineup who is not in it is the
+# rotation case that FPL's own flag never reports.
+LINEUP_STARTER_PROB = 0.90
+LINEUP_CONFIRMED_STARTER_PROB = 0.97
+LINEUP_OMITTED_PROB = 0.15
 # Chance a fit player who does not start still appears off the bench. Applies only to
 # available players: someone ruled out does not get a cameo.
 BENCH_CAMEO_PROB = 0.35
@@ -165,10 +172,13 @@ def clean_sheet_probability(expected_conceded: float) -> float:
 def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
                    history: dict[str, float], scoring: Scoring,
                    priors: dict[str, float], team_conceded: float,
-                   season_started: bool = False) -> dict[str, Any]:
+                   season_started: bool = False,
+                   lineup_rate: Optional[float] = None) -> dict[str, Any]:
     """Expected points for one player over the given fixtures (0 for a blank, 2 for a double)."""
     available = availability(snap)
-    rate = start_rate(history, season_started)
+    # A published lineup speaks to selection; FPL's flag speaks to fitness. They answer
+    # different questions, so the lineup replaces the start rate rather than availability.
+    rate = start_rate(history, season_started) if lineup_rate is None else lineup_rate
     p_start = available * rate
     p_appear = available * (rate + (1 - rate) * BENCH_CAMEO_PROB)
     expected_minutes = p_start * START_MINUTES + (p_appear - p_start) * CAMEO_MINUTES
@@ -320,6 +330,14 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     team_conceded = team_conceded_rates(conn, snapshot["id"])
     played = conn.execute("SELECT MAX(round) AS r FROM player_gameweek").fetchone()["r"]
     season_started = bool(played)
+    # Lineups are published for the next round only, so later horizon gameweeks fall
+    # back to historical start rates.
+    lineup_rates = lineups.lineup_start_rates(
+        conn, gameweek, LINEUP_STARTER_PROB, LINEUP_OMITTED_PROB,
+        LINEUP_CONFIRMED_STARTER_PROB)
+    if lineup_rates:
+        logger.info("gameweek %s: using published lineups for %s players",
+                    gameweek, len(lineup_rates))
     now = datetime.now(timezone.utc).isoformat()
 
     rows = []
@@ -336,6 +354,7 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
             priors.get(position, {}),
             team_conceded.get(snap["team_id"], LEAGUE_CONCEDED_PER_90),
             season_started,
+            lineup_rates.get(snap["element_id"]),
         )
         rows.append((snapshot["id"], gameweek, snap["element_id"], model_version,
                      result["expected_points"], result["p_start"],
