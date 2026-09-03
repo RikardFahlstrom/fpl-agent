@@ -236,10 +236,23 @@ the engine recommends, a human executes. `FPL_READ_ONLY` stays set for scheduled
 
 ## 9. Open questions
 
-- Does `likelihood` mean the same thing at +5 and −5, or is the scale asymmetric?
-  Validate against realised changes (see §4). **Still open.**
+- *(resolved)* ~~Does `likelihood` mean the same thing at +5 and −5?~~ See below.
 
 ### Decided
+
+- **Price changes follow FPL's documented rule.** From its Price Changes page: *Progress
+  shows how far a player has currently moved towards a price change. Predicted Progress
+  estimates where they will be by the time of the next update. When Predicted Progress
+  exceeds 100%, the player is considered Very Likely to rise or fall.*
+
+  So the signal is `projected_percent` crossing ±100, not `likelihood`. `likelihood`
+  turns out to be a derived ordinal band of the same number (±5 is ≥100%, ±4 is 95–99.4,
+  ±3 is 40–94.7, ±2 is 20–39.7, ±1 is 0.1–19.6), so driving off `projected_percent`
+  follows the documented rule directly rather than a banding that could be re-cut.
+
+  FPL is explicit that predictions are *a guide, not a guarantee*, and that team news and
+  the gameweek deadline matter too — which is why urgency is reported alongside expected
+  points rather than folded into it.
 
 - **Planning horizon: 3 gameweeks.** Transfer value is judged on projected points over
   the next three gameweeks rather than the next one, so a good fixture run counts and a

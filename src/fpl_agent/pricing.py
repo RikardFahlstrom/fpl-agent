@@ -10,9 +10,30 @@ player falling shrinks the budget available to buy anyone. `transfers_sell_on_fe
 a rise in a player you already own returns only half the profit, so the budget grows more
 slowly than the market moves.
 
-The `likelihood` scale (-5..+5) is undocumented; it was observed empirically. Thresholds
-here are named constants so they can be corrected once realised changes have been
-compared against forecasts.
+FPL documents the rule on its own Price Changes page:
+
+    Progress shows how far a player has currently moved towards a price change.
+    Predicted Progress estimates where they will be by the time of the next update.
+    When Predicted Progress exceeds 100%, the player is considered Very Likely to
+    rise or fall.
+
+So the signal is `projected_percent` crossing 100, not the `likelihood` field.
+`likelihood` turns out to be a derived ordinal band of the same number, confirmed
+against a full snapshot:
+
+    likelihood  +-5   |projected| >= 100      "Very Likely"
+    likelihood  +-4   95.0 .. 99.4
+    likelihood  +-3   40.0 .. 94.7
+    likelihood  +-2   20.0 .. 39.7
+    likelihood  +-1    0.1 .. 19.6
+    likelihood    0   exactly 0
+
+Driving the logic off `projected_percent` therefore follows FPL's documented rule
+directly, rather than off a derived field whose banding could be re-cut at any time.
+
+FPL is explicit that these are "a guide, not a guarantee", and that team news and the
+gameweek deadline matter too - which is why a closing price window is reported next to
+the projection rather than folded into it.
 """
 
 import json
@@ -20,10 +41,11 @@ import sqlite3
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
-# Observed range is -5..+5. A rise looks near-certain at 4-5 and probable at 3.
-LIKELY_RISE = 3
-NEAR_CERTAIN_RISE = 4
-LIKELY_FALL = -3
+# FPL's documented rule: Predicted Progress over 100% is "Very Likely" to change.
+VERY_LIKELY_PROGRESS = 100.0
+# Below that, a change is plausible at the following tick rather than this one. 95 is
+# where FPL's own banding puts the next step down (likelihood +-4).
+APPROACHING_PROGRESS = 95.0
 # Price moves in 0.1m steps, held here in FPL's integer tenths.
 PRICE_STEP = 1
 
@@ -33,24 +55,49 @@ class PriceOutlook:
     element_id: int
     web_name: str
     now_cost: int
-    percent: float
+    percent: float               # Progress: how far the player has already moved
+    projected_percent: float     # Predicted Progress at the next update
     likelihood: Optional[int]
     locked: bool
     net_transfers: int
 
     @property
+    def status(self) -> str:
+        """FPL's own wording for where this player sits."""
+        if self.locked:
+            return "locked"
+        if self.projected_percent >= VERY_LIKELY_PROGRESS:
+            return "very likely to rise"
+        if self.projected_percent <= -VERY_LIKELY_PROGRESS:
+            return "very likely to fall"
+        if self.projected_percent >= APPROACHING_PROGRESS:
+            return "approaching a rise"
+        if self.projected_percent <= -APPROACHING_PROGRESS:
+            return "approaching a fall"
+        return "stable"
+
+    @property
     def rising(self) -> bool:
-        return self.likelihood is not None and self.likelihood >= LIKELY_RISE
+        """Very Likely to rise at the next update, by FPL's documented threshold."""
+        return not self.locked and self.projected_percent >= VERY_LIKELY_PROGRESS
 
     @property
     def falling(self) -> bool:
-        return self.likelihood is not None and self.likelihood <= LIKELY_FALL
+        return not self.locked and self.projected_percent <= -VERY_LIKELY_PROGRESS
+
+    @property
+    def approaching_rise(self) -> bool:
+        """Close enough to matter at the update after this one."""
+        return (not self.locked
+                and APPROACHING_PROGRESS <= self.projected_percent < VERY_LIKELY_PROGRESS)
 
     @property
     def cost_after_change(self) -> int:
-        """Price once the forecast change lands."""
-        if self.locked:
-            return self.now_cost
+        """Price once the forecast change lands.
+
+        Only a Very Likely change moves the price. Treating a player 40% of the way
+        through as a rise would predict changes that mostly do not happen.
+        """
         if self.rising:
             return self.now_cost + PRICE_STEP
         if self.falling:
@@ -91,11 +138,16 @@ def price_outlooks(conn: sqlite3.Connection,
     for row in conn.execute(query, (snapshot_id,)):
         projection = _first_projection(row["price_change_projections"])
         likelihood = projection.get("likelihood") if projection else None
+        try:
+            projected = float(projection["projected_percent"]) if projection else 0.0
+        except (TypeError, ValueError, KeyError):
+            projected = 0.0
         outlooks[row["element_id"]] = PriceOutlook(
             element_id=row["element_id"],
             web_name=row["web_name"],
             now_cost=row["now_cost"] or 0,
             percent=row["price_change_percent"] or 0.0,
+            projected_percent=projected,
             likelihood=likelihood,
             locked=bool(row["price_change_locked_until"]),
             net_transfers=(row["transfers_in_event"] or 0) - (row["transfers_out_event"] or 0),
@@ -141,19 +193,24 @@ def assess(budget: int, target: PriceOutlook,
     if margin_after < 0:
         squeeze = []
         if target.rising:
-            squeeze.append(f"{target.web_name} is rising (likelihood {target.likelihood}, "
-                           f"{target.percent:.0f}% of the way)")
+            squeeze.append(f"{target.web_name} is {target.status} "
+                           f"({target.projected_percent:.0f}% predicted progress, "
+                           f"{target.percent:.0f}% so far)")
         if holding is not None and holding.falling:
-            squeeze.append(f"{holding.web_name} is falling, shrinking the budget")
-        urgency = "tonight" if target.likelihood is not None and \
-            target.likelihood >= NEAR_CERTAIN_RISE else "soon"
-        return Affordability(budget, target.now_cost, margin, margin_after, urgency,
-                             "; ".join(squeeze) + " - the window closes at the next price tick")
+            squeeze.append(f"{holding.web_name} is {holding.status}, shrinking the budget")
+        return Affordability(budget, target.now_cost, margin, margin_after, "tonight",
+                             "; ".join(squeeze) + " - the window closes at the next update")
 
     if target.rising:
         return Affordability(budget, target.now_cost, margin, margin_after, "soon",
-                             f"{target.web_name} is rising but stays affordable "
+                             f"{target.web_name} is {target.status} but stays affordable "
                              f"(margin £{margin_after / 10:.1f}m after)")
+
+    if target.approaching_rise:
+        return Affordability(budget, target.now_cost, margin, margin_after, "soon",
+                             f"{target.web_name} is {target.status} "
+                             f"({target.projected_percent:.0f}% predicted progress) - "
+                             f"not tonight, but watch the next update")
 
     return Affordability(budget, target.now_cost, margin, margin_after, "none",
                          "no price pressure")
