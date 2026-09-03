@@ -228,6 +228,9 @@ With `FPL_AUTO_LOGIN` and `FPL_READ_ONLY` already in place, a scheduled nightly
 
 P1 is the only phase with a real deadline. Everything after it can take its time.
 
+Conventions live in `CLAUDE.md`, the runnable sequences in the `Makefile`, the judgement
+in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
+
 ## 8. Assumptions
 
 Single manager, not multi-tenant. Python with stdlib `sqlite3`, no ORM. Projections one
