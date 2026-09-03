@@ -108,7 +108,8 @@ logs/actions.jsonl   decisions taken, append-only
 ```
 
 `data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
-[CLAUDE.md](CLAUDE.md); the roadmap is in [docs/PLAN.md](docs/PLAN.md).
+[CLAUDE.md](CLAUDE.md), the roadmap in [docs/PLAN.md](docs/PLAN.md), and a brief for
+handing the repo to an external reviewer in [docs/REVIEW-PROMPT.md](docs/REVIEW-PROMPT.md).
 
 ## Credit
 
