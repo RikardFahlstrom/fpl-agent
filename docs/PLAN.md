@@ -237,8 +237,15 @@ the engine recommends, a human executes. `FPL_READ_ONLY` stays set for scheduled
 ## 9. Open questions
 
 - Does `likelihood` mean the same thing at +5 and −5, or is the scale asymmetric?
-  Validate against realised changes (see §4).
-- How far ahead should projections run once multi-gameweek planning starts — a 5-gameweek
-  horizon changes transfer logic materially.
-- Should the engine model *other managers* in your leagues (their squads are public for
-  completed gameweeks), so recommendations account for rivals' differentials?
+  Validate against realised changes (see §4). **Still open.**
+
+### Decided
+
+- **Planning horizon: 3 gameweeks.** Transfer value is judged on projected points over
+  the next three gameweeks rather than the next one, so a good fixture run counts and a
+  one-week spike does not dominate.
+- **Rivals are modelled.** Squads of managers in your leagues are public for completed
+  gameweeks, so the engine tracks them and reports effective ownership *within your
+  leagues* rather than globally. A template player everyone owns is a risk to skip, not
+  an edge; a differential is only a differential relative to the people you are actually
+  playing against.

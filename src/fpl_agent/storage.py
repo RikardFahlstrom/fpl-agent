@@ -158,6 +158,20 @@ CREATE TABLE IF NOT EXISTS projection (
     UNIQUE (snapshot_id, gameweek, element_id, model_version)
 );
 
+CREATE TABLE IF NOT EXISTS decision (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at    TEXT NOT NULL,
+    gameweek      INTEGER NOT NULL,
+    model_version TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    payload       TEXT NOT NULL,
+    rationale     TEXT NOT NULL,
+    urgency       TEXT,
+    xp_delta      REAL,
+    status        TEXT NOT NULL DEFAULT 'proposed'
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_gw ON decision(gameweek);
 CREATE INDEX IF NOT EXISTS idx_projection_gw ON projection(gameweek, model_version);
 CREATE INDEX IF NOT EXISTS idx_player_snapshot_element ON player_snapshot(element_id);
 CREATE INDEX IF NOT EXISTS idx_player_gameweek_round   ON player_gameweek(round);
