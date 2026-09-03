@@ -1,6 +1,7 @@
+import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
 
@@ -15,6 +16,8 @@ mcp = FastMCP(
     port=int(os.environ.get("FPL_MCP_PORT", "8021")),
 )
 BASE_URL = os.environ.get("FPL_AUTH_BASE_URL", "http://127.0.0.1:8020")
+
+logger = logging.getLogger("fpl_tools")
 
 # Global session tracking - stores the active session after login
 _active_session_id: str | None = None
@@ -76,6 +79,20 @@ def _get_client():
     if not _active_session_id:
         return None
     return store.get_client(_active_session_id)
+
+
+async def _ensure_reference_data(client, *, fixtures: bool = False) -> None:
+    """Load bootstrap (and optionally fixtures) into the store on first use.
+
+    Best effort: on failure the callers' own "data not available" guards report it,
+    rather than surfacing a transport error from an unrelated tool.
+    """
+    try:
+        await store.ensure_bootstrap_data(client)
+        if fixtures:
+            await store.ensure_fixtures_data(client)
+    except Exception as e:
+        logger.error(f"Failed to load reference data: {e}")
 
 
 @mcp.tool()
@@ -274,6 +291,7 @@ async def get_my_info() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not client.user_info:
         return "Error: User information not available. Please try logging in again."
@@ -306,6 +324,7 @@ async def get_my_squad() -> str:
     """Get your current team squad, chips status, and transfer information."""
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -400,9 +419,15 @@ async def search_players(name_query: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     players = await client.get_players()
-    matches = [p for p in players if name_query.lower() in p.web_name.lower()]
+    query = name_query.lower()
+    matches = [
+        p for p in players
+        if query in p.web_name.lower()
+        or query in f"{p.first_name} {p.second_name}".lower()
+    ]
     
     if not matches: return "No players found."
     
@@ -419,6 +444,7 @@ async def get_top_players() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         top_players = await client.get_top_players_by_position()
@@ -449,6 +475,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if len(player_names_out) != len(player_names_in):
         return "Error: Number of players out must match number of players in."
@@ -514,12 +541,13 @@ async def get_current_gameweek() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data or not store.bootstrap_data.events:
         return "Error: Gameweek data not available."
     
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         for event in store.bootstrap_data.events:
             if event.is_current:
@@ -567,6 +595,7 @@ async def get_gameweek_info(gameweek_number: int) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data or not store.bootstrap_data.events:
         return "Error: Gameweek data not available."
@@ -629,6 +658,7 @@ async def get_team_info(team_name: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Team data not available."
@@ -691,6 +721,7 @@ async def list_all_teams() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     teams = store.get_all_teams()
     if not teams:
@@ -721,6 +752,7 @@ async def search_players_by_team(team_name: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Player data not available."
@@ -784,6 +816,7 @@ async def get_injury_and_lineup_predictions() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         scraper = RotoWireLineupScraper()
@@ -839,6 +872,7 @@ async def get_players_to_avoid() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         scraper = RotoWireLineupScraper()
@@ -891,6 +925,7 @@ async def check_player_availability(player_name: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         scraper = RotoWireLineupScraper()
@@ -938,6 +973,7 @@ async def list_all_gameweeks() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data or not store.bootstrap_data.events:
         return "Error: Gameweek data not available."
@@ -977,6 +1013,7 @@ async def find_player(player_name: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Player data not available."
@@ -1017,6 +1054,7 @@ async def get_player_details(player_name: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     matches = store.find_players_by_name(player_name, fuzzy=True)
     
@@ -1038,6 +1076,7 @@ async def compare_players(player_names: list[str]) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Player data not available."
@@ -1160,6 +1199,7 @@ async def get_player_summary(player_name: str) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         # Find player by name
@@ -1260,6 +1300,7 @@ async def analyze_squad_recent_performance(num_gameweeks: int = 5) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -1304,7 +1345,11 @@ async def analyze_squad_recent_performance(num_gameweeks: int = 5) -> str:
                         'avg_minutes': 0,
                         'total_points': 0,
                         'games_played': 0,
-                        'recent_form': 'No data'
+                        'recent_form': 'No data',
+                        'recent_gws': [],
+                        'transfers_balance': 0,
+                        'last_gw_transfers': 0,
+                        'transfer_sentiment': 'No data'
                     })
                     continue
                 
@@ -1536,6 +1581,7 @@ async def get_my_performance() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -1612,6 +1658,7 @@ async def get_league_standings(league_name: str, page: int = 1) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         # Find league by name
@@ -1670,6 +1717,7 @@ async def get_manager_gameweek_team(manager_name: str, league_name: str, gamewee
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     try:
         # Find league first
@@ -1758,6 +1806,7 @@ async def compare_managers(manager_names: list[str], league_name: str, gameweek:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client)
     
     if len(manager_names) < 2:
         return "Error: Please provide at least 2 manager names to compare."
@@ -1855,6 +1904,7 @@ async def get_fixtures_for_gameweek(gameweek: int) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client, fixtures=True)
     
     if not store.fixtures_data:
         return "Error: Fixtures data not available."
@@ -1902,6 +1952,7 @@ async def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client, fixtures=True)
     
     if not store.bootstrap_data or not store.fixtures_data:
         return "Error: Team or fixtures data not available."
@@ -1926,14 +1977,16 @@ async def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
             return "Error: Could not determine current gameweek"
         
         start_gw = current_gw.id
-        end_gw = start_gw + num_gameweeks
         
-        team_fixtures = [
+        upcoming = [
             f for f in store.fixtures_data
             if (f.team_h == team.id or f.team_a == team.id)
-            and f.event and start_gw <= f.event < end_gw
+            and f.event and f.event >= start_gw
             and not f.finished
         ]
+        # Take the next N unplayed fixtures rather than an N-gameweek window, so a
+        # finished current gameweek (or a blank) does not eat one of the slots.
+        team_fixtures = sorted(upcoming, key=lambda f: f.event)[:num_gameweeks]
         
         if not team_fixtures:
             return f"No upcoming fixtures found for {team.name}"
@@ -1982,6 +2035,7 @@ async def recommend_chip_strategy() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client, fixtures=True)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -2337,6 +2391,7 @@ async def recommend_transfers() -> str:
     """
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
+    await _ensure_reference_data(client, fixtures=True)
     
     try:
         entry_id = store.get_user_entry_id(client)

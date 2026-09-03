@@ -275,7 +275,7 @@ Use these resources:
 
 
 @mcp.prompt()
-def compare_players(*player_names: str) -> str:
+def compare_players(player_names: str = "") -> str:
     """
     Generate a prompt for comparing multiple players side-by-side.
     
@@ -283,10 +283,11 @@ def compare_players(*player_names: str) -> str:
     considering all relevant FPL metrics.
     
     Args:
-        *player_names: Variable number of player names to compare (2-5 players)
+        player_names: Comma-separated player names to compare (2-5 players)
     """
-    players_str = ", ".join(player_names) if player_names else "{{player1}}, {{player2}}, ..."
-    num_players = len(player_names) if player_names else "2-5"
+    names = [name.strip() for name in player_names.split(",") if name.strip()]
+    players_str = ", ".join(names) if names else "{{player1}}, {{player2}}, ..."
+    num_players = len(names) if names else "2-5"
     
     return f"""Compare these FPL players side-by-side: {players_str}
 
@@ -435,7 +436,7 @@ Use: `fpl://team/{team_name}/fixtures?num_gameweeks={num_gameweeks}`
 
 
 @mcp.prompt()
-def compare_managers(league_name: str, gameweek: int, *manager_names: str) -> str:
+def compare_managers(league_name: str, gameweek: int, manager_names: str = "") -> str:
     """
     Generate a prompt for comparing managers' teams in a league.
     
@@ -445,10 +446,11 @@ def compare_managers(league_name: str, gameweek: int, *manager_names: str) -> st
     Args:
         league_name: Name of the league
         gameweek: Gameweek number to analyze
-        *manager_names: Variable number of manager names (2-4 managers)
+        manager_names: Comma-separated manager names (2-4 managers)
     """
-    managers_str = ", ".join(manager_names) if manager_names else "{{manager1}}, {{manager2}}, ..."
-    num_managers = len(manager_names) if manager_names else "2-4"
+    names = [name.strip() for name in manager_names.split(",") if name.strip()]
+    managers_str = ", ".join(names) if names else "{{manager1}}, {{manager2}}, ..."
+    num_managers = len(names) if names else "2-4"
     
     return f"""Compare these managers' teams in {league_name} for Gameweek {gameweek}: {managers_str}
 

@@ -15,6 +15,9 @@ class Player(BaseModel):
     form: str
     points_per_game: str
     news: str
+    status: str = "a"
+    total_points: int = 0
+    minutes: int = 0
     
     # Computed fields
     team_name: Optional[str] = None

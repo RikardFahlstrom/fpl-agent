@@ -44,7 +44,7 @@ class SessionStore:
         if self.bootstrap_data is None:
             try:
                 logger.info("Fetching bootstrap data from API...")
-                raw_data = await client.get_bootstrap_static()
+                raw_data = await client.get_bootstrap_data()
                 self.bootstrap_data = BootstrapData(**raw_data)
                 self._build_player_indices()
                 logger.info(f"Loaded {len(self.bootstrap_data.elements)} players from API")
@@ -367,40 +367,35 @@ class SessionStore:
         """
         try:
             standings = await client.get_league_standings(league_id)
+            results = (standings.get('standings') or {}).get('results') or []
             
             # Normalize search name
             normalized_search = self._normalize_name(manager_name)
             
+            def _as_match(result: dict) -> dict:
+                return {
+                    'entry': result.get('entry'),
+                    'entry_name': result.get('entry_name'),
+                    'player_name': result.get('player_name')
+                }
+            
             # Search through standings
-            for result in standings.standings.results:
-                # Try matching against player_name (manager name)
-                if self._normalize_name(result.player_name) == normalized_search:
-                    return {
-                        'entry': result.entry,
-                        'entry_name': result.entry_name,
-                        'player_name': result.player_name
-                    }
+            for result in results:
+                # Try matching against player_name (manager name), then entry_name (team name)
+                if self._normalize_name(result.get('player_name', '')) == normalized_search:
+                    return _as_match(result)
                 
-                # Try matching against entry_name (team name)
-                if self._normalize_name(result.entry_name) == normalized_search:
-                    return {
-                        'entry': result.entry,
-                        'entry_name': result.entry_name,
-                        'player_name': result.player_name
-                    }
+                if self._normalize_name(result.get('entry_name', '')) == normalized_search:
+                    return _as_match(result)
             
             # Try substring matches
-            for result in standings.standings.results:
-                player_norm = self._normalize_name(result.player_name)
-                entry_norm = self._normalize_name(result.entry_name)
+            for result in results:
+                player_norm = self._normalize_name(result.get('player_name', ''))
+                entry_norm = self._normalize_name(result.get('entry_name', ''))
                 
                 if (normalized_search in player_norm or player_norm in normalized_search or
                     normalized_search in entry_norm or entry_norm in normalized_search):
-                    return {
-                        'entry': result.entry,
-                        'entry_name': result.entry_name,
-                        'player_name': result.player_name
-                    }
+                    return _as_match(result)
             
             return None
             
@@ -449,6 +444,8 @@ class SessionStore:
                     enriched_gw['opponent_team_short'] = opponent['short_name']
             
             enriched.append(enriched_gw)
+        
+        return enriched
     
     def enrich_fixtures(self, fixtures: list) -> list:
         """
@@ -491,8 +488,6 @@ class SessionStore:
                     fixture_dict['team_a_short'] = team_a['short_name']
             
             enriched.append(fixture_dict)
-        
-        return enriched
         
         return enriched
 

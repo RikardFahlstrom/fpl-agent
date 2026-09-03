@@ -5,7 +5,7 @@ Resources expose FPL data that can be accessed multiple times efficiently.
 They represent GET-like operations without side effects.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .mcp_tools import _get_client, _optional_int, _pick_price_text, mcp
 from .rotowire_scraper import RotoWireLineupScraper
@@ -139,7 +139,7 @@ async def get_current_gameweek_resource() -> str:
         return "Error: Gameweek data not available."
     
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         for event in store.bootstrap_data.events:
             if event.is_current:
@@ -519,14 +519,16 @@ async def get_team_fixtures_resource(team_name: str, num_gameweeks: int = 5) -> 
             return "Error: Could not determine current gameweek"
         
         start_gw = current_gw.id
-        end_gw = start_gw + num_gameweeks
         
-        team_fixtures = [
+        upcoming = [
             f for f in store.fixtures_data
             if (f.team_h == team.id or f.team_a == team.id)
-            and f.event and start_gw <= f.event < end_gw
+            and f.event and f.event >= start_gw
             and not f.finished
         ]
+        # Take the next N unplayed fixtures rather than an N-gameweek window, so a
+        # finished current gameweek (or a blank) does not eat one of the slots.
+        team_fixtures = sorted(upcoming, key=lambda f: f.event)[:num_gameweeks]
         
         if not team_fixtures:
             return f"No upcoming fixtures found for {team.name}"
