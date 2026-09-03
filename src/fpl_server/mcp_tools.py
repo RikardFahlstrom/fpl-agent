@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
 
+from .headless_auth import env_flag
 from .models import TransferPayload
 from .rotowire_scraper import RotoWireLineupScraper
 from .state import store
@@ -98,9 +99,17 @@ def _is_confident(matches) -> bool:
 
 def _get_client():
     """Internal helper to get the active client"""
-    if not _active_session_id:
+    # Fall back to a session established without a human present (restored from
+    # the token cache, or a credential login at startup).
+    session_id = _active_session_id or store.active_session_id
+    if not session_id:
         return None
-    return store.get_client(_active_session_id)
+    return store.get_client(session_id)
+
+
+def _read_only() -> bool:
+    """Whether account-modifying tools are disabled for this process."""
+    return env_flag("FPL_READ_ONLY")
 
 
 async def _ensure_reference_data(client, *, fixtures: bool = False) -> None:
@@ -506,13 +515,24 @@ async def get_top_players(client) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-@_with_client()
-async def make_transfers(client, player_names_out: list[str], player_names_in: list[str]) -> str:
+async def make_transfers(player_names_out: list[str], player_names_in: list[str]) -> str:
     """
     Execute transfers using player names. IRREVERSIBLE.
     Provide lists of player names to transfer out and in.
     Example: player_names_out=["Salah"], player_names_in=["Haaland"]
     """
+    # Deliberately not @_with_client: the read-only refusal has to come before the
+    # session guard, because logging in would not change the answer.
+    if _read_only():
+        return (
+            "Error: This server is running in read-only mode (FPL_READ_ONLY), so "
+            "transfers are disabled. Report the recommendation instead of executing it."
+        )
+
+    client = _get_client()
+    if not client:
+        return NOT_AUTHENTICATED
+    await _ensure_reference_data(client)
     
     if len(player_names_out) != len(player_names_in):
         return "Error: Number of players out must match number of players in."

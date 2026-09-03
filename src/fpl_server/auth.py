@@ -83,6 +83,11 @@ class FPLAutomation:
         self.email = email
         self.password = password
         self.api_token: Optional[str] = None
+        self.refresh_token: Optional[str] = None
+        self.expires_in: Optional[int] = None
+        # Field names only, never values. Lets an operator confirm whether the
+        # account service returns a refresh token without logging a secret.
+        self.token_response_keys: list[str] = []
         self.failure_reason: str | None = None
         self.base_url = "https://fantasy.premierleague.com"
 
@@ -118,9 +123,22 @@ class FPLAutomation:
                 if "/as/token" in response.url and response.request.method == "POST":
                     try:
                         data = await response.json()
+                        if not isinstance(data, dict):
+                            return
+                        self.token_response_keys = sorted(str(key) for key in data)
                         if "access_token" in data:
                             self.api_token = f"Bearer {data['access_token']}"
-                            logger.info("Captured API Token!")
+                            # Capture renewal material when the account service offers
+                            # it, so unattended runs can avoid a browser login.
+                            refresh = data.get("refresh_token")
+                            self.refresh_token = refresh if isinstance(refresh, str) else None
+                            expires = data.get("expires_in")
+                            self.expires_in = expires if isinstance(expires, int) else None
+                            logger.info(
+                                "Captured API token. Token response fields: %s (refresh token %s).",
+                                ", ".join(self.token_response_keys) or "none",
+                                "present" if self.refresh_token else "absent",
+                            )
                     except Exception:
                         pass
 

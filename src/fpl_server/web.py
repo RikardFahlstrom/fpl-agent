@@ -1,11 +1,9 @@
-import uuid
 from html import escape
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 
-from .auth import FPLAutomation
-from .client import FPLClient
+from .headless_auth import establish_session
 from .state import store
 
 app = FastAPI()
@@ -128,16 +126,10 @@ async def login_page(request_id: str, request: Request):
 @app.post("/auth/submit/{request_id}")
 async def submit_login(request_id: str, email: str = Form(...), password: str = Form(...)):
     try:
-        auth = FPLAutomation(email, password)
-        token = await auth.login_and_get_token()
+        # Entry ID is fetched automatically from /me inside establish_session.
+        session_id, failure = await establish_session(email, password, request_id)
 
-        if token:
-            session_id = str(uuid.uuid4())
-            client = FPLClient(store=store)
-            client.set_api_token(token)
-
-            # Entry ID will be fetched automatically from /me endpoint in set_login_success
-            await store.set_login_success(request_id, session_id, client)
+        if session_id:
             return HTMLResponse(
                 _result_page(
                     "Your team is connected.",
@@ -145,16 +137,13 @@ async def submit_login(request_id: str, email: str = Form(...), password: str = 
                     success=True,
                 )
             )
-        else:
-            failure = auth.failure_reason or "Could not capture an authenticated FPL session."
-            store.set_login_failure(request_id, failure)
-            return HTMLResponse(
-                _result_page(
-                    "Connection failed.",
-                    failure,
-                    success=False,
-                )
+        return HTMLResponse(
+            _result_page(
+                "Connection failed.",
+                failure or "Could not capture an authenticated FPL session.",
+                success=False,
             )
+        )
 
     except Exception as e:
         store.set_login_failure(request_id, str(e))

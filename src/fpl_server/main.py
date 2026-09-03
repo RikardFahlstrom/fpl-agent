@@ -7,11 +7,13 @@ sys.stderr.write("DEBUG: Python process started. Attempting imports...\n")
 sys.stderr.flush()
 
 try:
+    import asyncio
     import threading
 
     import uvicorn
 
     from . import mcp_prompts, mcp_resources  # noqa: F401  (registers prompts/resources)
+    from .headless_auth import bootstrap_session, env_flag
     from .mcp_tools import mcp
     from .web import app
 
@@ -37,6 +39,26 @@ def run_web_server():
         sys.stderr.flush()
 
 
+def bootstrap_unattended_session():
+    """Restore or create a session before serving, for runs with no human present.
+
+    Off unless FPL_AUTO_LOGIN is set, so interactive use is unaffected. Runs on
+    its own loop; set_login_success disposes that loop's HTTP pool, so the MCP
+    loop later builds its own.
+    """
+    if not env_flag("FPL_AUTO_LOGIN"):
+        return
+    try:
+        session_id = asyncio.run(bootstrap_session())
+    except Exception as e:
+        sys.stderr.write(f"AUTO LOGIN ERROR: {e}\n")
+        sys.stderr.flush()
+        return
+    state = "authenticated" if session_id else "NOT authenticated"
+    sys.stderr.write(f"DEBUG: Unattended startup login finished: {state}.\n")
+    sys.stderr.flush()
+
+
 def main():
     try:
         sys.stderr.write("DEBUG: Starting Web Thread...\n")
@@ -45,6 +67,8 @@ def main():
         # Start FastAPI in a background thread
         t = threading.Thread(target=run_web_server, daemon=True)
         t.start()
+
+        bootstrap_unattended_session()
 
         transport = os.environ.get("FPL_MCP_TRANSPORT", "stdio")
         sys.stderr.write(f"DEBUG: Starting MCP Server ({transport})... Waiting for input.\n")
