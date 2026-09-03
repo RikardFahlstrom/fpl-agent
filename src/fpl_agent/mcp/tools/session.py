@@ -1,6 +1,6 @@
 """Authentication and session tools: starting a login and activating it."""
 
-from ...state import store
+from ...sessions import sessions
 import uuid
 from .core import BASE_URL, mcp, set_active_session
 from .core import _get_client, _mapping_contract, _records_contract
@@ -10,7 +10,7 @@ from .core import _get_client, _mapping_contract, _records_contract
 async def begin_web_login() -> dict:
     """Start the local browser login flow and return a structured URL for an app client."""
     request_id = str(uuid.uuid4())
-    store.create_login_request(request_id)
+    sessions.create_login_request(request_id)
     return {
         "status": "pending",
         "request_id": request_id,
@@ -21,7 +21,7 @@ async def begin_web_login() -> dict:
 @mcp.tool()
 async def poll_web_login(request_id: str) -> dict:
     """Poll a structured browser-login request and activate the authenticated session."""
-    request = store.pending_logins.get(request_id)
+    request = sessions.pending_logins.get(request_id)
     if not request:
         return {"status": "failed", "error": "invalid_request_id"}
     if request.status == "pending":
@@ -61,7 +61,7 @@ async def get_authenticated_schema_diagnostics() -> dict:
     client = _get_client()
     if not client:
         return {"status": "not_authenticated"}
-    entry_id = store.get_user_entry_id(client)
+    entry_id = sessions.get_user_entry_id(client)
     if not entry_id:
         return {"status": "entry_unavailable"}
 
@@ -98,7 +98,7 @@ async def login_to_fpl() -> str:
     After successful login, your session will be automatically activated.
     """
     request_id = str(uuid.uuid4())
-    store.create_login_request(request_id)
+    sessions.create_login_request(request_id)
     
     return (
         f"Please authenticate here: {BASE_URL}/login/{request_id}\n\n"
@@ -114,7 +114,7 @@ async def check_login_status(request_id: str) -> str:
     On success, automatically activates your session for all future tool calls.
     """
     
-    req = store.pending_logins.get(request_id)
+    req = sessions.pending_logins.get(request_id)
     if not req:
         return "Error: Invalid Request ID"
     

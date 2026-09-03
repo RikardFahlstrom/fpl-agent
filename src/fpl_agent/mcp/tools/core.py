@@ -18,7 +18,8 @@ from mcp.server.fastmcp import FastMCP
 from ...headless_auth import env_flag
 from ...models import TransferPayload
 from ...rotowire_scraper import RotoWireLineupScraper
-from ...state import store
+from ...sessions import sessions
+from ...reference import reference
 
 # Define the server
 mcp = FastMCP(
@@ -119,10 +120,10 @@ def _get_client():
     """Internal helper to get the active client"""
     # Fall back to a session established without a human present (restored from
     # the token cache, or a credential login at startup).
-    session_id = _active_session_id or store.active_session_id
+    session_id = _active_session_id or sessions.active_session_id
     if not session_id:
         return None
-    return store.get_client(session_id)
+    return sessions.get_client(session_id)
 
 
 def _read_only() -> bool:
@@ -137,9 +138,9 @@ async def _ensure_reference_data(client, *, fixtures: bool = False) -> None:
     rather than surfacing a transport error from an unrelated tool.
     """
     try:
-        await store.ensure_bootstrap_data(client)
+        await reference.ensure_bootstrap_data(client)
         if fixtures:
-            await store.ensure_fixtures_data(client)
+            await reference.ensure_fixtures_data(client)
     except Exception as e:
         logger.error(f"Failed to load reference data: {e}")
 

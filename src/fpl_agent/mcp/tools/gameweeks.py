@@ -1,6 +1,6 @@
 """Gameweek and fixture tools."""
 
-from ...state import store
+from ...reference import reference
 from datetime import datetime, timezone
 from .core import mcp
 from .core import _with_client
@@ -15,13 +15,13 @@ async def get_current_gameweek(client) -> str:
     Use this to determine which gameweek to plan transfers for.
     """
     
-    if not store.bootstrap_data or not store.bootstrap_data.events:
+    if not reference.bootstrap_data or not reference.bootstrap_data.events:
         return "Error: Gameweek data not available."
     
     try:
         now = datetime.now(timezone.utc)
         
-        for event in store.bootstrap_data.events:
+        for event in reference.bootstrap_data.events:
             if event.is_current:
                 deadline = datetime.fromisoformat(event.deadline_time.replace('Z', '+00:00'))
                 if now < deadline:
@@ -36,7 +36,7 @@ async def get_current_gameweek(client) -> str:
                 else:
                     break
         
-        for event in store.bootstrap_data.events:
+        for event in reference.bootstrap_data.events:
             if event.is_next:
                 return (
                     f"**Upcoming Gameweek: {event.name}**\n"
@@ -46,7 +46,7 @@ async def get_current_gameweek(client) -> str:
                     f"Can Enter: {event.can_enter}"
                 )
         
-        for event in store.bootstrap_data.events:
+        for event in reference.bootstrap_data.events:
             if not event.finished:
                 return (
                     f"**Upcoming Gameweek: {event.name}**\n"
@@ -68,11 +68,11 @@ async def get_gameweek_info(client, gameweek_number: int) -> str:
     Includes deadline, scores, top players, and statistics.
     """
     
-    if not store.bootstrap_data or not store.bootstrap_data.events:
+    if not reference.bootstrap_data or not reference.bootstrap_data.events:
         return "Error: Gameweek data not available."
     
     try:
-        event = next((e for e in store.bootstrap_data.events if e.id == gameweek_number), None)
+        event = next((e for e in reference.bootstrap_data.events if e.id == gameweek_number), None)
         if not event:
             return f"Error: Gameweek {gameweek_number} not found."
         
@@ -94,7 +94,7 @@ async def get_gameweek_info(client, gameweek_number: int) -> str:
             ])
             
             if event.top_element_info:
-                top_player = store.get_player_name(event.top_element_info.id)
+                top_player = reference.get_player_name(event.top_element_info.id)
                 output.extend([
                     "**Top Performer:**",
                     f"Player: {top_player}",
@@ -103,10 +103,10 @@ async def get_gameweek_info(client, gameweek_number: int) -> str:
                 ])
         
         if event.most_captained:
-            most_cap = store.get_player_name(event.most_captained)
-            most_vc = store.get_player_name(event.most_vice_captained)
-            most_sel = store.get_player_name(event.most_selected)
-            most_trans = store.get_player_name(event.most_transferred_in)
+            most_cap = reference.get_player_name(event.most_captained)
+            most_vc = reference.get_player_name(event.most_vice_captained)
+            most_sel = reference.get_player_name(event.most_selected)
+            most_trans = reference.get_player_name(event.most_transferred_in)
             
             output.extend([
                 "**Popular Choices:**",
@@ -129,13 +129,13 @@ async def list_all_gameweeks(client) -> str:
     Useful for getting an overview of the season.
     """
     
-    if not store.bootstrap_data or not store.bootstrap_data.events:
+    if not reference.bootstrap_data or not reference.bootstrap_data.events:
         return "Error: Gameweek data not available."
     
     try:
         output = ["**All Gameweeks:**\n"]
         
-        for event in store.bootstrap_data.events:
+        for event in reference.bootstrap_data.events:
             status = []
             if event.is_current:
                 status.append("CURRENT")
@@ -167,17 +167,17 @@ async def get_fixtures_for_gameweek(client, gameweek: int) -> str:
     Useful for planning transfers and understanding fixture difficulty.
     """
     
-    if not store.fixtures_data:
+    if not reference.fixtures_data:
         return "Error: Fixtures data not available."
     
     try:
-        gw_fixtures = [f for f in store.fixtures_data if f.event == gameweek]
+        gw_fixtures = [f for f in reference.fixtures_data if f.event == gameweek]
         
         if not gw_fixtures:
             return f"No fixtures found for gameweek {gameweek}"
         
         # Enrich fixtures with team names
-        gw_fixtures_enriched = store.enrich_fixtures(gw_fixtures)
+        gw_fixtures_enriched = reference.enrich_fixtures(gw_fixtures)
         
         output = [
             f"**Gameweek {gameweek} Fixtures ({len(gw_fixtures_enriched)} matches)**\n"

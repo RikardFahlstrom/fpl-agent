@@ -26,7 +26,7 @@ from .. import config
 from . import storage
 from ..client import FPLClient
 from ..headless_auth import authenticated_client
-from ..state import store
+from ..sessions import sessions
 
 logger = logging.getLogger("fpl_rivals")
 
@@ -192,7 +192,7 @@ async def _run(args) -> int:
                 "Set FPL_AUTO_LOGIN with credentials or a cached session, or pass "
                 "--league to name the leagues directly.")
             return 1
-        own_entry = store.get_user_entry_id(client)
+        own_entry = sessions.get_user_entry_id(client)
 
         gameweek = args.gameweek
         if gameweek is None:
@@ -203,7 +203,7 @@ async def _run(args) -> int:
             return 1
 
         leagues = capturable_leagues(
-            await store.get_user_leagues(client), args.max_rivals, args.include_global)
+            await sessions.get_user_leagues(client), args.max_rivals, args.include_global)
         wanted = args.league or configured_league_ids()
         if wanted:
             leagues = [lg for lg in leagues if lg["id"] in set(wanted)]

@@ -31,7 +31,7 @@ from .tools import (
     mcp,
     search_players_by_team,
 )
-from ..state import store
+from ..reference import reference
 
 # Resources name the tool that establishes a session, so their wording differs
 # slightly from the tools' own guard.
@@ -56,11 +56,11 @@ async def get_all_players_resource() -> str:
     if not await _ready_client():
         return NOT_AUTHENTICATED
 
-    if not store.bootstrap_data or not store.bootstrap_data.elements:
+    if not reference.bootstrap_data or not reference.bootstrap_data.elements:
         return "Error: Player data not available."
 
     try:
-        players = store.bootstrap_data.elements
+        players = reference.bootstrap_data.elements
 
         output = [f"**All FPL Players ({len(players)} total)**\n"]
 
@@ -123,10 +123,10 @@ async def get_player_resource(player_name: str) -> str:
     if not await _ready_client():
         return NOT_AUTHENTICATED
 
-    if not store.bootstrap_data:
+    if not reference.bootstrap_data:
         return "Error: Player data not available."
 
-    matches = store.find_players_by_name(player_name, fuzzy=True)
+    matches = reference.find_players_by_name(player_name, fuzzy=True)
 
     if not matches:
         return f"No player found matching '{player_name}'"
@@ -157,7 +157,7 @@ async def get_player_summary_resource(player_name: str) -> str:
 
     # Resolved here as well as in the tool, so an ambiguous name can point at the
     # sibling resource rather than at the find_player tool.
-    matches = store.find_players_by_name(player_name, fuzzy=True)
+    matches = reference.find_players_by_name(player_name, fuzzy=True)
     if not matches:
         return f"No player found matching '{player_name}'"
     if len(matches) > 1 and matches[0][1] < 0.95:

@@ -1,6 +1,6 @@
 """Club-level tools: information, squads and fixture runs."""
 
-from ...state import store
+from ...reference import reference
 from .core import mcp
 from .core import _difficulty_bar, _with_client
 
@@ -14,12 +14,12 @@ async def get_team_info(client, team_name: str) -> str:
     Example: "Arsenal", "Man City", "Liverpool"
     """
     
-    if not store.bootstrap_data:
+    if not reference.bootstrap_data:
         return "Error: Team data not available."
     
     # Find team by name
     matching_teams = [
-        t for t in store.bootstrap_data.teams
+        t for t in reference.bootstrap_data.teams
         if team_name.lower() in t.name.lower() or team_name.lower() in t.short_name.lower()
     ]
     
@@ -31,7 +31,7 @@ async def get_team_info(client, team_name: str) -> str:
         return f"Multiple teams found: {team_list}. Please be more specific."
     
     team = matching_teams[0]
-    team_dict = store.get_team_by_id(team.id)
+    team_dict = reference.get_team_by_id(team.id)
     
     output = [
         f"**{team_dict['name']} ({team_dict['short_name']})**",
@@ -76,7 +76,7 @@ async def list_all_teams(client) -> str:
     Useful for finding team names or comparing team strengths.
     """
     
-    teams = store.get_all_teams()
+    teams = reference.get_all_teams()
     if not teams:
         return "Error: Team data not available."
     
@@ -106,12 +106,12 @@ async def search_players_by_team(client, team_name: str) -> str:
     Example: "Arsenal", "Liverpool", "Man City"
     """
     
-    if not store.bootstrap_data:
+    if not reference.bootstrap_data:
         return "Error: Player data not available."
     
     try:
         matching_teams = [
-            t for t in store.bootstrap_data.teams
+            t for t in reference.bootstrap_data.teams
             if team_name.lower() in t.name.lower() or team_name.lower() in t.short_name.lower()
         ]
         
@@ -125,7 +125,7 @@ async def search_players_by_team(client, team_name: str) -> str:
         team = matching_teams[0]
         
         players = [
-            p for p in store.bootstrap_data.elements
+            p for p in reference.bootstrap_data.elements
             if p.team == team.id
         ]
         
@@ -170,12 +170,12 @@ async def analyze_team_fixtures(client, team_name: str, num_gameweeks: int = 5) 
     Provide team name and number of gameweeks to analyze (default: 5).
     """
     
-    if not store.bootstrap_data or not store.fixtures_data:
+    if not reference.bootstrap_data or not reference.fixtures_data:
         return "Error: Team or fixtures data not available."
     
     try:
         matching_teams = [
-            t for t in store.bootstrap_data.teams
+            t for t in reference.bootstrap_data.teams
             if team_name.lower() in t.name.lower() or team_name.lower() in t.short_name.lower()
         ]
         
@@ -188,11 +188,11 @@ async def analyze_team_fixtures(client, team_name: str, num_gameweeks: int = 5) 
         
         team = matching_teams[0]
         
-        current_gw = store.get_current_gameweek()
+        current_gw = reference.get_current_gameweek()
         if not current_gw:
             return "Error: Could not determine current gameweek"
         
-        team_fixtures = store.upcoming_fixtures(
+        team_fixtures = reference.upcoming_fixtures(
             team.id, from_gameweek=current_gw.id, limit=num_gameweeks
         )
         
@@ -200,7 +200,7 @@ async def analyze_team_fixtures(client, team_name: str, num_gameweeks: int = 5) 
             return f"No upcoming fixtures found for {team.name}"
         
         # Enrich fixtures with team names
-        team_fixtures_enriched = store.enrich_fixtures(team_fixtures)
+        team_fixtures_enriched = reference.enrich_fixtures(team_fixtures)
         team_fixtures_sorted = sorted(team_fixtures_enriched, key=lambda x: x.get('event') or 999)
         
         output = [

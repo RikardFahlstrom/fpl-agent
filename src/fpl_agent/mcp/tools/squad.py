@@ -1,7 +1,8 @@
 """Tools for the authenticated manager's own squad, transfers and chips."""
 
 from ...models import TransferPayload
-from ...state import store
+from ...sessions import sessions
+from ...reference import reference
 from .core import NOT_AUTHENTICATED
 from .core import logger
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ async def get_manager_snapshot() -> dict:
     client = _get_client()
     if not client:
         return {"status": "not_authenticated"}
-    entry_id = store.get_user_entry_id(client)
+    entry_id = sessions.get_user_entry_id(client)
     if not entry_id:
         return {"status": "entry_unavailable"}
     my_team = await client.get_my_team(entry_id)
@@ -106,7 +107,7 @@ async def get_my_squad(client) -> str:
     """Get your current team squad, chips status, and transfer information."""
     
     try:
-        entry_id = store.get_user_entry_id(client)
+        entry_id = sessions.get_user_entry_id(client)
         if not entry_id:
             return "Error: Could not determine your entry ID. Please try logging in again."
         
@@ -220,7 +221,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
         ids_in = []
         
         for name in player_names_out:
-            matches = store.find_players_by_name(name, fuzzy=True)
+            matches = reference.find_players_by_name(name, fuzzy=True)
             if not matches:
                 return f"Error: Could not find player '{name}' to transfer out."
             if _is_ambiguous(matches):
@@ -228,7 +229,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
             ids_out.append(matches[0][0].id)
         
         for name in player_names_in:
-            matches = store.find_players_by_name(name, fuzzy=True)
+            matches = reference.find_players_by_name(name, fuzzy=True)
             if not matches:
                 return f"Error: Could not find player '{name}' to transfer in."
             if _is_ambiguous(matches):
@@ -236,7 +237,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
             ids_in.append(matches[0][0].id)
         
         # Get entry ID
-        entry_id = store.get_user_entry_id(client)
+        entry_id = sessions.get_user_entry_id(client)
         if not entry_id:
             return "Error: Could not determine your entry ID."
         
@@ -251,7 +252,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
         transfers = []
         for i in range(len(ids_out)):
             if ids_out[i] not in current_map:
-                player_name = store.get_player_name(ids_out[i])
+                player_name = reference.get_player_name(ids_out[i])
                 return f"Error: You do not own {player_name}"
             transfers.append({
                 "element_out": ids_out[i],
@@ -276,7 +277,7 @@ async def get_my_performance(client) -> str:
     """
     
     try:
-        entry_id = store.get_user_entry_id(client)
+        entry_id = sessions.get_user_entry_id(client)
         if not entry_id:
             return "Error: Could not determine your entry ID."
         
@@ -357,7 +358,7 @@ async def analyze_squad_recent_performance(client, num_gameweeks: int = 5) -> st
     """
     
     try:
-        entry_id = store.get_user_entry_id(client)
+        entry_id = sessions.get_user_entry_id(client)
         if not entry_id:
             return "Error: Could not determine your entry ID."
         
@@ -389,7 +390,7 @@ async def analyze_squad_recent_performance(client, num_gameweeks: int = 5) -> st
                 history = summary.get('history', [])
                 
                 # Enrich history with team names
-                history = store.enrich_gameweek_history(history)
+                history = reference.enrich_gameweek_history(history)
                 
                 if not history:
                     player_analyses.append({
@@ -636,7 +637,7 @@ async def recommend_chip_strategy(client) -> str:
     """
     
     try:
-        entry_id = store.get_user_entry_id(client)
+        entry_id = sessions.get_user_entry_id(client)
         if not entry_id:
             return "Error: Could not determine your entry ID."
         
@@ -652,7 +653,7 @@ async def recommend_chip_strategy(client) -> str:
             return "✅ All chips have been played! No chip strategy needed."
         
         # Get current gameweek
-        current_gw = store.get_current_gameweek()
+        current_gw = reference.get_current_gameweek()
         if not current_gw:
             return "Error: Could not determine current gameweek."
         
@@ -661,7 +662,7 @@ async def recommend_chip_strategy(client) -> str:
         # Analyze next 10 gameweeks for DGW/BGW
         fixtures_ahead = []
         for gw_num in range(current_gw_id, min(current_gw_id + 10, 39)):
-            gw_fixtures = [f for f in store.fixtures_data if f.event == gw_num]
+            gw_fixtures = [f for f in reference.fixtures_data if f.event == gw_num]
             
             # Count teams playing
             teams_playing = set()
@@ -677,7 +678,7 @@ async def recommend_chip_strategy(client) -> str:
             dgw_teams = [tid for tid, count in team_fixture_count.items() if count >= 2]
             
             # Detect BGW (less than 60% of teams playing)
-            total_teams = len(store.bootstrap_data.teams) if store.bootstrap_data else 20
+            total_teams = len(reference.bootstrap_data.teams) if reference.bootstrap_data else 20
             is_bgw = len(teams_playing) < (total_teams * 0.6)
             
             fixtures_ahead.append({
@@ -991,7 +992,7 @@ async def recommend_transfers(client) -> str:
     """
     
     try:
-        entry_id = store.get_user_entry_id(client)
+        entry_id = sessions.get_user_entry_id(client)
         if not entry_id:
             return "Error: Could not determine your entry ID."
         
@@ -1018,7 +1019,7 @@ async def recommend_transfers(client) -> str:
         p_map = {p.id: p for p in all_players}
         
         # Get current gameweek
-        current_gw = store.get_current_gameweek()
+        current_gw = reference.get_current_gameweek()
         if not current_gw:
             return "Error: Could not determine current gameweek."
         
@@ -1041,7 +1042,7 @@ async def recommend_transfers(client) -> str:
             
             # Get player's next 5 fixtures
             player_fixtures = []
-            for fixture in store.upcoming_fixtures(
+            for fixture in reference.upcoming_fixtures(
                 player.team, from_gameweek=current_gw_id, limit=5
             ):
                 is_home = fixture.team_h == player.team

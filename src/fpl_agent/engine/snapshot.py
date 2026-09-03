@@ -29,7 +29,7 @@ from . import lineups, storage
 from ..client import FPLClient
 from ..headless_auth import authenticated_client, cache_path, env_flag
 from ..rotowire_scraper import RotoWireLineupScraper
-from ..state import store
+from ..sessions import sessions
 
 logger = logging.getLogger("fpl_snapshot")
 
@@ -108,7 +108,7 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
 
     # The authenticated squad is optional: an unauthenticated run still captures the
     # market, which is the part that cannot be recovered later.
-    entry_id = store.get_user_entry_id(client) if client.user_info else None
+    entry_id = sessions.get_user_entry_id(client) if client.user_info else None
     if entry_id:
         try:
             my_team = await client.get_my_team(entry_id)

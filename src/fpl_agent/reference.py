@@ -1,51 +1,39 @@
-from typing import Dict, Optional, List, Tuple
-from dataclasses import dataclass
-import time
+"""Cached FPL reference data: squads, teams, fixtures and name lookup.
+
+Split out of the old SessionStore, which did five unrelated jobs in one object and was
+the coupling point between the engine and the MCP server. This half holds only what is
+read *about* the game, and no session state, so the engine can use it without dragging in
+authentication and the server can use it without dragging in the warehouse.
+"""
+
 import logging
 from difflib import SequenceMatcher
+from typing import Dict, List, Optional, Tuple
+
 from .client import FPLClient
 from .models import BootstrapData, ElementData, EventData, FixtureData
 
-logger = logging.getLogger("fpl_state")
+logger = logging.getLogger("fpl_reference")
 
-@dataclass
-class PendingLogin:
-    created_at: float
-    status: str = "pending"  # pending, success, failed
-    session_id: Optional[str] = None
-    error: Optional[str] = None
 
-class SessionStore:
+def normalize_name(name: str) -> str:
+    """Lowercase and collapse whitespace, for name matching."""
+    return " ".join(name.lower().strip().split())
+
+
+class ReferenceData:
+    """Bootstrap and fixture data, loaded once and indexed for lookup."""
+
     def __init__(self):
-        # Maps request_id (from URL) -> Login Status
-        self.pending_logins: Dict[str, PendingLogin] = {}
-        
-        # Maps session_id (given to LLM) -> Authenticated FPLClient
-        self.active_sessions: Dict[str, FPLClient] = {}
-
-        # Session established without a human present (cache restore or credential
-        # login). Tools fall back to this when no interactive login has happened.
-        self.active_session_id: Optional[str] = None
-        
-        # Bootstrap data loaded on-demand from API
         self.bootstrap_data: Optional[BootstrapData] = None
-        
-        # Fixtures data loaded on-demand from API
         self.fixtures_data: Optional[List[FixtureData]] = None
-        
-        # Classic leagues per entry id. /me/ does not carry league membership, so it
-        # has to be fetched from entry/{id}/ and is worth holding on to.
-        self.league_cache: Dict[int, List[dict]] = {}
-
-        # Player name lookup maps for intelligent searching
-        # Maps normalized name -> list of player IDs (handles duplicates)
+        # Normalised name -> player ids, since names are not unique.
         self.player_name_map: Dict[str, List[int]] = {}
         self.player_id_map: Dict[int, ElementData] = {}
 
     def _normalize_name(self, name: str) -> str:
-        """Normalize a name for matching: lowercase, remove extra spaces"""
-        return " ".join(name.lower().strip().split())
-    
+        return normalize_name(name)
+
     async def ensure_bootstrap_data(self, client: FPLClient):
         """Ensure bootstrap data is loaded, fetching from API if needed"""
         if self.bootstrap_data is None:
@@ -58,7 +46,7 @@ class SessionStore:
             except Exception as e:
                 logger.error(f"Failed to load bootstrap data: {e}")
                 raise
-    
+
     async def ensure_fixtures_data(self, client: FPLClient):
         """Ensure fixtures data is loaded, fetching from API if needed"""
         if self.fixtures_data is None:
@@ -70,7 +58,7 @@ class SessionStore:
             except Exception as e:
                 logger.error(f"Failed to load fixtures data: {e}")
                 raise
-    
+
     def _build_player_indices(self):
         """Build player name and ID indices from bootstrap data"""
         if not self.bootstrap_data:
@@ -129,38 +117,6 @@ class SessionStore:
                 f"Name index has {len(self.player_name_map)} keys."
             )
 
-    def create_login_request(self, request_id: str):
-        self.pending_logins[request_id] = PendingLogin(created_at=time.time())
-
-    async def set_login_success(self, request_id: str, session_id: str, client: FPLClient):
-        """Set login success, retaining only loop-safe client state for MCP use."""
-        self.active_sessions[session_id] = client
-        
-        # Fetch user info after successful login and store it in the client
-        try:
-            user_data = await client.get_me()
-            client.user_info = user_data  # Store the user info in the client
-            entry_id = user_data.get('player', {}).get('entry')
-            logger.info(f"Fetched and stored user info for session {session_id}: entry_id={entry_id}")
-        except Exception as e:
-            logger.error(f"Failed to fetch user info after login: {e}")
-        finally:
-            # Web authentication and MCP tools run on different event loops. Dispose
-            # the web loop's connection pool; the client lazily creates a new one in MCP.
-            await client.close()
-        
-        if request_id in self.pending_logins:
-            self.pending_logins[request_id].status = "success"
-            self.pending_logins[request_id].session_id = session_id
-
-    def set_login_failure(self, request_id: str, error: str):
-        if request_id in self.pending_logins:
-            self.pending_logins[request_id].status = "failed"
-            self.pending_logins[request_id].error = error
-
-    def get_client(self, session_id: str) -> Optional[FPLClient]:
-        return self.active_sessions.get(session_id)
-    
     def get_team_by_id(self, team_id: int) -> Optional[dict]:
         """Get team information by ID"""
         if not self.bootstrap_data:
@@ -182,7 +138,7 @@ class SessionStore:
             'strength_defence_home': getattr(team, 'strength_defence_home', None),
             'strength_defence_away': getattr(team, 'strength_defence_away', None),
         }
-    
+
     def get_all_teams(self) -> list:
         """Get all teams with their information"""
         if not self.bootstrap_data:
@@ -199,7 +155,7 @@ class SessionStore:
             }
             for t in self.bootstrap_data.teams
         ]
-    
+
     def find_players_by_name(self, name_query: str, fuzzy: bool = True) -> List[Tuple[ElementData, float]]:
         """
         Find players by name with intelligent matching.
@@ -250,7 +206,7 @@ class SessionStore:
         player_matches.sort(key=lambda x: x[1], reverse=True)
         
         return player_matches
-    
+
     def upcoming_fixtures(self, team_id: int, *, from_gameweek: int, limit: int) -> List[FixtureData]:
         """A team's next unplayed fixtures, earliest first.
 
@@ -266,11 +222,11 @@ class SessionStore:
             and not f.finished
         ]
         return sorted(upcoming, key=lambda f: f.event)[:limit]
-    
+
     def get_player_by_id(self, player_id: int) -> Optional[ElementData]:
         """Get a player by their ID"""
         return self.player_id_map.get(player_id)
-    
+
     def get_current_gameweek(self) -> Optional[EventData]:
         """Get the current gameweek event"""
         if not self.bootstrap_data or not self.bootstrap_data.events:
@@ -292,7 +248,7 @@ class SessionStore:
                 return event
         
         return None
-    
+
     def rehydrate_player_names(self, element_ids: list[int]) -> dict[int, dict]:
         """
         Rehydrate player element IDs to full player information.
@@ -321,7 +277,7 @@ class SessionStore:
                     'news': player.news
                 }
         return result
-    
+
     def get_player_name(self, element_id: int) -> str:
         """
         Get a player's web name by their element ID.
@@ -336,132 +292,7 @@ class SessionStore:
         if player:
             return player.web_name
         return f"Unknown Player (ID: {element_id})"
-    
-    async def get_user_leagues(self, client: FPLClient) -> List[dict]:
-        """The user's classic leagues.
 
-        /me/ returns only the player and their watchlist - league membership is not in
-        it - so this reads entry/{id}/ instead. Reading it from user_info silently
-        yielded an empty list, which made every league tool report "league not found"
-        for leagues the user is actually in.
-        """
-        entry_id = self.get_user_entry_id(client)
-        if not entry_id:
-            return []
-        if entry_id in self.league_cache:
-            return self.league_cache[entry_id]
-        try:
-            entry = await client.get_manager_entry(entry_id)
-        except Exception as e:
-            logger.error(f"Could not fetch leagues for entry {entry_id}: {e}")
-            return []
-        leagues = (entry.get("leagues") or {}).get("classic") or []
-        self.league_cache[entry_id] = leagues
-        return leagues
-
-    async def find_league_by_name(self, client: FPLClient, league_name: str) -> Optional[dict]:
-        """
-        Find a league by name from the user's leagues.
-        
-        Args:
-            client: The authenticated FPL client
-            league_name: The name of the league to find
-            
-        Returns:
-            League dict with 'id' and 'name' if found, None otherwise
-        """
-        classic_leagues = await self.get_user_leagues(client)
-        if not classic_leagues:
-            return None
-        
-        # Normalize search name
-        normalized_search = self._normalize_name(league_name)
-        
-        # Try exact match first
-        for league in classic_leagues:
-            if self._normalize_name(league.get('name', '')) == normalized_search:
-                return {
-                    'id': league.get('id'),
-                    'name': league.get('name')
-                }
-        
-        # Try substring match
-        for league in classic_leagues:
-            league_norm = self._normalize_name(league.get('name', ''))
-            if normalized_search in league_norm or league_norm in normalized_search:
-                return {
-                    'id': league.get('id'),
-                    'name': league.get('name')
-                }
-        
-        return None
-    
-    async def find_manager_by_name(self, client: FPLClient, league_id: int, manager_name: str) -> Optional[dict]:
-        """
-        Find a manager by name in a league's standings.
-        
-        Args:
-            client: The authenticated FPL client
-            league_id: The league ID to search in
-            manager_name: The manager's name to find
-            
-        Returns:
-            Manager dict with 'entry', 'entry_name', 'player_name' if found, None otherwise
-        """
-        try:
-            standings = await client.get_league_standings(league_id)
-            results = (standings.get('standings') or {}).get('results') or []
-            
-            # Normalize search name
-            normalized_search = self._normalize_name(manager_name)
-            
-            def _as_match(result: dict) -> dict:
-                return {
-                    'entry': result.get('entry'),
-                    'entry_name': result.get('entry_name'),
-                    'player_name': result.get('player_name')
-                }
-            
-            # Search through standings
-            for result in results:
-                # Try matching against player_name (manager name), then entry_name (team name)
-                if self._normalize_name(result.get('player_name', '')) == normalized_search:
-                    return _as_match(result)
-                
-                if self._normalize_name(result.get('entry_name', '')) == normalized_search:
-                    return _as_match(result)
-            
-            # Try substring matches
-            for result in results:
-                player_norm = self._normalize_name(result.get('player_name', ''))
-                entry_norm = self._normalize_name(result.get('entry_name', ''))
-                
-                if (normalized_search in player_norm or player_norm in normalized_search or
-                    normalized_search in entry_norm or entry_norm in normalized_search):
-                    return _as_match(result)
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error finding manager by name: {e}")
-            return None
-    
-    def get_user_entry_id(self, client: FPLClient) -> Optional[int]:
-        """
-        Get the user's entry ID from their stored user info.
-        
-        Args:
-            client: The authenticated FPL client
-            
-        Returns:
-            The user's entry ID or None if not available
-        """
-        if not client.user_info:
-            return None
-        # /me/ returns {"player": null} when unauthenticated, and a default only applies
-        # to a missing key, not a null one.
-        return (client.user_info.get('player') or {}).get('entry')
-    
     def enrich_gameweek_history(self, history: list[dict]) -> list[dict]:
         """
         Enrich gameweek history data with friendly names for teams.
@@ -491,7 +322,7 @@ class SessionStore:
             enriched.append(enriched_gw)
         
         return enriched
-    
+
     def enrich_fixtures(self, fixtures: list) -> list:
         """
         Enrich fixture data with friendly team names.
@@ -536,5 +367,6 @@ class SessionStore:
         
         return enriched
 
-# Global Instance
-store = SessionStore()
+
+# Global instance
+reference = ReferenceData()

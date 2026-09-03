@@ -4,7 +4,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 
 from ..headless_auth import establish_session
-from ..state import store
+from ..sessions import sessions
 
 app = FastAPI()
 
@@ -116,7 +116,7 @@ async def auth_service_home():
 
 @app.get("/login/{request_id}", response_class=HTMLResponse)
 async def login_page(request_id: str, request: Request):
-    store.create_login_request(request_id)
+    sessions.create_login_request(request_id)
     page = LOGIN_HTML.replace("{request_id}", request_id)
     if request.query_params.get("embed") == "1":
         page = page.replace("<body>", '<body class="embedded">', 1)
@@ -146,7 +146,7 @@ async def submit_login(request_id: str, email: str = Form(...), password: str = 
         )
 
     except Exception as e:
-        store.set_login_failure(request_id, str(e))
+        sessions.set_login_failure(request_id, str(e))
         return HTMLResponse(
             _result_page("Connection error.", str(e), success=False)
         )

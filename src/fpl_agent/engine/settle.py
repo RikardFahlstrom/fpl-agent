@@ -40,7 +40,7 @@ from ..client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
 from .snapshot import backfill_actuals
-from ..state import store
+from ..reference import reference
 
 logger = logging.getLogger("fpl_settle")
 
@@ -253,7 +253,7 @@ def draft_learning(slices: dict[str, list[Slice]], gameweek: int,
 
 async def _run(args) -> int:
     conn = storage.connect(args.db)
-    client = FPLClient(store=store)
+    client = FPLClient(reference=reference)
     try:
         if not args.no_backfill:
             element_ids = [r["element_id"] for r in

@@ -1,6 +1,7 @@
 """League standings and rival-manager tools."""
 
-from ...state import store
+from ...sessions import sessions
+from ...reference import reference
 from .core import mcp
 from .core import _with_client
 
@@ -17,7 +18,7 @@ async def get_league_standings(client, league_name: str, page: int = 1) -> str:
     
     try:
         # Find league by name
-        league_info = await store.find_league_by_name(client, league_name)
+        league_info = await sessions.find_league_by_name(client, league_name)
         if not league_info:
             return f"Could not find a league named '{league_name}' in your leagues. Use get_my_info to see your leagues."
         
@@ -75,12 +76,12 @@ async def get_manager_gameweek_team(client, manager_name: str, league_name: str,
     
     try:
         # Find league first
-        league_info = await store.find_league_by_name(client, league_name)
+        league_info = await sessions.find_league_by_name(client, league_name)
         if not league_info:
             return f"Could not find league '{league_name}'. Use get_my_info to see your leagues."
         
         # Find manager in league
-        manager_info = await store.find_manager_by_name(client, league_info['id'], manager_name)
+        manager_info = await sessions.find_manager_by_name(client, league_info['id'], manager_name)
         if not manager_info:
             return f"Could not find manager '{manager_name}' in league '{league_name}'"
         
@@ -98,7 +99,7 @@ async def get_manager_gameweek_team(client, manager_name: str, league_name: str,
         
         # Rehydrate player names
         element_ids = [pick['element'] for pick in picks]
-        players_info = store.rehydrate_player_names(element_ids)
+        players_info = reference.rehydrate_player_names(element_ids)
         
         output = [
             f"**{manager_info['entry_name']}** - {manager_info['player_name']}",
@@ -142,8 +143,8 @@ async def get_manager_gameweek_team(client, manager_name: str, league_name: str,
         if auto_subs:
             output.append("\n**Automatic Substitutions:**")
             for sub in auto_subs:
-                player_out = store.get_player_name(sub['element_out'])
-                player_in = store.get_player_name(sub['element_in'])
+                player_out = reference.get_player_name(sub['element_out'])
+                player_in = reference.get_player_name(sub['element_in'])
                 output.append(f"├─ {player_out} → {player_in}")
         
         return "\n".join(output)
@@ -169,7 +170,7 @@ async def compare_managers(client, manager_names: list[str], league_name: str, g
     
     try:
         # Find league first
-        league_info = await store.find_league_by_name(client, league_name)
+        league_info = await sessions.find_league_by_name(client, league_name)
         if not league_info:
             return f"Could not find league '{league_name}'"
         
@@ -177,7 +178,7 @@ async def compare_managers(client, manager_names: list[str], league_name: str, g
         manager_ids = []
         manager_infos = []
         for name in manager_names:
-            manager_info = await store.find_manager_by_name(client, league_info['id'], name)
+            manager_info = await sessions.find_manager_by_name(client, league_info['id'], name)
             if not manager_info:
                 return f"Could not find manager '{name}' in league '{league_name}'"
             manager_ids.append(manager_info['entry'])
@@ -209,7 +210,7 @@ async def compare_managers(client, manager_names: list[str], league_name: str, g
             picks = data.get('picks', [])
             captain_pick = next((p for p in picks if p['is_captain']), None)
             if captain_pick:
-                captain_name = store.get_player_name(captain_pick['element'])
+                captain_name = reference.get_player_name(captain_pick['element'])
                 multiplier = captain_pick.get('multiplier', 2)
                 manager_info = manager_infos[i]
                 output.append(f"├─ {manager_info['player_name']}: {captain_name} (x{multiplier})")
@@ -226,7 +227,7 @@ async def compare_managers(client, manager_names: list[str], league_name: str, g
         if common_players:
             output.append(f"\n**Common Players ({len(common_players)}):**")
             for element_id in list(common_players)[:10]:
-                player_name = store.get_player_name(element_id)
+                player_name = reference.get_player_name(element_id)
                 output.append(f"├─ {player_name}")
         
         # Unique players per team
@@ -242,7 +243,7 @@ async def compare_managers(client, manager_names: list[str], league_name: str, g
                 manager_info = manager_infos[i]
                 output.append(f"\n{manager_info['player_name']} only:")
                 for element_id in list(unique)[:5]:
-                    player_name = store.get_player_name(element_id)
+                    player_name = reference.get_player_name(element_id)
                     output.append(f"├─ {player_name}")
         
         return "\n".join(output)

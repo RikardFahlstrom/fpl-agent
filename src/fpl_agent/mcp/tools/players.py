@@ -1,6 +1,6 @@
 """Player search, detail and comparison tools."""
 
-from ...state import store
+from ...reference import reference
 from .core import mcp
 from .core import _format_player_details, _is_ambiguous, _is_confident, _with_client
 
@@ -67,11 +67,11 @@ async def find_player(client, player_name: str) -> str:
     If multiple players match, returns disambiguation options.
     """
     
-    if not store.bootstrap_data:
+    if not reference.bootstrap_data:
         return "Error: Player data not available."
     
     try:
-        matches = store.find_players_by_name(player_name, fuzzy=True)
+        matches = reference.find_players_by_name(player_name, fuzzy=True)
         
         if not matches:
             return f"No players found matching '{player_name}'. Try a different spelling or use the player's surname."
@@ -107,7 +107,7 @@ async def get_player_details(client, player_name: str) -> str:
     Includes price, form, team, position, and current status.
     """
     
-    matches = store.find_players_by_name(player_name, fuzzy=True)
+    matches = reference.find_players_by_name(player_name, fuzzy=True)
     
     if not matches:
         return f"No player found matching '{player_name}'"
@@ -128,7 +128,7 @@ async def compare_players(client, player_names: list[str]) -> str:
     Useful for transfer decisions.
     """
     
-    if not store.bootstrap_data:
+    if not reference.bootstrap_data:
         return "Error: Player data not available."
     
     if len(player_names) < 2:
@@ -142,7 +142,7 @@ async def compare_players(client, player_names: list[str]) -> str:
         ambiguous = []
         
         for name in player_names:
-            matches = store.find_players_by_name(name, fuzzy=True)
+            matches = reference.find_players_by_name(name, fuzzy=True)
             
             if not matches:
                 return f"Error: No player found matching '{name}'"
@@ -204,7 +204,7 @@ async def get_player_summary(client, player_name: str) -> str:
     
     try:
         # Find player by name
-        matches = store.find_players_by_name(player_name, fuzzy=True)
+        matches = reference.find_players_by_name(player_name, fuzzy=True)
         if not matches:
             return f"No player found matching '{player_name}'"
         
@@ -219,10 +219,10 @@ async def get_player_summary(client, player_name: str) -> str:
         
         # Enrich history and fixtures with team names
         history = summary_data.get('history', [])
-        history = store.enrich_gameweek_history(history)
+        history = reference.enrich_gameweek_history(history)
         
         fixtures = summary_data.get('fixtures', [])
-        fixtures = store.enrich_fixtures(fixtures)
+        fixtures = reference.enrich_fixtures(fixtures)
         
         output = [
             f"**{player.web_name}** ({player.first_name} {player.second_name})",
