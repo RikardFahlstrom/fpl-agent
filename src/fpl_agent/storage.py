@@ -143,6 +143,22 @@ CREATE TABLE IF NOT EXISTS my_state (
     chips           TEXT
 );
 
+CREATE TABLE IF NOT EXISTS projection (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshot(id),
+    gameweek        INTEGER NOT NULL,
+    element_id      INTEGER NOT NULL REFERENCES player(element_id),
+    model_version   TEXT NOT NULL,
+    expected_points REAL NOT NULL,
+    p_start         REAL,
+    expected_minutes REAL,
+    fixture_count   INTEGER,
+    components      TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    UNIQUE (snapshot_id, gameweek, element_id, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_projection_gw ON projection(gameweek, model_version);
 CREATE INDEX IF NOT EXISTS idx_player_snapshot_element ON player_snapshot(element_id);
 CREATE INDEX IF NOT EXISTS idx_player_gameweek_round   ON player_gameweek(round);
 CREATE INDEX IF NOT EXISTS idx_fixture_event           ON fixture(event);
