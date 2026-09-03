@@ -31,7 +31,7 @@ from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.3.0"
+MODEL_VERSION = "0.4.0"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
@@ -72,9 +72,15 @@ BONUS_PRIOR_APPEARANCES = 3.0
 RATE_PRIOR_MINUTES = 270.0
 # Fallback when a team has no played minutes to estimate from (preseason).
 LEAGUE_CONCEDED_PER_90 = 1.4
-# Appearances of evidence before a per-appearance rate (bonus, defensive contribution)
-# is trusted. One player hitting the threshold in his only appearance is not a 100% rate.
+# Appearances of evidence before a per-appearance rate (bonus, defensive contribution,
+# starting) is trusted. One player hitting the threshold in his only appearance is not a
+# 100% rate, and one start in his club's two games is not a nailed-on starter.
 APPEARANCE_PRIOR = 3.0
+# Fallback start rate when there are no rows to compute one from (preseason). The prior
+# actually used is starts/games for the player's own position, derived from the data in
+# _player_history the way league_yellow_per_90 and league_dc_rate are - a goalkeeper and
+# a centre-back are not drawn from the same distribution.
+LEAGUE_START_PRIOR = 0.35
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -156,13 +162,32 @@ def availability(snap: sqlite3.Row) -> float:
 def start_rate(history: dict[str, float], season_started: bool = False) -> float:
     """How often this player starts, given they are available.
 
-    `season_started` distinguishes the two reasons a player has no appearances: the
+    The denominator is `games` - every fixture of his club's that he was in the squad
+    for, benchings included - not `appearances`, which counts only games he played. On
+    appearances an unused substitute is invisible: one start and one benching read as a
+    certain starter, four times what the record supports. Benchings are already in the
+    warehouse (element-summary carries a row per team fixture; 614 of 1236 rows were at
+    zero minutes when this was written) and were being grouped away.
+
+    Thin records are pulled toward the start rate of the player's position, so two starts
+    out of two is not yet proof of a nailed-on starter. That shrink is skipped in one
+    direction: a fit player who has started nothing once the season is under way keeps
+    UNUSED_START_PROB outright. Shrinking him *up* toward a positional prior of roughly
+    0.3 would quietly restore the 0.2.0 reserve-goalkeeper bug - never being picked is
+    evidence, not thin evidence.
+
+    `season_started` distinguishes the two reasons a player has no games at all: the
     season has not begun, or he has been available and not picked.
     """
-    appearances = history.get("appearances", 0.0)
-    if appearances:
-        return max(0.0, min(1.0, history.get("starts", 0.0) / appearances))
-    return UNUSED_START_PROB if season_started else BASE_START_PROB
+    games = history.get("games", 0.0)
+    if not games:
+        return UNUSED_START_PROB if season_started else BASE_START_PROB
+    starts = history.get("starts", 0.0)
+    if not starts and season_started:
+        return UNUSED_START_PROB
+    prior = history.get("start_prior", LEAGUE_START_PRIOR)
+    rate = (starts + prior * APPEARANCE_PRIOR) / (games + APPEARANCE_PRIOR)
+    return max(0.0, min(1.0, rate))
 
 
 def clean_sheet_probability(expected_conceded: float) -> float:
@@ -237,22 +262,49 @@ def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
 
 
 def _player_history(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
-    """Per-player realised rates, used where the season aggregates do not carry them."""
+    """Per-player realised rates, used where the season aggregates do not carry them.
+
+    Two denominators, and the difference matters. `appearances` counts games actually
+    played, because bonus, cards and defensive contribution can only be earned on the
+    pitch. `games` counts every row, played or not, because being left out is precisely
+    the evidence a start rate needs; see start_rate.
+    """
     history: dict[int, dict[str, float]] = {}
+    position_of: dict[int, str] = {}
+    # Every row, minutes or not. A start implies minutes, so the numerator is the same
+    # either way; it is the denominator that was wrong.
+    games_query = """
+        SELECT pg.element_id, p.element_type, COUNT(*) AS games,
+               SUM(pg.starts) AS starts
+        FROM player_gameweek pg JOIN player p ON p.element_id = pg.element_id
+        GROUP BY pg.element_id
+    """
+    position_totals: dict[str, list[float]] = {}
+    for row in conn.execute(games_query):
+        position = POSITIONS.get(row["element_type"], "MID")
+        position_of[row["element_id"]] = position
+        games = float(row["games"] or 0)
+        starts = float(row["starts"] or 0)
+        history[row["element_id"]] = {
+            "games": games, "starts": starts,
+            "appearances": 0.0, "bonus": 0.0, "minutes": 0.0,
+        }
+        totals = position_totals.setdefault(position, [0.0, 0.0])
+        totals[0] += starts
+        totals[1] += games
+
+    # Played games only: these three are per-appearance rates.
     query = """
-        SELECT pg.element_id, p.element_type, COUNT(*) AS appearances,
-               SUM(pg.starts) AS starts, SUM(pg.bonus) AS bonus,
-               SUM(pg.minutes) AS minutes, pg.raw
+        SELECT pg.element_id, COUNT(*) AS appearances, SUM(pg.bonus) AS bonus,
+               SUM(pg.minutes) AS minutes
         FROM player_gameweek pg JOIN player p ON p.element_id = pg.element_id
         WHERE pg.minutes > 0 GROUP BY pg.element_id
     """
     for row in conn.execute(query):
-        history[row["element_id"]] = {
-            "appearances": float(row["appearances"] or 0),
-            "starts": float(row["starts"] or 0),
-            "bonus": float(row["bonus"] or 0),
-            "minutes": float(row["minutes"] or 0),
-        }
+        entry = history[row["element_id"]]
+        entry["appearances"] = float(row["appearances"] or 0)
+        entry["bonus"] = float(row["bonus"] or 0)
+        entry["minutes"] = float(row["minutes"] or 0)
 
     # Rates that need per-row inspection rather than a SUM.
     detail = """
@@ -281,10 +333,25 @@ def _player_history(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
     )
     all_flags = [flag for flags in hits.values() for flag in flags]
     league_dc_rate = (sum(all_flags) / len(all_flags)) if all_flags else 0.0
+    # Starts per game by position: goalkeepers rotate far less than forwards, so one
+    # league-wide number would flatter the reserve keeper and punish the rotated striker.
+    league_start_rates = {
+        position: (starts / games) if games else LEAGUE_START_PRIOR
+        for position, (starts, games) in position_totals.items()
+    }
 
     for element_id, entry in history.items():
         minutes = entry.get("minutes", 0.0)
         appearances = entry.get("appearances", 0.0)
+        entry["start_prior"] = league_start_rates.get(
+            position_of.get(element_id, ""), LEAGUE_START_PRIOR)
+        if not appearances:
+            # Bench-only: no time on the pitch, so no per-appearance evidence at all.
+            # He is in `history` solely for the start rate, and holding these at zero
+            # leaves him exactly as he was when he was absent from the dict entirely.
+            entry["yellow_per_90"] = 0.0
+            entry["dc_rate"] = 0.0
+            continue
 
         # A yellow card in a 5-minute cameo is not an 18-per-90 booking rate.
         raw_yellow = (yellows.get(element_id, 0.0) / minutes * 90) if minutes else 0.0
