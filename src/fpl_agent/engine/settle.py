@@ -18,6 +18,11 @@ is missing a row, and treating those as zeroes grades the whole gameweek against
 evidence that does not exist. Settling therefore refuses a gameweek whose fixtures have
 not all finished.
 
+A finished gameweek whose actuals were never fetched is the same wrong answer in a
+different coat: the fixtures say played, the rows are absent anyway, and the query cannot
+tell a backfill that failed from six hundred players who scored nothing. Settling refuses
+that too, and refuses to settle at all behind a backfill that lost players.
+
 Error is signed as predicted minus actual, so a positive bias means over-projecting.
 
     python -m fpl_agent.settle --gameweek 3
@@ -39,7 +44,7 @@ from . import storage
 from ..client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
-from .snapshot import backfill_actuals
+from .snapshot import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
 from ..reference import reference
 
 logger = logging.getLogger("fpl_settle")
@@ -70,6 +75,10 @@ class GameweekNotFinished(RuntimeError):
     """Raised when asked to grade a gameweek that has not been played yet."""
 
 
+class ActualsMissing(RuntimeError):
+    """Raised when a finished gameweek's actuals were never fetched."""
+
+
 def gameweek_is_finished(conn: sqlite3.Connection, gameweek: int) -> bool:
     """Whether every fixture in the gameweek has been played.
 
@@ -83,13 +92,46 @@ def gameweek_is_finished(conn: sqlite3.Connection, gameweek: int) -> bool:
     return bool(row["total"]) and row["done"] == row["total"]
 
 
+def has_actuals(conn: sqlite3.Connection, gameweek: int) -> bool:
+    """Whether the round's actuals were ever fetched.
+
+    A finished gameweek with an empty player_gameweek is not a gameweek nobody played in;
+    it is a backfill that failed. The FPL API refuses requests intermittently, every
+    element-summary call then warns and returns nothing, and COALESCE turns 652 absent
+    rows into 652 zeroes - a confident +1.5 bias written to a learning file as fact.
+
+    Eleven players a side per finished fixture is a floor no real round comes near:
+    rounds 1 and 2 hold 610 and 626 rows against a threshold of 220. Zero rows never
+    passes, whatever the fixtures say.
+    """
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM player_gameweek WHERE round = ?", (gameweek,)).fetchone()[0]
+    fixtures = conn.execute(
+        "SELECT COUNT(*) FROM fixture WHERE event = ? AND finished = 1",
+        (gameweek,)).fetchone()[0]
+    return bool(rows) and rows >= 22 * fixtures
+
+
 def settle_gameweek(conn: sqlite3.Connection, gameweek: int,
                     model_version: str = MODEL_VERSION) -> int:
-    """Join the decision-time projections for a gameweek against actuals."""
+    """Join the decision-time projections for a gameweek against actuals.
+
+    The snapshot that counts is the latest one targeting the gameweek that actually
+    projected it. The nightly capture keeps targeting N until the deadline passes, so
+    plain MAX(snapshot.id) lands on a snapshot taken hours after the decision with no
+    projections on it, and settle reports "nothing to grade" every week. Where two
+    snapshots targeting N both projected it - a re-run before the deadline - the later
+    still wins; that is the one the decision was made on.
+    """
     if not gameweek_is_finished(conn, gameweek):
         raise GameweekNotFinished(
             f"gameweek {gameweek} has not finished; grading it now would score every "
             f"player against a zero that has not happened yet")
+    if not has_actuals(conn, gameweek):
+        raise ActualsMissing(
+            f"gameweek {gameweek} has finished but almost none of its actuals were "
+            f"fetched; grading it now would score every player against a zero that only "
+            f"means the backfill failed. Re-run the backfill, then settle")
     rows = conn.execute(
         """SELECT pr.id, pr.element_id, pr.expected_points, pr.p_start,
                   p.element_type, ps.now_cost,
@@ -103,8 +145,12 @@ def settle_gameweek(conn: sqlite3.Connection, gameweek: int,
                                        AND pg.round = pr.gameweek
            WHERE pr.gameweek = ? AND pr.model_version = ?
              AND s.gameweek = pr.gameweek
-             AND s.id = (SELECT MAX(s2.id) FROM snapshot s2 WHERE s2.gameweek = ?)""",
-        (gameweek, model_version, gameweek),
+             AND s.id = (SELECT MAX(s2.id) FROM snapshot s2
+                           JOIN projection p2 ON p2.snapshot_id = s2.id
+                                             AND p2.gameweek = s2.gameweek
+                                             AND p2.model_version = ?
+                         WHERE s2.gameweek = ?)""",
+        (gameweek, model_version, model_version, gameweek),
     ).fetchall()
 
     now = datetime.now(timezone.utc).isoformat()
@@ -251,21 +297,45 @@ def draft_learning(slices: dict[str, list[Slice]], gameweek: int,
     return path
 
 
+# Exit codes, because an unattended run is read by its status and not its log: 1 the
+# gameweek is not gradeable, 5 the backfill lost too many players to trust it (the same
+# code snapshot returns for the same condition), 6 the round's actuals were never fetched.
 async def _run(args) -> int:
     conn = storage.connect(args.db)
     client = FPLClient(reference=reference)
     try:
+        # Whether a gameweek is over is read from fixture.finished, which only a snapshot
+        # writes - so without this, settle's verdict depends on an unrelated nightly job
+        # having run. A fixture only ever gains its finished flag, so stale rows can
+        # refuse a settle that should have run but never permit one that should not.
+        try:
+            stored = storage.upsert_fixtures(conn, await client.get_fixtures())
+            conn.commit()
+            logger.info("refreshed %s fixtures", stored)
+        except Exception as e:
+            logger.warning("could not refresh fixtures (%s); using the stored ones", e)
+
         if not args.no_backfill:
             element_ids = [r["element_id"] for r in
                            conn.execute("SELECT element_id FROM player ORDER BY element_id")]
             if element_ids:
-                await backfill_actuals(conn, client, element_ids)
+                result = await backfill_actuals(conn, client, element_ids)
+                if result.failure_rate > MAX_BACKFILL_FAILURE_RATE:
+                    logger.error(
+                        "backfill failed for %s of %s players (%.1f%%); refusing to "
+                        "settle, because the players it could not fetch would be graded "
+                        "as having scored zero",
+                        result.failed, result.attempted, 100 * result.failure_rate)
+                    return 5
 
         try:
             graded = settle_gameweek(conn, args.gameweek, args.model_version)
         except GameweekNotFinished as e:
             logger.error("%s", e)
             return 1
+        except ActualsMissing as e:
+            logger.error("%s", e)
+            return 6
         if not graded:
             logger.error(
                 "nothing to grade: no projection for gameweek %s was made from a snapshot "
