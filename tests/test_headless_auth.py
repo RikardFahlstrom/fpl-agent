@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import headless_auth, mcp_tools
+from fpl_agent import headless_auth, tools
 from fpl_agent.client import FPLClient
 from fpl_agent.state import store
 
@@ -297,27 +297,27 @@ class ReauthOnExpiryTests(unittest.IsolatedAsyncioTestCase):
 
 class ReadOnlyGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_only_blocks_transfers_before_touching_the_account(self) -> None:
-        previous = mcp_tools._active_session_id
+        previous = tools.get_active_session()
         # No session is registered, so if the guard fails to fire the tool would
         # report an authentication error instead of a read-only refusal.
-        mcp_tools._active_session_id = None
+        tools.set_active_session(None)
         try:
             with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "true"}):
-                result = await mcp_tools.make_transfers(["Salah"], ["Haaland"])
+                result = await tools.make_transfers(["Salah"], ["Haaland"])
         finally:
-            mcp_tools._active_session_id = previous
+            tools.set_active_session(previous)
 
         self.assertIn("read-only", result)
         self.assertIn("FPL_READ_ONLY", result)
 
     async def test_transfers_are_allowed_when_not_read_only(self) -> None:
-        previous = mcp_tools._active_session_id
-        mcp_tools._active_session_id = None
+        previous = tools.get_active_session()
+        tools.set_active_session(None)
         try:
             with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "false"}):
-                result = await mcp_tools.make_transfers(["Salah"], ["Haaland"])
+                result = await tools.make_transfers(["Salah"], ["Haaland"])
         finally:
-            mcp_tools._active_session_id = previous
+            tools.set_active_session(previous)
 
         # Falls through the guard to the normal authentication check.
         self.assertIn("Not authenticated", result)

@@ -9,7 +9,7 @@ mcp_tools and delegate to it, so the formatting lives in exactly one place.
 Only the resources whose output has no tool equivalent are implemented here.
 """
 
-from .mcp_tools import (
+from .tools import (
     _ensure_reference_data,
     _format_player_details,
     _get_client,

@@ -6,9 +6,9 @@ here reaches the FPL API.
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from fpl_agent import mcp_prompts, mcp_tools  # noqa: F401  (registers prompts)
+from fpl_agent import mcp_prompts, tools  # noqa: F401  (registers prompts)
 from fpl_agent.client import FPLClient
-from fpl_agent.mcp_tools import mcp
+from fpl_agent.tools import mcp
 from fpl_agent.models import BootstrapData, FixtureData
 from fpl_agent.state import SessionStore, store
 
@@ -120,7 +120,7 @@ class _StoreFixture(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._saved = (store.bootstrap_data, store.fixtures_data,
                        dict(store.player_name_map), dict(store.player_id_map),
-                       mcp_tools._active_session_id)
+                       tools.get_active_session())
         store.bootstrap_data = BootstrapData(**_bootstrap())
         store._build_player_indices()
         store.fixtures_data = [FixtureData(**f) for f in
@@ -129,12 +129,12 @@ class _StoreFixture(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         (store.bootstrap_data, store.fixtures_data,
-         store.player_name_map, store.player_id_map,
-         mcp_tools._active_session_id) = self._saved
+         store.player_name_map, store.player_id_map, session) = self._saved
+        tools.set_active_session(session)
 
     def activate(self, client):
         store.active_sessions["regression"] = client
-        mcp_tools._active_session_id = "regression"
+        tools.set_active_session("regression")
         self.addCleanup(store.active_sessions.pop, "regression", None)
 
     async def call_tool(self, name, args=None):
