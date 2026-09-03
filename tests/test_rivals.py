@@ -3,6 +3,11 @@ import os
 import unittest
 
 from fpl_agent import rivals, storage
+from fpl_agent.state import SessionStore
+
+
+def storage_store():
+    return SessionStore()
 from fpl_agent.recommend import (
     DIFFERENTIAL_EO, TEMPLATE_EO, ownership_profile,
 )
@@ -16,30 +21,74 @@ def league(league_id=1, name="Mini", league_type="x", rank_count=6):
 class CapturableLeagueTests(unittest.TestCase):
     def test_global_leagues_are_skipped(self):
         """FPL's own leagues are type 's' - Overall has ~9.9 million entries."""
-        user = {"leagues": {"classic": [
-            league(314, "Overall", "s", 9904802),
-            league(226, "Sweden", "s", 165632),
-            league(18891, "Copperminers", "x", 6),
-        ]}}
-        kept = rivals.capturable_leagues(user)
+        leagues = [league(314, "Overall", "s", 9904802),
+                   league(226, "Sweden", "s", 165632),
+                   league(18891, "Copperminers", "x", 6)]
+        kept = rivals.capturable_leagues(leagues)
         self.assertEqual([lg["id"] for lg in kept], [18891])
 
     def test_large_private_leagues_are_skipped(self):
-        user = {"leagues": {"classic": [league(1, "Big", "x", 11143), league(2, "Small", "x", 8)]}}
-        self.assertEqual([lg["id"] for lg in rivals.capturable_leagues(user)], [2])
+        leagues = [league(1, "Big", "x", 11143), league(2, "Small", "x", 8)]
+        self.assertEqual([lg["id"] for lg in rivals.capturable_leagues(leagues)], [2])
 
     def test_the_cap_is_adjustable(self):
-        user = {"leagues": {"classic": [league(1, "Mid", "x", 120)]}}
-        self.assertEqual(rivals.capturable_leagues(user, max_rivals=50), [])
-        self.assertEqual(len(rivals.capturable_leagues(user, max_rivals=200)), 1)
+        leagues = [league(1, "Mid", "x", 120)]
+        self.assertEqual(rivals.capturable_leagues(leagues, max_rivals=50), [])
+        self.assertEqual(len(rivals.capturable_leagues(leagues, max_rivals=200)), 1)
 
     def test_global_can_be_forced(self):
-        user = {"leagues": {"classic": [league(314, "Overall", "s", 20)]}}
-        self.assertEqual(len(rivals.capturable_leagues(user, include_global=True)), 1)
+        leagues = [league(314, "Overall", "s", 20)]
+        self.assertEqual(len(rivals.capturable_leagues(leagues, include_global=True)), 1)
 
     def test_leagues_without_a_count_are_kept(self):
-        user = {"leagues": {"classic": [league(1, "Unknown size", "x", None)]}}
-        self.assertEqual(len(rivals.capturable_leagues(user)), 1)
+        leagues = [league(1, "Unknown size", "x", None)]
+        self.assertEqual(len(rivals.capturable_leagues(leagues)), 1)
+
+
+class LeagueSourceTests(unittest.IsolatedAsyncioTestCase):
+    """Regression: /me/ does not carry league membership.
+
+    It returns only `player` and `watched`. Reading leagues from it silently yielded an
+    empty list, so every league tool reported "not found" for leagues the user is in.
+    """
+
+    class _Client:
+        user_info = {"player": {"entry": 8884192}, "watched": []}   # a real /me/ shape
+
+        def __init__(self):
+            self.entry_calls = 0
+
+        async def get_manager_entry(self, entry_id):
+            self.entry_calls += 1
+            return {"leagues": {"classic": [
+                {"id": 920863, "name": "The inner", "league_type": "x", "rank_count": 6},
+                {"id": 314, "name": "Overall", "league_type": "s", "rank_count": 9904802},
+            ]}}
+
+    async def test_leagues_come_from_the_entry_endpoint(self):
+        isolated = storage_store()
+        client = self._Client()
+        leagues = await isolated.get_user_leagues(client)
+        self.assertEqual([lg["id"] for lg in leagues], [920863, 314])
+        self.assertEqual(client.entry_calls, 1)
+
+    async def test_the_result_is_cached_per_entry(self):
+        isolated = storage_store()
+        client = self._Client()
+        await isolated.get_user_leagues(client)
+        await isolated.get_user_leagues(client)
+        self.assertEqual(client.entry_calls, 1, "entry/{id}/ should not be refetched")
+
+    async def test_find_league_by_name_uses_it(self):
+        isolated = storage_store()
+        found = await isolated.find_league_by_name(self._Client(), "The inner")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["id"], 920863)
+
+    async def test_no_entry_id_yields_no_leagues(self):
+        class _Anonymous:
+            user_info = {"player": None, "watched": []}
+        self.assertEqual(await storage_store().get_user_leagues(_Anonymous()), [])
 
 
 class OwnershipTests(unittest.TestCase):

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import snapshot
+from fpl_agent import headless_auth, snapshot
 
 
 class ReadinessTests(unittest.TestCase):
@@ -96,8 +96,8 @@ class SessionEstablishmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_without_auto_login_no_session_is_attempted(self):
         os.environ.pop("FPL_AUTO_LOGIN", None)
-        with mock.patch.object(snapshot, "bootstrap_session") as bootstrap:
-            client, authenticated = await snapshot.authenticated_client()
+        with mock.patch.object(headless_auth, "bootstrap_session") as bootstrap:
+            client, authenticated = await headless_auth.authenticated_client()
         bootstrap.assert_not_called()
         self.assertFalse(authenticated)
         self.assertIsNotNone(client)
@@ -105,33 +105,33 @@ class SessionEstablishmentTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_session_is_established_when_configured(self):
         os.environ["FPL_AUTO_LOGIN"] = "true"
         sentinel = object()
-        with mock.patch.object(snapshot, "bootstrap_session",
+        with mock.patch.object(headless_auth, "bootstrap_session",
                                return_value="session-1") as bootstrap, \
-             mock.patch.object(snapshot.store, "get_client", return_value=sentinel):
-            client, authenticated = await snapshot.authenticated_client()
+             mock.patch.object(headless_auth.store, "get_client", return_value=sentinel):
+            client, authenticated = await headless_auth.authenticated_client()
         bootstrap.assert_awaited_once()
         self.assertTrue(authenticated)
         self.assertIs(client, sentinel)
 
     async def test_a_failed_login_reports_unauthenticated(self):
         os.environ["FPL_AUTO_LOGIN"] = "true"
-        with mock.patch.object(snapshot, "bootstrap_session", return_value=None):
-            client, authenticated = await snapshot.authenticated_client()
+        with mock.patch.object(headless_auth, "bootstrap_session", return_value=None):
+            client, authenticated = await headless_auth.authenticated_client()
         self.assertFalse(authenticated)
         self.assertIsNotNone(client, "the public market is still capturable")
 
     async def test_a_raising_login_does_not_crash_the_snapshot(self):
         os.environ["FPL_AUTO_LOGIN"] = "true"
-        with mock.patch.object(snapshot, "bootstrap_session",
+        with mock.patch.object(headless_auth, "bootstrap_session",
                                side_effect=RuntimeError("chromium missing")):
-            client, authenticated = await snapshot.authenticated_client()
+            client, authenticated = await headless_auth.authenticated_client()
         self.assertFalse(authenticated)
 
     async def test_a_session_without_a_registered_client_is_not_authenticated(self):
         os.environ["FPL_AUTO_LOGIN"] = "true"
-        with mock.patch.object(snapshot, "bootstrap_session", return_value="session-1"), \
-             mock.patch.object(snapshot.store, "get_client", return_value=None):
-            client, authenticated = await snapshot.authenticated_client()
+        with mock.patch.object(headless_auth, "bootstrap_session", return_value="session-1"), \
+             mock.patch.object(headless_auth.store, "get_client", return_value=None):
+            client, authenticated = await headless_auth.authenticated_client()
         self.assertFalse(authenticated)
 
 
