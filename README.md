@@ -189,6 +189,7 @@ export FPL_AUTO_LOGIN=true          # restore from cache, else log in with crede
 export FPL_READ_ONLY=true           # refuse make_transfers; analyse and report only
 export FPL_EMAIL=you@example.com
 export FPL_PASSWORD=...             # inject from your secret store, never commit
+export FPL_RIVAL_LEAGUES=920863     # measure differentials against this league only
 export FPL_MCP_TRANSPORT=streamable-http
 PYTHONPATH=src uv run python -m fpl_agent.main
 ```
@@ -199,6 +200,7 @@ PYTHONPATH=src uv run python -m fpl_agent.main
 | `FPL_READ_ONLY` | `false` | Block `make_transfers`; everything else stays available |
 | `FPL_EMAIL` / `FPL_PASSWORD` | unset | Credentials for unattended login |
 | `FPL_TOKEN_CACHE` | `~/.config/fpl-mcp/session.json` | Where the session token is cached |
+| `FPL_RIVAL_LEAGUES` | unset | Comma-separated league ids to measure ownership against; unset means every private league under the rival cap |
 
 On startup the server restores the cached session and validates it against `/me`, only falling back
 to a browser login when there is no usable token. If a token expires mid-run, the next API call

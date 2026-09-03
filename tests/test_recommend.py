@@ -8,7 +8,8 @@ from fpl_agent import recommend, storage
 from test_scoring import WEIGHTS
 
 
-def element(element_id, team, element_type, cost, xg=0.5, likelihood=0, percent=0.0):
+def element(element_id, team, element_type, cost, xg=0.5, likelihood=0, percent=0.0,
+            projected=None):
     return {
         "id": element_id, "web_name": f"P{element_id}", "first_name": "F",
         "second_name": f"S{element_id}", "team": team, "element_type": element_type,
@@ -18,8 +19,10 @@ def element(element_id, team, element_type, cost, xg=0.5, likelihood=0, percent=
         "expected_assists_per_90": "0.2", "expected_goals_conceded_per_90": "1.1",
         "starts_per_90": "1.0", "penalties_order": None, "news": "",
         "price_change_percent": str(percent), "price_change_locked_until": None,
-        "price_change_projections": [{"offset": 0, "projected_percent": str(percent),
-                                      "likelihood": likelihood}],
+        "price_change_projections": [
+            {"offset": 0,
+             "projected_percent": str(percent if projected is None else projected),
+             "likelihood": likelihood}],
         "transfers_in_event": 1000, "transfers_out_event": 100,
     }
 
@@ -110,15 +113,46 @@ class RecommendTests(unittest.TestCase):
             self.assertGreater(r["xp_delta"], 0)
 
     def test_a_closing_window_is_flagged(self):
-        """A rising target that the budget only just covers must be marked urgent."""
+        """A target Very Likely to rise that the budget only just covers is urgent.
+
+        Predicted Progress must exceed 100%: that is FPL's own threshold, and 96.4%
+        progress with a 106% prediction is exactly the shape of a player rising tonight.
+        """
         elements = [element(1, team=1, element_type=3, cost=50, xg=0.10),
                     element(2, team=2, element_type=3, cost=50, xg=0.90,
-                            likelihood=5, percent=96.4)]
+                            likelihood=5, percent=96.4, projected=106.0)]
         conn = self._seed(bank=0, elements=elements)   # budget exactly 50
         results = recommend.recommend(conn, weeks=3, limit=50)
         self.assertTrue(results)
         self.assertEqual(results[0]["urgency"], "tonight")
-        self.assertIn("rising", results[0]["affordability"]["reason"])
+        self.assertIn("very likely to rise", results[0]["affordability"]["reason"])
+        self.assertIn("predicted progress", results[0]["affordability"]["reason"])
+
+    def test_unowned_candidates_are_differentials_not_unknown(self):
+        """Regression: a player in nobody's squad was labelled unknown and lost.
+
+        That is where the edge lives - 0% ownership in your league is the strongest
+        differential there is.
+        """
+        conn = self._seed()
+        conn.executemany(
+            "INSERT OR REPLACE INTO rival_squad VALUES (?,?,?,?,?,?,?)",
+            [(900 + i, 2, 1, 1, 1, 0, 0) for i in range(4)])  # rivals all own element 1
+        conn.commit()
+
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        incoming = {r["in"]["element_id"]: r["in"] for r in results}
+        self.assertIn(2, incoming)
+        self.assertEqual(incoming[2]["profile"], "differential")
+        self.assertEqual(incoming[2]["league_eo"], 0.0)
+        # and the owned player they are replacing reads as template
+        self.assertEqual(results[0]["out"]["profile"], "template")
+
+    def test_profiles_are_unknown_before_any_rivals_are_captured(self):
+        conn = self._seed()
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        self.assertEqual(results[0]["in"]["profile"], "unknown")
+        self.assertIsNone(results[0]["in"]["league_eo"])
 
     def test_requires_a_captured_squad(self):
         conn = self._seed(squad_ids=())
