@@ -158,6 +158,22 @@ CREATE TABLE IF NOT EXISTS projection (
     UNIQUE (snapshot_id, gameweek, element_id, model_version)
 );
 
+CREATE TABLE IF NOT EXISTS outcome (
+    projection_id   INTEGER PRIMARY KEY REFERENCES projection(id),
+    element_id      INTEGER NOT NULL,
+    gameweek        INTEGER NOT NULL,
+    model_version   TEXT NOT NULL,
+    expected_points REAL NOT NULL,
+    actual_points   REAL NOT NULL,
+    error           REAL NOT NULL,
+    p_start         REAL,
+    now_cost        INTEGER,
+    element_type    INTEGER,
+    evaluated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcome_gw ON outcome(gameweek, model_version);
+
 CREATE TABLE IF NOT EXISTS league (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
