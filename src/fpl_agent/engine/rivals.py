@@ -22,10 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import config, storage
-from .client import FPLClient
-from .headless_auth import authenticated_client
-from .state import store
+from .. import config
+from . import storage
+from ..client import FPLClient
+from ..headless_auth import authenticated_client
+from ..state import store
 
 logger = logging.getLogger("fpl_rivals")
 

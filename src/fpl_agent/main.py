@@ -13,10 +13,10 @@ try:
     import uvicorn
 
     from . import config
-    from . import mcp_prompts, mcp_resources  # noqa: F401  (registers prompts/resources)
+    from .mcp import prompts, resources  # noqa: F401  (registers prompts/resources)
     from .headless_auth import bootstrap_session, env_flag
-    from .tools import mcp
-    from .web import app
+    from .mcp.tools import mcp
+    from .mcp.web import app
 
     sys.stderr.write("DEBUG: Imports successful (tools, resources, prompts).\n")
     sys.stderr.flush()

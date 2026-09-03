@@ -1,6 +1,6 @@
 """Club-level tools: information, squads and fixture runs."""
 
-from ..state import store
+from ...state import store
 from .core import mcp
 from .core import _difficulty_bar, _with_client
 

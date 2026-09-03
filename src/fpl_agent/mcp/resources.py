@@ -31,7 +31,7 @@ from .tools import (
     mcp,
     search_players_by_team,
 )
-from .state import store
+from ..state import store
 
 # Resources name the tool that establishes a session, so their wording differs
 # slightly from the tools' own guard.

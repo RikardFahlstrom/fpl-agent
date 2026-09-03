@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fpl_agent import recommend, storage
+from fpl_agent.engine import recommend, storage
 from test_scoring import WEIGHTS
 
 

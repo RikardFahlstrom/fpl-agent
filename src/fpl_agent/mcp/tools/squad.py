@@ -1,7 +1,7 @@
 """Tools for the authenticated manager's own squad, transfers and chips."""
 
-from ..models import TransferPayload
-from ..state import store
+from ...models import TransferPayload
+from ...state import store
 from .core import NOT_AUTHENTICATED
 from .core import logger
 from datetime import datetime, timezone

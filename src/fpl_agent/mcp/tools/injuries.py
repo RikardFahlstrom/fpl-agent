@@ -1,6 +1,6 @@
 """Availability tools, backed by RotoWire lineup predictions."""
 
-from ..rotowire_scraper import RotoWireLineupScraper
+from ...rotowire_scraper import RotoWireLineupScraper
 from .core import mcp
 from .core import _with_client
 

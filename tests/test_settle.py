@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fpl_agent import settle, storage
-from fpl_agent.projection import MODEL_VERSION
-from fpl_agent.settle import GameweekNotFinished
+from fpl_agent.engine import settle, storage
+from fpl_agent.engine.projection import MODEL_VERSION
+from fpl_agent.engine.settle import GameweekNotFinished
 
 
 def _seed_outcomes(conn, rows):

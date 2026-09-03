@@ -1,6 +1,6 @@
 """Player search, detail and comparison tools."""
 
-from ..state import store
+from ...state import store
 from .core import mcp
 from .core import _format_player_details, _is_ambiguous, _is_confident, _with_client
 

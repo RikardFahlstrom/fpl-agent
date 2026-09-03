@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import headless_auth, tools
+from fpl_agent import headless_auth
+from fpl_agent.mcp import tools
 from fpl_agent.client import FPLClient
 from fpl_agent.state import store
 

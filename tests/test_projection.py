@@ -3,11 +3,11 @@ import json
 import math
 import unittest
 
-from fpl_agent import projection, storage
-from fpl_agent.projection import (
+from fpl_agent.engine import projection, storage
+from fpl_agent.engine.projection import (
     availability, clean_sheet_probability, project_player, shrink, start_rate,
 )
-from fpl_agent.scoring import Scoring
+from fpl_agent.engine.scoring import Scoring
 from test_scoring import WEIGHTS
 
 
@@ -54,8 +54,8 @@ class AvailabilityTests(unittest.TestCase):
 
     def test_a_published_lineup_overrides_the_historical_start_rate(self):
         """Selection comes from the lineup; fitness still comes from FPL's flag."""
-        from fpl_agent.projection import project_player
-        from fpl_agent.scoring import Scoring
+        from fpl_agent.engine.projection import project_player
+        from fpl_agent.engine.scoring import Scoring
         from test_scoring import WEIGHTS
 
         history = {"appearances": 10.0, "starts": 10.0, "bonus": 0.0,
@@ -74,8 +74,8 @@ class AvailabilityTests(unittest.TestCase):
 
     def test_an_unavailable_player_stays_out_even_if_a_lineup_names_him(self):
         """Fitness and selection are different questions; the flag still applies."""
-        from fpl_agent.projection import project_player
-        from fpl_agent.scoring import Scoring
+        from fpl_agent.engine.projection import project_player
+        from fpl_agent.engine.scoring import Scoring
         from test_scoring import WEIGHTS
 
         row = {"element_id": 1, "minutes": 900, "status": "i",

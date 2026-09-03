@@ -20,7 +20,7 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Optional
 
-from .rotowire_scraper import LineupPlayer, MatchLineup
+from ..rotowire_scraper import LineupPlayer, MatchLineup
 
 logger = logging.getLogger("fpl_lineups")
 

@@ -6,9 +6,9 @@ here reaches the FPL API.
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from fpl_agent import mcp_prompts, tools  # noqa: F401  (registers prompts)
+from fpl_agent.mcp import prompts, tools  # noqa: F401  (registers prompts)
 from fpl_agent.client import FPLClient
-from fpl_agent.tools import mcp
+from fpl_agent.mcp.tools import mcp
 from fpl_agent.models import BootstrapData, FixtureData
 from fpl_agent.state import SessionStore, store
 

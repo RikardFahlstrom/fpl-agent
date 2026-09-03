@@ -1,6 +1,6 @@
 """League standings and rival-manager tools."""
 
-from ..state import store
+from ...state import store
 from .core import mcp
 from .core import _with_client
 

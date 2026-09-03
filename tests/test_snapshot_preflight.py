@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import headless_auth, snapshot
+from fpl_agent import headless_auth
+from fpl_agent.engine import snapshot
 
 
 class ReadinessTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from fpl_agent import tools
+from fpl_agent.mcp import tools
 from fpl_agent.models import TransfersData
 from fpl_agent.state import store
 

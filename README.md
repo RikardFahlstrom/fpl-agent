@@ -97,8 +97,10 @@ version on the same gameweeks rather than silently replacing it.
 ## Layout
 
 ```
-src/fpl_agent/       engine (storage, projection, scoring, pricing, lineups,
-                     rivals, recommend, settle) and MCP server (mcp_*, web, auth)
+src/fpl_agent/
+  engine/            capture, projection, pricing, rivals, recommend, settle
+  mcp/               server: tools/, resources, prompts, web
+  (root)             auth, client, config, models, state, rotowire_scraper
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify
 docs/                PLAN.md, SCHEDULING.md
 learnings/           what the model learned, as markdown with frontmatter

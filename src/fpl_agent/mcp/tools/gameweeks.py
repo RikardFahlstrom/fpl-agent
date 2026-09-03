@@ -1,6 +1,6 @@
 """Gameweek and fixture tools."""
 
-from ..state import store
+from ...state import store
 from datetime import datetime, timezone
 from .core import mcp
 from .core import _with_client

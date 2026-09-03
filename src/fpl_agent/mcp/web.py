@@ -3,8 +3,8 @@ from html import escape
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 
-from .headless_auth import establish_session
-from .state import store
+from ..headless_auth import establish_session
+from ..state import store
 
 app = FastAPI()
 

@@ -24,11 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from . import config, lineups, storage
-from .client import FPLClient
-from .headless_auth import authenticated_client, cache_path, env_flag
-from .rotowire_scraper import RotoWireLineupScraper
-from .state import store
+from .. import config
+from . import lineups, storage
+from ..client import FPLClient
+from ..headless_auth import authenticated_client, cache_path, env_flag
+from ..rotowire_scraper import RotoWireLineupScraper
+from ..state import store
 
 logger = logging.getLogger("fpl_snapshot")
 
