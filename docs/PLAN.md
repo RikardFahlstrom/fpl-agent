@@ -223,7 +223,7 @@ With `FPL_AUTO_LOGIN` and `FPL_READ_ONLY` already in place, a scheduled nightly
 | **P1** | Schema, daily snapshot, backfill actuals | **Before the next deadline** |
 | **P2** | Projection engine, `game_config` parsing | After P1 has data |
 | **P3** | Price/urgency signals, `logs/actions.jsonl` | After P2 |
-| **P4** | Settle, calibration slices, `learnings/` | Needs one settled gameweek |
+| **P4** | Settle, calibration slices, `learnings/` | Built; first real numbers need GW3 to finish |
 | **P5** | Feed learnings back into weights | Needs ≥3 gameweeks of calibration |
 
 P1 is the only phase with a real deadline. Everything after it can take its time.
