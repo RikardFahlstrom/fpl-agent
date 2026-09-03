@@ -8,7 +8,6 @@ from typing import Optional, List
 from playwright.async_api import async_playwright
 
 # Configure logging to see what's happening
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fpl_auth")
 
 

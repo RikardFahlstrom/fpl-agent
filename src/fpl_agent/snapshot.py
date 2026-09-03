@@ -3,21 +3,30 @@
 Run daily. Price changes resolve nightly (~01:30 UK), so a weekly capture would miss the
 price dynamics entirely - and none of it can be recovered after the fact.
 
-    python -m fpl_agent.snapshot                 # capture, skip if already done today
-    python -m fpl_agent.snapshot --force         # capture regardless
-    python -m fpl_agent.snapshot --backfill      # also pull per-gameweek actuals
-    python -m fpl_agent.snapshot --backfill-only # actuals only, no new snapshot
+A snapshot without a session captures the market but not your squad, and selling
+prices, bank and free transfers exist in no public endpoint - so that half is lost for
+good, silently, unless something checks first. Capture therefore refuses to run
+half-blind unless explicitly told to.
+
+    python -m fpl_agent.snapshot                  # capture, skip if already done today
+    python -m fpl_agent.snapshot --force          # capture regardless
+    python -m fpl_agent.snapshot --allow-partial  # market only, knowingly without a squad
+    python -m fpl_agent.snapshot --backfill       # also pull per-gameweek actuals
+    python -m fpl_agent.snapshot --backfill-only  # actuals only, no new snapshot
 """
 
 import argparse
 import asyncio
 import logging
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from . import storage
 from .client import FPLClient
+from .headless_auth import cache_path, env_flag
 from .state import store
 
 logger = logging.getLogger("fpl_snapshot")
@@ -25,6 +34,57 @@ logger = logging.getLogger("fpl_snapshot")
 # element-summary is one request per player; this bounds concurrency so a backfill of
 # ~650 players does not open 650 sockets against the FPL API at once.
 BACKFILL_CONCURRENCY = 8
+
+
+@dataclass
+class Readiness:
+    """Whether a snapshot will capture everything, and what is missing if not."""
+    complete: bool
+    missing: list[str]
+    detail: list[str]
+
+
+def auth_readiness() -> Readiness:
+    """Check the configuration a full snapshot needs, before spending a request on it.
+
+    A cached session is enough on its own: credentials are only needed to create one.
+    """
+    missing: list[str] = []
+    detail: list[str] = []
+
+    cached = cache_path()
+    has_cache = cached.exists()
+    detail.append(f"token cache {'found' if has_cache else 'absent'} at {cached}")
+
+    if not env_flag("FPL_AUTO_LOGIN"):
+        missing.append("FPL_AUTO_LOGIN")
+        detail.append("FPL_AUTO_LOGIN is not set, so no session is established at startup")
+
+    if not has_cache:
+        for name in ("FPL_EMAIL", "FPL_PASSWORD"):
+            if not os.environ.get(name, "").strip():
+                missing.append(name)
+        if "FPL_EMAIL" in missing or "FPL_PASSWORD" in missing:
+            detail.append("no cached session and no credentials to create one")
+
+    return Readiness(complete=not missing, missing=missing, detail=detail)
+
+
+def report_readiness(readiness: Readiness) -> None:
+    for line in readiness.detail:
+        logger.info("  %s", line)
+    if readiness.complete:
+        logger.info("auth ready: this snapshot will include your squad")
+        return
+    logger.warning("auth incomplete - missing: %s", ", ".join(readiness.missing))
+    logger.warning(
+        "  a snapshot now records the market but NOT your squad. Selling prices, bank, "
+        "free transfers and chips exist in no public endpoint, so that data is lost for "
+        "this point in time and cannot be recovered later.")
+    logger.warning(
+        "  fix: export FPL_AUTO_LOGIN=true with FPL_EMAIL and FPL_PASSWORD, or log in "
+        "once through the local browser flow to create the token cache.")
+    logger.warning("  to capture the market anyway, re-run with --allow-partial")
 
 
 async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
@@ -94,6 +154,12 @@ async def _run(args) -> int:
     client = FPLClient(store=store)
     try:
         if not args.backfill_only:
+            readiness = auth_readiness()
+            report_readiness(readiness)
+            if not readiness.complete and not args.allow_partial:
+                logger.error("refusing to take a partial snapshot; see above")
+                return 2
+
             if storage.snapshot_taken_today(conn) and not args.force:
                 logger.info("a snapshot already exists for today; use --force to add another")
             else:
@@ -129,6 +195,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="also pull per-gameweek actuals for every known player")
     parser.add_argument("--backfill-only", action="store_true",
                         help="pull actuals without taking a new snapshot")
+    parser.add_argument("--allow-partial", action="store_true",
+                        help="capture the market even though the squad cannot be captured")
     parser.add_argument("--kind", default="manual", help="label for this snapshot")
     args = parser.parse_args(argv)
 
