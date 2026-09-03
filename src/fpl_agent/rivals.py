@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 from . import config, storage
 from .client import FPLClient
+from .headless_auth import authenticated_client
 from .state import store
 
 logger = logging.getLogger("fpl_rivals")
@@ -62,10 +63,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def capturable_leagues(user_info: dict, max_rivals: int = DEFAULT_MAX_RIVALS,
+def capturable_leagues(leagues: list[dict], max_rivals: int = DEFAULT_MAX_RIVALS,
                        include_global: bool = False) -> list[dict]:
-    """The user's leagues worth capturing: private, and small enough to mean something."""
-    leagues = (user_info.get("leagues") or {}).get("classic") or []
+    """The leagues worth capturing: private, and small enough to mean something.
+
+    Takes the league list rather than /me/, which does not carry league membership.
+    """
     keep = []
     for league in leagues:
         if not include_global and league.get("league_type") != PRIVATE_LEAGUE_TYPE:
@@ -180,12 +183,13 @@ def league_ownership(conn: sqlite3.Connection, gameweek: int,
 
 async def _run(args) -> int:
     conn = storage.connect(args.db)
-    client = FPLClient(store=store)
+    client, authenticated = await authenticated_client()
     try:
-        if not client.user_info:
+        if not authenticated or not client.user_info:
             logger.error(
                 "no authenticated session: league membership comes from /me/. "
-                "Capture a snapshot with FPL_AUTO_LOGIN set, or pass --league.")
+                "Set FPL_AUTO_LOGIN with credentials or a cached session, or pass "
+                "--league to name the leagues directly.")
             return 1
         own_entry = store.get_user_entry_id(client)
 
@@ -197,7 +201,8 @@ async def _run(args) -> int:
             logger.error("no completed gameweek to capture; run a backfill first")
             return 1
 
-        leagues = capturable_leagues(client.user_info, args.max_rivals, args.include_global)
+        leagues = capturable_leagues(
+            await store.get_user_leagues(client), args.max_rivals, args.include_global)
         wanted = args.league or configured_league_ids()
         if wanted:
             leagues = [lg for lg in leagues if lg["id"] in set(wanted)]

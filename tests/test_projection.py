@@ -42,6 +42,21 @@ class AvailabilityTests(unittest.TestCase):
         self.assertEqual(start_rate({"appearances": 4.0, "starts": 2.0}), 0.5)
         self.assertEqual(start_rate({}), projection.BASE_START_PROB)
 
+    def test_no_appearances_once_the_season_has_started_is_evidence(self):
+        """A fit player nobody has picked in two gameweeks is not an 85% starter.
+
+        Regression: reserve goalkeepers projected 12.54 xP over three gameweeks and
+        ranked among the best value in the game.
+        """
+        self.assertEqual(start_rate({}, season_started=True),
+                         projection.UNUSED_START_PROB)
+        self.assertLess(projection.UNUSED_START_PROB, projection.BASE_START_PROB)
+
+    def test_a_player_with_appearances_is_unaffected_by_the_season_flag(self):
+        history = {"appearances": 2.0, "starts": 2.0}
+        self.assertEqual(start_rate(history, season_started=True), 1.0)
+        self.assertEqual(start_rate(history, season_started=False), 1.0)
+
 
 class ShrinkageTests(unittest.TestCase):
     def test_no_evidence_returns_the_prior(self):

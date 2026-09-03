@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from fpl_agent import settle, storage
+from fpl_agent.projection import MODEL_VERSION
 from fpl_agent.settle import GameweekNotFinished
 
 
@@ -17,11 +18,11 @@ def _seed_outcomes(conn, rows):
         conn.execute(
             """INSERT INTO projection (id, snapshot_id, gameweek, element_id,
                model_version, expected_points, p_start, expected_minutes, fixture_count,
-               components, created_at) VALUES (?,?,2,?, '0.1.0', ?, ?, 80, 1, '{}', 't')""",
-            (i, snapshot_id, i, expected, p_start))
+               components, created_at) VALUES (?,?,2,?, ?, ?, ?, 80, 1, '{}', 't')""",
+            (i, snapshot_id, i, MODEL_VERSION, expected, p_start))
     conn.executemany(
-        "INSERT OR REPLACE INTO outcome VALUES (?,?,2,'0.1.0',?,?,?,?,?,?,'t')",
-        [(i, i, expected, actual, expected - actual, p_start, cost, element_type)
+        "INSERT OR REPLACE INTO outcome VALUES (?,?,2,?,?,?,?,?,?,?,'t')",
+        [(i, i, MODEL_VERSION, expected, actual, expected - actual, p_start, cost, element_type)
          for i, (expected, actual, p_start, cost, element_type) in enumerate(rows, 1)])
     conn.commit()
 
@@ -43,7 +44,7 @@ class SettleTests(unittest.TestCase):
             (element_id, f"P{element_id}", "F", "S", 1, element_type))
 
     def _projection(self, snapshot_id, element_id, gameweek, expected, p_start=1.0,
-                    now_cost=55, model_version="0.1.0"):
+                    now_cost=55, model_version=MODEL_VERSION):
         self.conn.execute(
             """INSERT OR REPLACE INTO player_snapshot (snapshot_id, element_id, now_cost,
                minutes, status, raw) VALUES (?,?,?,900,'a','{}')""",
@@ -205,7 +206,7 @@ class LearningFileTests(unittest.TestCase):
         self.assertIn("status: proposed", text)       # drafted, never auto-applied
         self.assertIn("action: none yet", text)
         self.assertIn("gameweek: 2", text)
-        self.assertIn("model_version: 0.1.0", text)
+        self.assertIn(f"model_version: {MODEL_VERSION}", text)
         self.assertIn("over-projected", text)
         self.assertIn("| group | slice | n |", text)  # the evidence travels with it
 

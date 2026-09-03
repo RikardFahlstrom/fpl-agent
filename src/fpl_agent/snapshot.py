@@ -26,7 +26,7 @@ from typing import Optional
 
 from . import config, storage
 from .client import FPLClient
-from .headless_auth import cache_path, env_flag
+from .headless_auth import authenticated_client, cache_path, env_flag
 from .state import store
 
 logger = logging.getLogger("fpl_snapshot")
@@ -74,7 +74,7 @@ def report_readiness(readiness: Readiness) -> None:
     for line in readiness.detail:
         logger.info("  %s", line)
     if readiness.complete:
-        logger.info("auth ready: this snapshot will include your squad")
+        logger.info("auth configured; will try to establish a session before capturing")
         return
     logger.warning("auth incomplete - missing: %s", ", ".join(readiness.missing))
     logger.warning(
@@ -151,7 +151,7 @@ async def backfill_actuals(conn, client: FPLClient, element_ids: list[int]) -> i
 
 async def _run(args) -> int:
     conn = storage.connect(args.db)
-    client = FPLClient(store=store)
+    client, authenticated = await authenticated_client()
     try:
         if not args.backfill_only:
             readiness = auth_readiness()
@@ -159,6 +159,14 @@ async def _run(args) -> int:
             if not readiness.complete and not args.allow_partial:
                 logger.error("refusing to take a partial snapshot; see above")
                 return 2
+            # Configured but the login failed: the squad was promised and cannot be
+            # delivered, so do not quietly record half a snapshot.
+            if readiness.complete and not authenticated and not args.allow_partial:
+                logger.error(
+                    "auth is configured but no session could be established, so the "
+                    "squad cannot be captured. Fix the login, or re-run with "
+                    "--allow-partial to record the market alone.")
+                return 3
 
             if storage.snapshot_taken_today(conn) and not args.force:
                 logger.info("a snapshot already exists for today; use --force to add another")

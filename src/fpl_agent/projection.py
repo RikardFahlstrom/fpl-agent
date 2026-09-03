@@ -30,7 +30,7 @@ from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.1.0"
+MODEL_VERSION = "0.2.0"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
@@ -40,8 +40,13 @@ HORIZON_GAMEWEEKS = 3
 # Minutes a player gets when they start, and when they appear off the bench.
 START_MINUTES = 82.0
 CAMEO_MINUTES = 18.0
-# Chance an unflagged player with no history yet keeps starting.
+# Chance an unflagged player with no history yet keeps starting. Applies at the start of
+# a season, when nobody has appearances.
 BASE_START_PROB = 0.85
+# Once gameweeks have been played, a fit player with no appearance at all is not first
+# choice: absence of appearances is evidence, not absence of evidence. Without this a
+# reserve goalkeeper reads as an 85% starter and ranks among the best value in the game.
+UNUSED_START_PROB = 0.10
 # Chance a fit player who does not start still appears off the bench. Applies only to
 # available players: someone ruled out does not get a cameo.
 BENCH_CAMEO_PROB = 0.35
@@ -140,12 +145,16 @@ def availability(snap: sqlite3.Row) -> float:
     return 1.0
 
 
-def start_rate(history: dict[str, float]) -> float:
-    """How often this player starts, given they are available."""
+def start_rate(history: dict[str, float], season_started: bool = False) -> float:
+    """How often this player starts, given they are available.
+
+    `season_started` distinguishes the two reasons a player has no appearances: the
+    season has not begun, or he has been available and not picked.
+    """
     appearances = history.get("appearances", 0.0)
     if appearances:
         return max(0.0, min(1.0, history.get("starts", 0.0) / appearances))
-    return BASE_START_PROB
+    return UNUSED_START_PROB if season_started else BASE_START_PROB
 
 
 def clean_sheet_probability(expected_conceded: float) -> float:
@@ -155,10 +164,11 @@ def clean_sheet_probability(expected_conceded: float) -> float:
 
 def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
                    history: dict[str, float], scoring: Scoring,
-                   priors: dict[str, float], team_conceded: float) -> dict[str, Any]:
+                   priors: dict[str, float], team_conceded: float,
+                   season_started: bool = False) -> dict[str, Any]:
     """Expected points for one player over the given fixtures (0 for a blank, 2 for a double)."""
     available = availability(snap)
-    rate = start_rate(history)
+    rate = start_rate(history, season_started)
     p_start = available * rate
     p_appear = available * (rate + (1 - rate) * BENCH_CAMEO_PROB)
     expected_minutes = p_start * START_MINUTES + (p_appear - p_start) * CAMEO_MINUTES
@@ -308,6 +318,8 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     fixtures = _fixtures_by_team(conn, gameweek)
     priors = positional_priors(conn, snapshot["id"])
     team_conceded = team_conceded_rates(conn, snapshot["id"])
+    played = conn.execute("SELECT MAX(round) AS r FROM player_gameweek").fetchone()["r"]
+    season_started = bool(played)
     now = datetime.now(timezone.utc).isoformat()
 
     rows = []
@@ -323,6 +335,7 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
             history.get(snap["element_id"], {}), scoring,
             priors.get(position, {}),
             team_conceded.get(snap["team_id"], LEAGUE_CONCEDED_PER_90),
+            season_started,
         )
         rows.append((snapshot["id"], gameweek, snap["element_id"], model_version,
                      result["expected_points"], result["p_start"],

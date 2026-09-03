@@ -33,6 +33,10 @@ class SessionStore:
         # Fixtures data loaded on-demand from API
         self.fixtures_data: Optional[List[FixtureData]] = None
         
+        # Classic leagues per entry id. /me/ does not carry league membership, so it
+        # has to be fetched from entry/{id}/ and is worth holding on to.
+        self.league_cache: Dict[int, List[dict]] = {}
+
         # Player name lookup maps for intelligent searching
         # Maps normalized name -> list of player IDs (handles duplicates)
         self.player_name_map: Dict[str, List[int]] = {}
@@ -333,6 +337,28 @@ class SessionStore:
             return player.web_name
         return f"Unknown Player (ID: {element_id})"
     
+    async def get_user_leagues(self, client: FPLClient) -> List[dict]:
+        """The user's classic leagues.
+
+        /me/ returns only the player and their watchlist - league membership is not in
+        it - so this reads entry/{id}/ instead. Reading it from user_info silently
+        yielded an empty list, which made every league tool report "league not found"
+        for leagues the user is actually in.
+        """
+        entry_id = self.get_user_entry_id(client)
+        if not entry_id:
+            return []
+        if entry_id in self.league_cache:
+            return self.league_cache[entry_id]
+        try:
+            entry = await client.get_manager_entry(entry_id)
+        except Exception as e:
+            logger.error(f"Could not fetch leagues for entry {entry_id}: {e}")
+            return []
+        leagues = (entry.get("leagues") or {}).get("classic") or []
+        self.league_cache[entry_id] = leagues
+        return leagues
+
     async def find_league_by_name(self, client: FPLClient, league_name: str) -> Optional[dict]:
         """
         Find a league by name from the user's leagues.
@@ -344,11 +370,9 @@ class SessionStore:
         Returns:
             League dict with 'id' and 'name' if found, None otherwise
         """
-        if not client.user_info:
+        classic_leagues = await self.get_user_leagues(client)
+        if not classic_leagues:
             return None
-        
-        # Get all leagues the user is in
-        classic_leagues = client.user_info.get('leagues', {}).get('classic', [])
         
         # Normalize search name
         normalized_search = self._normalize_name(league_name)
@@ -434,7 +458,9 @@ class SessionStore:
         """
         if not client.user_info:
             return None
-        return client.user_info.get('player', {}).get('entry')
+        # /me/ returns {"player": null} when unauthenticated, and a default only applies
+        # to a missing key, not a null one.
+        return (client.user_info.get('player') or {}).get('entry')
     
     def enrich_gameweek_history(self, history: list[dict]) -> list[dict]:
         """

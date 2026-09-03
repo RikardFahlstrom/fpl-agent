@@ -249,3 +249,36 @@ async def reauth_hook(client: FPLClient) -> bool:
     store.active_session_id = session_id
     logger.info("Re-authenticated the FPL session after an expired token.")
     return True
+
+
+async def authenticated_client() -> tuple[FPLClient, bool]:
+    """Establish a session if one is configured, and return the client to capture with.
+
+    Checking the configuration is not the same as having a session: the preflight only
+    proves the settings exist, and something has to actually log in. Returns the
+    authenticated client when that succeeds, otherwise a bare client that can still read
+    the public market.
+    """
+    if not env_flag("FPL_AUTO_LOGIN"):
+        return FPLClient(store=store), False
+
+    try:
+        session_id = await bootstrap_session()
+    except Exception as e:
+        logger.error("could not establish a session: %s", e)
+        return FPLClient(store=store), False
+
+    if not session_id:
+        logger.error(
+            "login did not produce a session. The credential path drives a headless "
+            "browser, so check `uv run playwright install chromium` has been run and "
+            "that FPL_EMAIL / FPL_PASSWORD are correct.")
+        return FPLClient(store=store), False
+
+    client = store.get_client(session_id)
+    if client is None:
+        logger.error("session %s established but no client was registered", session_id)
+        return FPLClient(store=store), False
+
+    logger.info("session established")
+    return client, True
