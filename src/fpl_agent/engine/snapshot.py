@@ -38,6 +38,28 @@ logger = logging.getLogger("fpl_snapshot")
 BACKFILL_CONCURRENCY = 8
 
 
+# A backfill that lost more than this fraction of its players did not fetch the
+# gameweek; grading against what it did fetch would score the missing players as zeroes.
+MAX_BACKFILL_FAILURE_RATE = 0.05
+
+
+@dataclass
+class BackfillResult:
+    """What a backfill actually fetched, so a caller can refuse to trust it.
+
+    The FPL API refuses requests intermittently. A per-player failure is only a warning
+    here, but the count has to reach the caller: a settle that grades after 652 silent
+    failures reports a confident bias against actuals that were never fetched.
+    """
+    rows: int        # player_gameweek rows written
+    attempted: int   # players requested
+    failed: int      # element-summary calls that raised
+
+    @property
+    def failure_rate(self) -> float:
+        return self.failed / self.attempted if self.attempted else 0.0
+
+
 @dataclass
 class Readiness:
     """Whether a snapshot will capture everything, and what is missing if not."""
@@ -138,7 +160,8 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
     return snapshot_id
 
 
-async def backfill_actuals(conn, client: FPLClient, element_ids: list[int]) -> int:
+async def backfill_actuals(conn, client: FPLClient,
+                           element_ids: list[int]) -> BackfillResult:
     """Pull per-gameweek actuals for the given players into player_gameweek.
 
     Safe to re-run: rows are keyed on (element_id, round) and replaced, so a settled
@@ -163,7 +186,7 @@ async def backfill_actuals(conn, client: FPLClient, element_ids: list[int]) -> i
 
     conn.commit()
     logger.info("backfilled %s player-gameweek rows", total)
-    return total
+    return BackfillResult(rows=total, attempted=len(element_ids), failed=0)
 
 
 async def _run(args) -> int:
