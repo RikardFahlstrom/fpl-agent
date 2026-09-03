@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from . import storage
+from . import config, storage
 from .client import FPLClient
 from .headless_auth import cache_path, env_flag
 from .state import store
@@ -199,6 +199,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="capture the market even though the squad cannot be captured")
     parser.add_argument("--kind", default="manual", help="label for this snapshot")
     args = parser.parse_args(argv)
+
+    config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     return asyncio.run(_run(args))

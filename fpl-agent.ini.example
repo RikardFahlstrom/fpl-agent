@@ -1,0 +1,25 @@
+; Copy to fpl-agent.ini and fill in. That filename is gitignored.
+;
+;   cp fpl-agent.ini.example fpl-agent.ini && chmod 600 fpl-agent.ini
+;
+; Every setting here is an alternative to the matching environment variable, and the
+; environment always wins - so a scheduled run can override the file without editing it.
+; The password is stored in plaintext, so keep the file owner-readable only.
+
+[auth]
+; Restore a cached session at startup, else log in with the credentials below.
+auto_login = true
+email =
+password =
+; Refuse make_transfers. Recommended for anything unattended.
+read_only = true
+; token_cache = ~/.config/fpl-mcp/session.json
+
+[rivals]
+; League ids to measure ownership against, comma-separated.
+; Leave empty to use every private league under the rival cap.
+leagues =
+
+[server]
+; transport = stdio
+; auth_port = 8020

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import storage
+from . import config, storage
 from .client import FPLClient
 from .state import store
 
@@ -227,6 +227,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--include-global", action="store_true",
                         help="also consider FPL's global leagues (usually far too large)")
     args = parser.parse_args(argv)
+
+    config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     return asyncio.run(_run(args))
