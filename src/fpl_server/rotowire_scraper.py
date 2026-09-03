@@ -4,7 +4,7 @@ RotoWire scraper for Premier League lineup predictions and injury status.
 import httpx
 from bs4 import BeautifulSoup
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)

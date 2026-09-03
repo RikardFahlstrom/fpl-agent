@@ -12,7 +12,7 @@ try:
 
     import uvicorn
 
-    from . import mcp_prompts, mcp_resources
+    from . import mcp_prompts, mcp_resources  # noqa: F401  (registers prompts/resources)
     from .headless_auth import bootstrap_session, env_flag
     from .mcp_tools import mcp
     from .web import app

@@ -2,7 +2,6 @@ from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
 import time
 import logging
-import asyncio
 from difflib import SequenceMatcher
 from .client import FPLClient
 from .models import BootstrapData, ElementData, EventData, FixtureData
@@ -48,7 +47,7 @@ class SessionStore:
         if self.bootstrap_data is None:
             try:
                 logger.info("Fetching bootstrap data from API...")
-                raw_data = await client.get_bootstrap_static()
+                raw_data = await client.get_bootstrap_data()
                 self.bootstrap_data = BootstrapData(**raw_data)
                 self._build_player_indices()
                 logger.info(f"Loaded {len(self.bootstrap_data.elements)} players from API")
@@ -248,6 +247,22 @@ class SessionStore:
         
         return player_matches
     
+    def upcoming_fixtures(self, team_id: int, *, from_gameweek: int, limit: int) -> List[FixtureData]:
+        """A team's next unplayed fixtures, earliest first.
+
+        Counts fixtures rather than gameweeks, so a finished current gameweek,
+        a blank or a double does not distort the horizon.
+        """
+        if not self.fixtures_data:
+            return []
+        upcoming = [
+            f for f in self.fixtures_data
+            if (f.team_h == team_id or f.team_a == team_id)
+            and f.event and f.event >= from_gameweek
+            and not f.finished
+        ]
+        return sorted(upcoming, key=lambda f: f.event)[:limit]
+    
     def get_player_by_id(self, player_id: int) -> Optional[ElementData]:
         """Get a player by their ID"""
         return self.player_id_map.get(player_id)
@@ -371,40 +386,35 @@ class SessionStore:
         """
         try:
             standings = await client.get_league_standings(league_id)
+            results = (standings.get('standings') or {}).get('results') or []
             
             # Normalize search name
             normalized_search = self._normalize_name(manager_name)
             
+            def _as_match(result: dict) -> dict:
+                return {
+                    'entry': result.get('entry'),
+                    'entry_name': result.get('entry_name'),
+                    'player_name': result.get('player_name')
+                }
+            
             # Search through standings
-            for result in standings.standings.results:
-                # Try matching against player_name (manager name)
-                if self._normalize_name(result.player_name) == normalized_search:
-                    return {
-                        'entry': result.entry,
-                        'entry_name': result.entry_name,
-                        'player_name': result.player_name
-                    }
+            for result in results:
+                # Try matching against player_name (manager name), then entry_name (team name)
+                if self._normalize_name(result.get('player_name', '')) == normalized_search:
+                    return _as_match(result)
                 
-                # Try matching against entry_name (team name)
-                if self._normalize_name(result.entry_name) == normalized_search:
-                    return {
-                        'entry': result.entry,
-                        'entry_name': result.entry_name,
-                        'player_name': result.player_name
-                    }
+                if self._normalize_name(result.get('entry_name', '')) == normalized_search:
+                    return _as_match(result)
             
             # Try substring matches
-            for result in standings.standings.results:
-                player_norm = self._normalize_name(result.player_name)
-                entry_norm = self._normalize_name(result.entry_name)
+            for result in results:
+                player_norm = self._normalize_name(result.get('player_name', ''))
+                entry_norm = self._normalize_name(result.get('entry_name', ''))
                 
                 if (normalized_search in player_norm or player_norm in normalized_search or
                     normalized_search in entry_norm or entry_norm in normalized_search):
-                    return {
-                        'entry': result.entry,
-                        'entry_name': result.entry_name,
-                        'player_name': result.player_name
-                    }
+                    return _as_match(result)
             
             return None
             
@@ -453,6 +463,8 @@ class SessionStore:
                     enriched_gw['opponent_team_short'] = opponent['short_name']
             
             enriched.append(enriched_gw)
+        
+        return enriched
     
     def enrich_fixtures(self, fixtures: list) -> list:
         """
@@ -495,8 +507,6 @@ class SessionStore:
                     fixture_dict['team_a_short'] = team_a['short_name']
             
             enriched.append(fixture_dict)
-        
-        return enriched
         
         return enriched
 

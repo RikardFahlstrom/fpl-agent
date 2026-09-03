@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
 
-from .models import Player, TransferPayload, BootstrapData
+from .models import Player, TransferPayload
 
 if TYPE_CHECKING:
     from .state import SessionStore
@@ -190,7 +190,10 @@ class FPLClient:
                     now_cost=element.now_cost,
                     form=element.form,
                     points_per_game=element.points_per_game,
-                    news=element.news
+                    news=element.news,
+                    status=element.status,
+                    total_points=getattr(element, 'total_points', 0),
+                    minutes=getattr(element, 'minutes', 0)
                 )
                 player.team_name = teams.get(player.team, "Unknown")
                 player.position = types.get(player.element_type, "Unk")
