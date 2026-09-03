@@ -120,6 +120,32 @@ class RecommendTests(unittest.TestCase):
         self.assertEqual(results[0]["urgency"], "tonight")
         self.assertIn("rising", results[0]["affordability"]["reason"])
 
+    def test_unowned_candidates_are_differentials_not_unknown(self):
+        """Regression: a player in nobody's squad was labelled unknown and lost.
+
+        That is where the edge lives - 0% ownership in your league is the strongest
+        differential there is.
+        """
+        conn = self._seed()
+        conn.executemany(
+            "INSERT OR REPLACE INTO rival_squad VALUES (?,?,?,?,?,?,?)",
+            [(900 + i, 2, 1, 1, 1, 0, 0) for i in range(4)])  # rivals all own element 1
+        conn.commit()
+
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        incoming = {r["in"]["element_id"]: r["in"] for r in results}
+        self.assertIn(2, incoming)
+        self.assertEqual(incoming[2]["profile"], "differential")
+        self.assertEqual(incoming[2]["league_eo"], 0.0)
+        # and the owned player they are replacing reads as template
+        self.assertEqual(results[0]["out"]["profile"], "template")
+
+    def test_profiles_are_unknown_before_any_rivals_are_captured(self):
+        conn = self._seed()
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        self.assertEqual(results[0]["in"]["profile"], "unknown")
+        self.assertIsNone(results[0]["in"]["league_eo"])
+
     def test_requires_a_captured_squad(self):
         conn = self._seed(squad_ids=())
         with self.assertRaises(LookupError):

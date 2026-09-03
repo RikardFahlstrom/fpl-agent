@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import pricing, storage
+from . import pricing, rivals, storage
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, project_horizon
 from .scoring import POSITIONS
 
@@ -30,6 +30,28 @@ logger = logging.getLogger("fpl_recommend")
 
 ACTIONS_LOG = Path("logs/actions.jsonl")
 DEFAULT_TEAM_LIMIT = 3
+
+# Effective ownership *within your leagues*, not globally. Above the template line a
+# player is owned by so much of your field that not owning him is itself the risk;
+# below the differential line he is where an edge can come from.
+TEMPLATE_EO = 0.50
+DIFFERENTIAL_EO = 0.15
+
+
+def ownership_profile(effective_ownership: Optional[float]) -> str:
+    """Classify a player by how much of your league owns him.
+
+    None means rivals have never been captured. It does not mean nobody owns him:
+    once rival squads exist, a player absent from every one of them is owned by 0%,
+    which is the strongest differential there is - not missing data.
+    """
+    if effective_ownership is None:
+        return "unknown"
+    if effective_ownership >= TEMPLATE_EO:
+        return "template"
+    if effective_ownership <= DIFFERENTIAL_EO:
+        return "differential"
+    return "balanced"
 
 
 def _squad(conn: sqlite3.Connection, snapshot_id: int) -> list[sqlite3.Row]:
@@ -72,6 +94,11 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     totals = project_horizon(conn, snapshot["gameweek"], weeks)
     outlooks = pricing.price_outlooks(conn, snapshot["id"])
     team_limit = _team_limit(conn)
+
+    # Ownership comes from the most recent gameweek rivals were captured for; squads are
+    # only public once a gameweek has started, so this necessarily lags the target one.
+    row = conn.execute("SELECT MAX(gameweek) AS gw FROM rival_squad").fetchone()
+    ownership = rivals.league_ownership(conn, row["gw"]) if row and row["gw"] else {}
 
     owned = {row["element_id"] for row in squad}
     club_counts: dict[int, int] = {}
@@ -117,14 +144,29 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
             if gain <= 0:
                 continue
 
+            # With rivals captured, absence from every squad is 0% ownership - the
+            # strongest differential - rather than an absence of information.
+            def eo(element_id: int) -> Optional[float]:
+                if not ownership:
+                    return None
+                entry = ownership.get(element_id)
+                return entry["effective_ownership"] if entry else 0.0
+
+            in_eo = eo(cand["element_id"])
+            out_eo = eo(out_row["element_id"])
+
             recommendations.append({
                 "gameweek": snapshot["gameweek"],
                 "horizon": weeks,
                 "out": {"element_id": out_row["element_id"], "name": out_row["web_name"],
-                        "selling_price": selling, "xp": round(out_xp, 2)},
+                        "selling_price": selling, "xp": round(out_xp, 2),
+                        "league_eo": round(out_eo, 3) if out_eo is not None else None,
+                        "profile": ownership_profile(out_eo)},
                 "in": {"element_id": cand["element_id"], "name": cand["web_name"],
                        "team": cand["team"], "now_cost": cand["now_cost"],
-                       "xp": round(totals.get(cand["element_id"], 0.0), 2)},
+                       "xp": round(totals.get(cand["element_id"], 0.0), 2),
+                       "league_eo": round(in_eo, 3) if in_eo is not None else None,
+                       "profile": ownership_profile(in_eo)},
                 "xp_delta": round(gain, 2),
                 "urgency": affordability.urgency,
                 "affordability": affordability.as_dict(),
@@ -206,6 +248,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                   + (f"   [{flag}]" if flag else ""))
             if r["urgency"] in ("tonight", "soon"):
                 print(f"   {r['affordability']['reason']}")
+
+            notes = []
+            if r["in"]["league_eo"] is not None:
+                notes.append(f"in: {r['in']['profile']} "
+                             f"({r['in']['league_eo'] * 100:.0f}% EO in your leagues)")
+            if r["out"]["profile"] == "template":
+                notes.append(f"selling {r['out']['name']}, owned by "
+                             f"{r['out']['league_eo'] * 100:.0f}% of your leagues - "
+                             f"a haul costs you ground")
+            if notes:
+                print(f"   {' | '.join(notes)}")
 
         if args.record:
             decision_id = record_decision(conn, recommendations[0])

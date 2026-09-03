@@ -158,6 +158,37 @@ CREATE TABLE IF NOT EXISTS projection (
     UNIQUE (snapshot_id, gameweek, element_id, model_version)
 );
 
+CREATE TABLE IF NOT EXISTS league (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL,
+    league_type  TEXT,
+    entry_count  INTEGER,
+    captured_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rival (
+    entry_id     INTEGER NOT NULL,
+    league_id    INTEGER NOT NULL REFERENCES league(id),
+    player_name  TEXT,
+    entry_name   TEXT,
+    rank         INTEGER,
+    total_points INTEGER,
+    PRIMARY KEY (entry_id, league_id)
+);
+
+CREATE TABLE IF NOT EXISTS rival_squad (
+    entry_id        INTEGER NOT NULL,
+    gameweek        INTEGER NOT NULL,
+    element_id      INTEGER NOT NULL,
+    position        INTEGER,
+    multiplier      INTEGER,
+    is_captain      INTEGER,
+    is_vice_captain INTEGER,
+    PRIMARY KEY (entry_id, gameweek, element_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rival_squad_gw ON rival_squad(gameweek, element_id);
+
 CREATE TABLE IF NOT EXISTS decision (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at    TEXT NOT NULL,

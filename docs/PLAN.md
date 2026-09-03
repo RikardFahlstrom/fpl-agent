@@ -249,3 +249,8 @@ the engine recommends, a human executes. `FPL_READ_ONLY` stays set for scheduled
   leagues* rather than globally. A template player everyone owns is a risk to skip, not
   an edge; a differential is only a differential relative to the people you are actually
   playing against.
+
+  Implemented in `rivals.py`. Only private leagues (`league_type` `x`) under a rival cap
+  are captured: FPL's own leagues are type `s` and unusably large — "Overall" carries
+  around 9.9 million entries. Effective ownership counts a captain twice, matching how
+  much of the field's score a player actually drives.
