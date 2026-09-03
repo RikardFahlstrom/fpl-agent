@@ -2443,20 +2443,24 @@ async def recommend_transfers() -> str:
                 continue
             
             # Get player's next 5 fixtures
+            upcoming = [
+                f for f in store.fixtures_data
+                if (f.team_h == player.team or f.team_a == player.team)
+                and f.event and f.event >= current_gw_id
+                and not f.finished
+            ]
+            # Take the next N unplayed fixtures rather than an N-gameweek window, so a
+            # finished current gameweek (or a blank) does not eat one of the slots.
             player_fixtures = []
-            for gw_num in range(current_gw_id, min(current_gw_id + 5, 39)):
-                gw_fixtures = [f for f in store.fixtures_data if f.event == gw_num]
+            for fixture in sorted(upcoming, key=lambda f: f.event)[:5]:
+                is_home = fixture.team_h == player.team
+                difficulty = fixture.team_h_difficulty if is_home else fixture.team_a_difficulty
                 
-                for fixture in gw_fixtures:
-                    if fixture.team_h == player.team or fixture.team_a == player.team:
-                        is_home = fixture.team_h == player.team
-                        difficulty = fixture.team_h_difficulty if is_home else fixture.team_a_difficulty
-                        
-                        player_fixtures.append({
-                            'gw': gw_num,
-                            'difficulty': difficulty,
-                            'is_home': is_home
-                        })
+                player_fixtures.append({
+                    'gw': fixture.event,
+                    'difficulty': difficulty,
+                    'is_home': is_home
+                })
             
             # Calculate priority score (higher = more urgent to transfer out)
             priority_score = 0

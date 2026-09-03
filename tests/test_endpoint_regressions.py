@@ -271,6 +271,34 @@ class FixtureWindowTests(_StoreFixture):
         self.assertIn("GW4", output)
 
 
+    async def test_transfer_candidate_fixtures_skip_the_finished_gameweek(self):
+        """recommend_transfers listed the current GW even once it had been played."""
+        bootstrap = _bootstrap()
+        bootstrap["elements"] = [_element(1, 1, status="i", news="Knock")]
+        store.bootstrap_data = BootstrapData(**bootstrap)
+        store._build_player_indices()
+
+        class _InjuredSquadClient(_FakeClient):
+            async def get_my_team(self, entry_id):
+                return {
+                    "picks": [{"element": 1, "position": 1, "multiplier": 1,
+                               "is_captain": False, "is_vice_captain": False,
+                               "selling_price": 50, "purchase_price": 50}],
+                    "chips": [],
+                    "transfers": {"bank": 5, "value": 1000, "limit": 1,
+                                  "made": 0, "cost": 4},
+                }
+
+        self.activate(_InjuredSquadClient())
+
+        output = await self.call_tool("recommend_transfers")
+
+        self.assertIn("Next fixtures:", output)
+        # GW2 is the current gameweek but is already finished, so it must not appear
+        self.assertNotIn("GW2(", output)
+        self.assertIn("GW3(", output)
+
+
 class SquadAnalysisTests(_StoreFixture):
     async def test_player_without_history_does_not_raise_keyerror(self):
         """The 'No data' branch omitted transfers_balance, which the formatter indexed."""
