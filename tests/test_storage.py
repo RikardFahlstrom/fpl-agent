@@ -3,7 +3,7 @@ import json
 import sqlite3
 import unittest
 
-from fpl_agent import storage
+from fpl_agent.engine import storage
 
 
 def _element(element_id=1, **overrides):

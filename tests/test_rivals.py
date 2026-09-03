@@ -2,13 +2,13 @@
 import os
 import unittest
 
-from fpl_agent import rivals, storage
-from fpl_agent.state import SessionStore
+from fpl_agent.engine import rivals, storage
+from fpl_agent.sessions import SessionRegistry
 
 
 def storage_store():
-    return SessionStore()
-from fpl_agent.recommend import (
+    return SessionRegistry()
+from fpl_agent.engine.recommend import (
     DIFFERENTIAL_EO, TEMPLATE_EO, ownership_profile,
 )
 

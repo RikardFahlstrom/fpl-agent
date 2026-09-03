@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import headless_auth, mcp_tools
+from fpl_agent import headless_auth
+from fpl_agent.mcp import tools
 from fpl_agent.client import FPLClient
-from fpl_agent.state import store
+from fpl_agent.sessions import sessions
 
 
 class _FakeResponse:
@@ -122,7 +123,7 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
         """A token the API no longer accepts must not be left on disk."""
 
         class _RejectedClient:
-            def __init__(self, store=None):
+            def __init__(self, reference=None):
                 self.api_token = None
                 self.user_info = None
 
@@ -151,7 +152,7 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_cached_token_restores_a_session(self) -> None:
         class _AcceptedClient:
-            def __init__(self, store=None):
+            def __init__(self, reference=None):
                 self.api_token = None
                 self.user_info = None
 
@@ -174,11 +175,11 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
 
         try:
             self.assertIsNotNone(session_id)
-            restored = store.get_client(session_id)
+            restored = sessions.get_client(session_id)
             self.assertEqual(restored.api_token, "Bearer test-token")
             self.assertTrue(self.cache_file.exists(), "a working token stays cached")
         finally:
-            store.active_sessions.pop(session_id, None)
+            sessions.active_sessions.pop(session_id, None)
 
 
 class InteractiveLoginPersistenceTests(unittest.IsolatedAsyncioTestCase):
@@ -205,12 +206,12 @@ class InteractiveLoginPersistenceTests(unittest.IsolatedAsyncioTestCase):
             client.user_info = {"player": {"entry": 1}}
 
         with mock.patch.object(headless_auth, "FPLAutomation", _Automation), \
-             mock.patch.object(headless_auth.store, "set_login_success", _set_login_success):
+             mock.patch.object(headless_auth.sessions, "set_login_success", _set_login_success):
             session_id, error = await headless_auth.establish_session("a@b.c", "pw")
 
         self.assertIsNone(error)
         self.assertIsNotNone(session_id)
-        headless_auth.store.active_sessions.pop(session_id, None)
+        headless_auth.sessions.active_sessions.pop(session_id, None)
 
     async def test_interactive_login_does_not_cache_the_token(self) -> None:
         with mock.patch.dict(
@@ -297,27 +298,27 @@ class ReauthOnExpiryTests(unittest.IsolatedAsyncioTestCase):
 
 class ReadOnlyGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_only_blocks_transfers_before_touching_the_account(self) -> None:
-        previous = mcp_tools._active_session_id
+        previous = tools.get_active_session()
         # No session is registered, so if the guard fails to fire the tool would
         # report an authentication error instead of a read-only refusal.
-        mcp_tools._active_session_id = None
+        tools.set_active_session(None)
         try:
             with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "true"}):
-                result = await mcp_tools.make_transfers(["Salah"], ["Haaland"])
+                result = await tools.make_transfers(["Salah"], ["Haaland"])
         finally:
-            mcp_tools._active_session_id = previous
+            tools.set_active_session(previous)
 
         self.assertIn("read-only", result)
         self.assertIn("FPL_READ_ONLY", result)
 
     async def test_transfers_are_allowed_when_not_read_only(self) -> None:
-        previous = mcp_tools._active_session_id
-        mcp_tools._active_session_id = None
+        previous = tools.get_active_session()
+        tools.set_active_session(None)
         try:
             with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "false"}):
-                result = await mcp_tools.make_transfers(["Salah"], ["Haaland"])
+                result = await tools.make_transfers(["Salah"], ["Haaland"])
         finally:
-            mcp_tools._active_session_id = previous
+            tools.set_active_session(previous)
 
         # Falls through the guard to the normal authentication check.
         self.assertIn("Not authenticated", result)

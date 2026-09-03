@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import config, lineups, storage
+from .. import config
+from . import lineups, storage
 from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")

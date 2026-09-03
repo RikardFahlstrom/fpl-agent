@@ -1,7 +1,7 @@
 """Scoring tests. The reconstruction cases are real gameweeks from the 2026/27 season."""
 import unittest
 
-from fpl_agent.scoring import DC_THRESHOLDS, Scoring
+from fpl_agent.engine.scoring import DC_THRESHOLDS, Scoring
 
 WEIGHTS = {
     "long_play": 2, "short_play": 1, "saves": 1, "assists": 3, "bonus": 1,

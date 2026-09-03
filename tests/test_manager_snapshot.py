@@ -1,9 +1,9 @@
 import unittest
 from types import SimpleNamespace
 
-from fpl_agent import mcp_tools
+from fpl_agent.mcp import tools
 from fpl_agent.models import TransfersData
-from fpl_agent.state import store
+from fpl_agent.sessions import sessions
 
 
 class _PreseasonClient:
@@ -60,20 +60,20 @@ class ManagerSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preseason_nullable_transfer_state_is_preserved(self) -> None:
         session_id = "preseason-nullable-regression"
-        previous_active_session_id = mcp_tools._active_session_id
-        previous_client = store.active_sessions.get(session_id)
+        previous_active_session_id = tools.get_active_session()
+        previous_client = sessions.active_sessions.get(session_id)
         client = _PreseasonClient()
-        store.active_sessions[session_id] = client
-        mcp_tools._active_session_id = session_id
+        sessions.active_sessions[session_id] = client
+        tools.set_active_session(session_id)
 
         try:
-            snapshot = await mcp_tools.get_manager_snapshot()
+            snapshot = await tools.get_manager_snapshot()
         finally:
-            mcp_tools._active_session_id = previous_active_session_id
+            tools.set_active_session(previous_active_session_id)
             if previous_client is None:
-                store.active_sessions.pop(session_id, None)
+                sessions.active_sessions.pop(session_id, None)
             else:
-                store.active_sessions[session_id] = previous_client
+                sessions.active_sessions[session_id] = previous_client
 
         self.assertEqual(client.entry_id, 431892)
         self.assertEqual(snapshot["status"], "connected")
@@ -88,20 +88,20 @@ class ManagerSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authenticated_schema_diagnostic_is_redacted(self) -> None:
         session_id = "schema-diagnostic-regression"
-        previous_active_session_id = mcp_tools._active_session_id
-        previous_client = store.active_sessions.get(session_id)
+        previous_active_session_id = tools.get_active_session()
+        previous_client = sessions.active_sessions.get(session_id)
         client = _PreseasonClient()
-        store.active_sessions[session_id] = client
-        mcp_tools._active_session_id = session_id
+        sessions.active_sessions[session_id] = client
+        tools.set_active_session(session_id)
 
         try:
-            diagnostic = await mcp_tools.get_authenticated_schema_diagnostics()
+            diagnostic = await tools.get_authenticated_schema_diagnostics()
         finally:
-            mcp_tools._active_session_id = previous_active_session_id
+            tools.set_active_session(previous_active_session_id)
             if previous_client is None:
-                store.active_sessions.pop(session_id, None)
+                sessions.active_sessions.pop(session_id, None)
             else:
-                store.active_sessions[session_id] = previous_client
+                sessions.active_sessions[session_id] = previous_client
 
         my_team = diagnostic["endpoints"]["/api/my-team/{entry_id}/"]
         self.assertTrue(diagnostic["redacted"])

@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import headless_auth, snapshot
+from fpl_agent import headless_auth
+from fpl_agent.engine import snapshot
 
 
 class ReadinessTests(unittest.TestCase):
@@ -107,7 +108,7 @@ class SessionEstablishmentTests(unittest.IsolatedAsyncioTestCase):
         sentinel = object()
         with mock.patch.object(headless_auth, "bootstrap_session",
                                return_value="session-1") as bootstrap, \
-             mock.patch.object(headless_auth.store, "get_client", return_value=sentinel):
+             mock.patch.object(headless_auth.sessions, "get_client", return_value=sentinel):
             client, authenticated = await headless_auth.authenticated_client()
         bootstrap.assert_awaited_once()
         self.assertTrue(authenticated)
@@ -130,7 +131,7 @@ class SessionEstablishmentTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_session_without_a_registered_client_is_not_authenticated(self):
         os.environ["FPL_AUTO_LOGIN"] = "true"
         with mock.patch.object(headless_auth, "bootstrap_session", return_value="session-1"), \
-             mock.patch.object(headless_auth.store, "get_client", return_value=None):
+             mock.patch.object(headless_auth.sessions, "get_client", return_value=None):
             client, authenticated = await headless_auth.authenticated_client()
         self.assertFalse(authenticated)
 

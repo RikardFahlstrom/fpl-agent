@@ -6,11 +6,12 @@ here reaches the FPL API.
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from fpl_agent import mcp_prompts, mcp_tools  # noqa: F401  (registers prompts)
+from fpl_agent.mcp import prompts, tools  # noqa: F401  (registers prompts)
 from fpl_agent.client import FPLClient
-from fpl_agent.mcp_tools import mcp
+from fpl_agent.mcp.tools import mcp
 from fpl_agent.models import BootstrapData, FixtureData
-from fpl_agent.state import SessionStore, store
+from fpl_agent.reference import ReferenceData, reference
+from fpl_agent.sessions import SessionRegistry, sessions
 
 
 def _event(event_id: int, *, current=False, next_=False, finished=False, deadline=None):
@@ -111,31 +112,31 @@ class _FakeClient:
         return {"history": list(self._history), "fixtures": [], "history_past": []}
 
     async def get_players(self):
-        return await FPLClient(store=store).get_players()
+        return await FPLClient(reference=reference).get_players()
 
 
 class _StoreFixture(unittest.IsolatedAsyncioTestCase):
     """Loads the shared store with local data and restores it afterwards."""
 
     def setUp(self):
-        self._saved = (store.bootstrap_data, store.fixtures_data,
-                       dict(store.player_name_map), dict(store.player_id_map),
-                       mcp_tools._active_session_id)
-        store.bootstrap_data = BootstrapData(**_bootstrap())
-        store._build_player_indices()
-        store.fixtures_data = [FixtureData(**f) for f in
+        self._saved = (reference.bootstrap_data, reference.fixtures_data,
+                       dict(reference.player_name_map), dict(reference.player_id_map),
+                       tools.get_active_session())
+        reference.bootstrap_data = BootstrapData(**_bootstrap())
+        reference._build_player_indices()
+        reference.fixtures_data = [FixtureData(**f) for f in
                                [_fixture(1, 2, 1, 2, True), _fixture(2, 3, 2, 1, False),
                                 _fixture(3, 4, 1, 2, False), _fixture(4, 5, 2, 1, False)]]
 
     def tearDown(self):
-        (store.bootstrap_data, store.fixtures_data,
-         store.player_name_map, store.player_id_map,
-         mcp_tools._active_session_id) = self._saved
+        (reference.bootstrap_data, reference.fixtures_data,
+         reference.player_name_map, reference.player_id_map, session) = self._saved
+        tools.set_active_session(session)
 
     def activate(self, client):
-        store.active_sessions["regression"] = client
-        mcp_tools._active_session_id = "regression"
-        self.addCleanup(store.active_sessions.pop, "regression", None)
+        sessions.active_sessions["regression"] = client
+        tools.set_active_session("regression")
+        self.addCleanup(sessions.active_sessions.pop, "regression", None)
 
     async def call_tool(self, name, args=None):
         result = await mcp.call_tool(name, args or {})
@@ -147,7 +148,7 @@ class _StoreFixture(unittest.IsolatedAsyncioTestCase):
 class BootstrapLoadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_ensure_bootstrap_data_uses_the_real_client_method(self):
         """ensure_bootstrap_data called a non-existent get_bootstrap_static()."""
-        isolated = SessionStore()
+        isolated = ReferenceData()
         client = _FakeClient()
 
         await isolated.ensure_bootstrap_data(client)
@@ -158,7 +159,7 @@ class BootstrapLoadingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("player1", isolated.player_name_map)
 
     async def test_ensure_bootstrap_data_is_cached(self):
-        isolated = SessionStore()
+        isolated = ReferenceData()
         client = _FakeClient()
 
         await isolated.ensure_bootstrap_data(client)
@@ -170,7 +171,7 @@ class BootstrapLoadingTests(unittest.IsolatedAsyncioTestCase):
 class EnrichmentTests(unittest.TestCase):
     def test_enrich_gameweek_history_returns_the_enriched_rows(self):
         """The function built `enriched` then fell off the end, returning None."""
-        isolated = SessionStore()
+        isolated = ReferenceData()
         isolated.bootstrap_data = BootstrapData(**_bootstrap())
         isolated._build_player_indices()
 
@@ -193,7 +194,7 @@ class LeagueStandingsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_find_manager_by_name_reads_the_dict_payload(self):
         """The store treated the standings dict as a pydantic model and always returned None."""
-        isolated = SessionStore()
+        isolated = SessionRegistry()
         client = _FakeClient(standings=self._standings())
 
         match = await isolated.find_manager_by_name(client, 314, "Alex Manager")
@@ -203,7 +204,7 @@ class LeagueStandingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match["entry_name"], "Team Alpha")
 
     async def test_find_manager_by_name_matches_team_name_and_substrings(self):
-        isolated = SessionStore()
+        isolated = SessionRegistry()
         client = _FakeClient(standings=self._standings())
 
         self.assertEqual((await isolated.find_manager_by_name(client, 314, "Team Alpha"))["entry"], 4242)
@@ -214,10 +215,10 @@ class LeagueStandingsTests(unittest.IsolatedAsyncioTestCase):
 class PlayerModelTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_players_exposes_fields_the_recommendation_tools_read(self):
         """recommend_transfers/recommend_chip_strategy read .status and .minutes off Player."""
-        isolated = SessionStore()
+        isolated = ReferenceData()
         isolated.bootstrap_data = BootstrapData(**_bootstrap())
         isolated._build_player_indices()
-        client = FPLClient(store=isolated)
+        client = FPLClient(reference=isolated)
 
         players = await client.get_players()
 
@@ -234,8 +235,8 @@ class CurrentGameweekTests(_StoreFixture):
         future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         bootstrap = _bootstrap()
         bootstrap["events"] = [_event(2, current=True, deadline=future), _event(3, next_=True)]
-        store.bootstrap_data = BootstrapData(**bootstrap)
-        store._build_player_indices()
+        reference.bootstrap_data = BootstrapData(**bootstrap)
+        reference._build_player_indices()
         self.activate(_FakeClient())
 
         output = await self.call_tool("get_current_gameweek")
@@ -247,8 +248,8 @@ class CurrentGameweekTests(_StoreFixture):
         past = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         bootstrap = _bootstrap()
         bootstrap["events"] = [_event(2, current=True, deadline=past), _event(3, next_=True)]
-        store.bootstrap_data = BootstrapData(**bootstrap)
-        store._build_player_indices()
+        reference.bootstrap_data = BootstrapData(**bootstrap)
+        reference._build_player_indices()
         self.activate(_FakeClient())
 
         output = await self.call_tool("get_current_gameweek")
@@ -275,8 +276,8 @@ class FixtureWindowTests(_StoreFixture):
         """recommend_transfers listed the current GW even once it had been played."""
         bootstrap = _bootstrap()
         bootstrap["elements"] = [_element(1, 1, status="i", news="Knock")]
-        store.bootstrap_data = BootstrapData(**bootstrap)
-        store._build_player_indices()
+        reference.bootstrap_data = BootstrapData(**bootstrap)
+        reference._build_player_indices()
 
         class _InjuredSquadClient(_FakeClient):
             async def get_my_team(self, entry_id):

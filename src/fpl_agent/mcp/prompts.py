@@ -6,7 +6,7 @@ and making strategic recommendations. They define the analysis framework and
 expected output format.
 """
 
-from .mcp_tools import mcp
+from .tools import mcp
 
 
 @mcp.prompt()

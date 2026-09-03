@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import config, pricing, rivals, storage
+from .. import config
+from . import pricing, rivals, storage
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, project_horizon
 from .scoring import POSITIONS
 

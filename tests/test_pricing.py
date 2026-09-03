@@ -6,8 +6,8 @@ Progress exceeds 100%, the player is considered Very Likely to rise or fall."
 import json
 import unittest
 
-from fpl_agent import pricing
-from fpl_agent.pricing import (
+from fpl_agent.engine import pricing
+from fpl_agent.engine.pricing import (
     APPROACHING_PROGRESS, VERY_LIKELY_PROGRESS, PriceOutlook, assess,
 )
 

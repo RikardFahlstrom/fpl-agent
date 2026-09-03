@@ -1,8 +1,8 @@
 """Resolving RotoWire lineups to FPL players, and feeding them into projections."""
 import unittest
 
-from fpl_agent import lineups, storage
-from fpl_agent.lineups import fold, resolve_element_id, squad_index
+from fpl_agent.engine import lineups, storage
+from fpl_agent.engine.lineups import fold, resolve_element_id, squad_index
 from fpl_agent.rotowire_scraper import LineupPlayer, MatchLineup
 
 BOOTSTRAP = {

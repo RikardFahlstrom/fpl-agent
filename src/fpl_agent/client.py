@@ -7,20 +7,20 @@ import httpx
 from .models import Player, TransferPayload
 
 if TYPE_CHECKING:
-    from .state import SessionStore
+    from .reference import ReferenceData
 
 logger = logging.getLogger("fpl_client")
 
 class FPLClient:
     BASE_URL = "https://fantasy.premierleague.com/api/"
     
-    def __init__(self, store: Optional['SessionStore'] = None):
+    def __init__(self, reference: Optional['ReferenceData'] = None):
         self.session: httpx.AsyncClient | None = None
         self._session_loop: asyncio.AbstractEventLoop | None = None
         self.api_token = None
         self.team_id: Optional[int] = None
         self.user_info: Optional[Dict[str, Any]] = None  # Store user info from /me
-        self._store = store
+        self._reference = reference
         self._reauth_hook = None
 
     def set_reauth_hook(self, hook) -> None:
@@ -172,8 +172,8 @@ class FPLClient:
     async def get_players(self) -> List[Player]:
         """Get all players using in-memory bootstrap data"""
         # Use in-memory data if available
-        if self._store and self._store.bootstrap_data:
-            data = self._store.bootstrap_data
+        if self._reference and self._reference.bootstrap_data:
+            data = self._reference.bootstrap_data
             teams = {t.id: t.name for t in data.teams}
             types = {t.id: t.singular_name_short for t in data.element_types}
             
@@ -224,11 +224,11 @@ class FPLClient:
             'FWD': [top 20 forwards]
         }
         """
-        if not self._store or not self._store.bootstrap_data:
+        if not self._reference or not self._reference.bootstrap_data:
             logger.warning("Bootstrap data not available for top players")
             return {'GKP': [], 'DEF': [], 'MID': [], 'FWD': []}
         
-        data = self._store.bootstrap_data
+        data = self._reference.bootstrap_data
         teams = {t.id: t.name for t in data.teams}
         types = {t.id: t.singular_name_short for t in data.element_types}
         
