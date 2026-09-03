@@ -46,8 +46,8 @@ make test
 ```
 
 `make deadline` runs the steps in order because the order matters: actuals feed the
-projection's rates, and rivals must exist before ownership means anything. Individual
-steps are available as `make snapshot`, `make project`, `make rivals`, `make recommend`.
+projection's rates, and rivals must exist before ownership means anything. Individual steps are `fpl-agent snapshot`, `fpl-agent project`, `fpl-agent rivals`,
+`fpl-agent recommend`, `fpl-agent settle` — run `fpl-agent` for the list.
 
 Snapshot daily. `bootstrap-static` serves current state only — prices, ownership and
 price forecasts are overwritten in place with no history endpoint — so a day not captured
