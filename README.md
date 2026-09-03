@@ -1,206 +1,24 @@
-# 🏆 FPL MCP Server - Your AI-Powered Fantasy Premier League Assistant
+# fpl-agent
 
-> Control your Fantasy Premier League team with your favourite LLM to help inform your decisions and gain more contextual insights based for your team
+A Fantasy Premier League decision engine. It captures the market daily, projects expected
+points for every player, ranks transfers against your own league's ownership, and grades
+its own projections once a gameweek finishes. An MCP server exposes the same data to
+Claude.
 
-
-A secure, feature-rich Model Context Protocol (MCP) server that connects your LLM (like Claude) to the Fantasy Premier League API, enabling intelligent team management, competitor analysis, and data-driven decision making.
-
-## 🌟 Why This Tool?
-
-Fantasy Premier League is complex. With 20 teams, 600+ players, injuries, form changes, and fixture difficulty to track, making optimal decisions is challenging. This MCP server gives your AI assistant **complete access** to FPL data, enabling:
-
-- 🔍 **Deep Competitor Analysis** - Spy on league rivals, analyze their teams, and understand why they're winning
-- 📊 **Intelligent Player Research** - Get comprehensive stats, fixture analysis, and injury updates
-- 🎯 **Strategic Planning** - Analyze fixture difficulty, identify transfer targets, and optimize your squad
-- 🏅 **League Intelligence** - Track standings, compare teams, and gain competitive insights
-- 🤖 **AI-Powered Decisions** - Let your LLM crunch the numbers and suggest optimal strategies
-
-## ✨ Key Features
-
-### 🔐 Secure Authentication
-- **Out-of-Band Login** - Your FPL credentials never touch the LLM
-- **Multi-User Support** - Multiple sessions with isolated authentication
-- **Session Management** - Secure token-based API access
-
-### 📈 Comprehensive Data Access
-
-#### Your Team Management
-- View current squad with prices and roles
-- Execute transfers with validation
-- Check team value and bank balance
-- Track transfer history and costs
-
-#### Player Intelligence
-- **Smart Search** - Fuzzy name matching handles typos and variations
-- **Detailed Stats** - Form, points per game, total points, ownership
-- **Injury Reports** - Real-time lineup predictions from RotoWire
-- **Fixture Analysis** - Upcoming opponents with difficulty ratings
-- **Historical Performance** - Past gameweek and season statistics
-- **Player Comparison** - Side-by-side analysis of multiple players
-
-#### Competitive Analysis
-- **League Standings** - View any league with pagination support
-- **Manager Performance** - Deep dive into any manager's stats and rankings
-- **Team Inspection** - See exactly what players competitors picked each gameweek
-- **Head-to-Head Comparison** - Compare multiple managers' teams side-by-side
-- **Captain Choices** - Analyze captaincy decisions across your league
-
-#### Strategic Planning
-- **Fixture Difficulty** - Analyze team schedules for transfer timing
-- **Gameweek Fixtures** - Complete fixture list with kickoff times
-- **Top Performers** - Best players by position based on form
-- **Team Squads** - Browse all players from specific teams
-- **Injury Avoidance** - Identify players to avoid before transfers
-
-### 🚀 Advanced Capabilities
-
-#### Circular Data Flow with Friendly Names
-The server enables **natural, circular exploration** of FPL data using friendly names:
-```
-Your Performance → Your Leagues → League Standings → Competitor Teams → Player Analysis
-     ↓                                                      ↓
-  Compare Teams ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ←
-```
-
-Example workflow using **only friendly names**:
-1. "How am I doing?" → Automatically uses your entry, shows your leagues
-2. "Show Greatest Fantasy Footy standings" → Find top competitors by league name
-3. "What team did Jaakko pick in GW13?" → Analyze selections by manager name
-4. "Compare my team to Jaakko's" → Understand performance differences
-5. "Tell me about Haaland's fixtures" → Research players by name
-6. "Compare Salah and Palmer" → Direct player comparison by names
-
-**No IDs needed anywhere!** The system resolves all names internally.
-
-#### Smart Caching
-- **4-Hour TTL** - Bootstrap and fixtures data cached locally
-- **Automatic Refresh** - Data updates when cache expires
-- **Fallback Support** - Uses expired cache if API fails
-- **Fast Responses** - Instant access to cached data
-
-#### Player Name Rehydration
-- **Automatic Translation** - Element IDs converted to player names
-- **Rich Context** - Full player info (team, position, price, form)
-- **Seamless Experience** - No manual ID lookups needed
-
-## 📋 Prerequisites
-
-1. **Install `uv`** (An extremely fast Python package manager):
-   * **Mac/Linux**:
-     ```bash
-     curl -LsSf https://astral.sh/uv/install.sh | sh
-     ```
-   * **Windows**:
-     ```powershell
-     powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-     ```
-
-## 🚀 Installation & Setup
-
-### 1. Clone and Install
+## Install
 
 ```bash
-# Clone the repository
-git clone <your-repo-url>
+git clone git@github.com:RikardFahlstrom/fpl-agent.git
 cd fpl-agent
-
-# Install dependencies
 uv sync
-
-# Install Playwright's managed Chromium (optional when Chrome/Chromium is installed)
-uv run playwright install chromium
+uv run playwright install chromium   # only for credential login
 ```
 
-Authentication first uses Playwright's matching managed Chromium. If that revision is not present,
-the server automatically falls back to `google-chrome-stable`, `google-chrome`, `chromium` or
-`chromium-browser` from `PATH`. On a graphical desktop the authentication browser runs minimised in
-normal Chrome mode, avoiding the Premier League account service's headless-browser differences. On
-a server without a display it uses headless mode. To select a browser or mode explicitly:
-
-```bash
-FPL_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable \
-  FPL_BROWSER_HEADLESS=false \
-  FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src uv run python -m fpl_agent.main
-```
-
-### 2. Verify Installation (Optional)
-
-Test the server locally before connecting to Claude:
-
-```bash
-export PYTHONPATH=src
-uv run python -m fpl_agent.main
-```
-
-You should see:
-```text
-Starting FPL Web Auth on http://127.0.0.1:8020
-Starting MCP Server (Stdio)...
-```
-
-Press `Ctrl+C` to stop.
-
-### Local FPLAgent application mode
-
-FPLAgent uses a separately running, localhost-only streamable HTTP transport so its application
-backend can perform the authentication handshake and read a structured manager snapshot:
-
-```bash
-FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src uv run python -m fpl_agent.main
-```
-
-This starts:
-
-- the local login page on `http://127.0.0.1:8020`;
-- the MCP endpoint on `http://127.0.0.1:8021/mcp`; and
-- the application-facing tools `get_auth_status`, `begin_web_login`, `poll_web_login` and
-  `get_manager_snapshot` alongside the existing MCP tools.
-
-`get_manager_snapshot` is a read-only, allowlist-friendly payload: 15 ordered picks, captaincy,
-purchase and current selling price, bank, squad value, free-transfer/cost state and chips. It never
-returns login credentials or OAuth tokens. Restart this MCP process after updating the server so
-FPLAgent receives the current snapshot schema.
-
-Keep the process running while using FPLAgent. Authentication is held in process memory and is lost
-when the server restarts. The HTTP endpoint includes powerful account tools and is intended only for
-localhost development; never expose port 8021 publicly.
-
-The port `8020` web server and port `8021` MCP transport use separate asyncio event loops. Login reads
-`/me` and then closes its web-loop HTTP pool; the stored token and manager metadata are loop-neutral,
-and MCP creates its own HTTP pool lazily for subsequent squad reads.
-
-Open FPLAgent after starting this process. The application checks `get_auth_status`; it silently
-syncs when the current process is already authenticated, otherwise it immediately presents an
-in-app login panel containing a cross-origin page served on port `8020`. There is no second tab or
-preliminary MCP login step. Email and password are submitted to the MCP web service directly rather
-than passing through the FPLAgent React client or application API. The application polls
-`poll_web_login`, accepts the entry ID returned by the authenticated FPL `/me` response, then imports
-`get_manager_snapshot`. Opening `http://127.0.0.1:8020` by itself only shows service status because
-there is no application login request to complete.
-
-### Unattended mode (scheduled agents)
-
-For a scheduled agent on a server with no human to complete the login form, the server can
-authenticate from credentials and keep the session across restarts. It is **off by default** —
-nothing below changes interactive use.
-
-```bash
-export FPL_AUTO_LOGIN=true          # restore from cache, else log in with credentials
-export FPL_READ_ONLY=true           # refuse make_transfers; analyse and report only
-export FPL_EMAIL=you@example.com
-export FPL_PASSWORD=...             # inject from your secret store, never commit
-export FPL_RIVAL_LEAGUES=920863     # measure differentials against this league only
-export FPL_MCP_TRANSPORT=streamable-http
-PYTHONPATH=src uv run python -m fpl_agent.main
-```
-
-### Local settings file
-
-Instead of exporting variables, copy the template and fill it in:
+## Configure
 
 ```bash
 cp fpl-agent.ini.example fpl-agent.ini
-chmod 600 fpl-agent.ini            # it holds a password in plaintext
+chmod 600 fpl-agent.ini              # it holds a password in plaintext
 ```
 
 ```ini
@@ -208,336 +26,92 @@ chmod 600 fpl-agent.ini            # it holds a password in plaintext
 auto_login = true
 email = you@example.com
 password = ...
-read_only = true
+read_only = true          ; refuse make_transfers; analyse and report only
 
 [rivals]
-leagues = 920863
+leagues = 920863          ; measure ownership against these leagues only
 ```
 
-`*.ini` is gitignored (with `!*.ini.example`), so any copy you make — under any name —
-is ignored by default. **The environment always wins**, so a scheduled run can override
-the file without editing it. Unrecognised keys are reported rather than silently skipped,
-and the loader warns if the file is readable beyond its owner.
+Every setting is also an environment variable (`FPL_AUTO_LOGIN`, `FPL_EMAIL`, …) and
+**the environment wins**, so a scheduled run can override the file. `*.ini` is gitignored.
+After the first login a token is cached in `~/.config/fpl-mcp/session.json`, and
+credentials are no longer needed.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `FPL_AUTO_LOGIN` | `false` | Enable session restore and credential login at startup |
-| `FPL_READ_ONLY` | `false` | Block `make_transfers`; everything else stays available |
-| `FPL_EMAIL` / `FPL_PASSWORD` | unset | Credentials for unattended login |
-| `FPL_TOKEN_CACHE` | `~/.config/fpl-mcp/session.json` | Where the session token is cached |
-| `FPL_RIVAL_LEAGUES` | unset | Comma-separated league ids to measure ownership against; unset means every private league under the rival cap |
+## Run
 
-On startup the server restores the cached session and validates it against `/me`, only falling back
-to a browser login when there is no usable token. If a token expires mid-run, the next API call
-returns 401, the session is renewed once, and the call is retried — so a long-lived process does not
-need babysitting.
-
-> ⚠️ **The token cache is an account credential.** It is written `0600`, and the token in it is
-> enough to execute transfers. Protect it like the password: never commit it, never include it in
-> backups. `FPL_READ_ONLY=true` is strongly recommended for any unattended deployment so an agent
-> cannot change your squad without you.
-
-Run it as a persistent service rather than starting it per task — that keeps the session warm and
-keeps browser logins rare:
-
-```ini
-# /etc/systemd/system/fpl-mcp.service
-[Service]
-WorkingDirectory=/opt/fpl-agent
-Environment=PYTHONPATH=src
-Environment=FPL_AUTO_LOGIN=true
-Environment=FPL_READ_ONLY=true
-Environment=FPL_MCP_TRANSPORT=streamable-http
-EnvironmentFile=/etc/fpl-mcp/credentials.env   # 0600, holds FPL_EMAIL and FPL_PASSWORD
-ExecStart=/usr/bin/uv run python -m fpl_agent.main
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
+```bash
+make deadline        # snapshot, backfill, project, capture rivals, recommend
+make settle GW=3     # after a gameweek: grade projections, draft a learning
+make test
 ```
 
-Point the scheduled agent at `http://127.0.0.1:8021/mcp`. Keep the bind on `127.0.0.1`: the endpoint
-exposes account tools and has no authentication of its own, so the agent should run on the same host.
+`make deadline` runs the steps in order because the order matters: actuals feed the
+projection's rates, and rivals must exist before ownership means anything. Individual
+steps are available as `make snapshot`, `make project`, `make rivals`, `make recommend`.
 
-The login browser needs Chromium on the server — `uv run playwright install chromium` plus
-`uv run playwright install-deps`, or set `FPL_BROWSER_EXECUTABLE` to an installed Chrome.
+Snapshot daily. `bootstrap-static` serves current state only — prices, ownership and
+price forecasts are overwritten in place with no history endpoint — so a day not captured
+can never be recovered. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for a launchd job.
 
-**If unattended logins start failing:** the Premier League account service treats headless browsers
-differently, and a datacenter IP attracts more scrutiny. Run under `Xvfb` with
-`FPL_BROWSER_HEADLESS=false` so Chrome presents as headful. Keeping the token cache healthy matters
-most — every avoided browser login is one fewer chance to be challenged.
+Snapshotting **refuses to run** if it cannot capture your squad, because selling prices,
+bank and free transfers exist in no public endpoint. Pass `--allow-partial` to take the
+market alone.
 
-### 3. Connect to Claude Desktop
+## Use from Claude
 
-#### Get Your Project Path
-
-* **Mac/Linux**: Run `pwd` in the project folder
-* **Windows**: Run `cd` in the project folder
-
-Copy the full absolute path.
-
-#### Configure Claude
-
-Open Claude's config file:
-* **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-* **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-agent` with your path). Use `--directory`
-rather than a `cwd` field — Claude Desktop does not reliably apply `cwd` before `uv` resolves the
-project, which makes `uv run` fall back to a bare system Python that can't find the `fpl_agent`
-module:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
+`%APPDATA%\Claude\claude_desktop_config.json`), replacing the path:
 
 ```json
 {
   "mcpServers": {
     "fpl": {
       "command": "uv",
-      "args": [
-        "--directory",
-        "/ABSOLUTE/PATH/TO/fpl-agent",
-        "run",
-        "python",
-        "-m",
-        "fpl_agent.main"
-      ],
-      "env": {
-        "PYTHONPATH": "/ABSOLUTE/PATH/TO/fpl-agent/src"
-      }
+      "args": ["--directory", "/ABSOLUTE/PATH/TO/fpl-agent",
+               "run", "python", "-m", "fpl_agent.main"],
+      "env": { "PYTHONPATH": "/ABSOLUTE/PATH/TO/fpl-agent/src" }
     }
   }
 }
 ```
 
-#### Restart Claude
+Use `--directory` rather than `cwd`: Claude Desktop does not reliably apply `cwd` before
+`uv` resolves the project. Restart Claude fully, then check Settings → Connectors.
 
-Quit Claude completely and reopen. An error notification popup will appear if something is wrong with connecting the MCP server. If not error, this is a good sign, but go to settings and check connectors to confirm fpl-agent is listed there.
+The server exposes 34 tools, 18 resources (`fpl://…`) and 7 prompts. Ask in names, not
+ids: *"compare Salah and Haaland"*, *"who should I transfer out?"*
 
-## 💡 Usage Examples
+## How it works
 
-### 🎯 Natural Conversation Flow
+| Stage | What it does |
+| --- | --- |
+| `snapshot` | Market, fixtures, scoring rules, your squad and predicted lineups into SQLite |
+| `projection` | Expected points per player over a 3-gameweek horizon, weights read from FPL's own `game_config` |
+| `rivals` | Rival squads from your leagues, for ownership relative to the people you actually play |
+| `recommend` | Ranks transfers on projected gain, price-window urgency and league ownership |
+| `settle` | Grades projections against actuals, slices the error, drafts a learning |
 
-The server uses **friendly names** instead of IDs, enabling natural conversations:
+Projections carry a `model_version`, so a weight change is measured against the previous
+version on the same gameweeks rather than silently replacing it.
 
-### Getting Started
-```
-You: "Log me into FPL"
-Claude: [Provides secure login link]
-You: [Click link, enter credentials, confirm]
-You: "I'm done"
-Claude: "✅ Authentication successful! Your session is now active."
-```
-
-### Your Team & Performance
-```
-"Show my current team and bank balance"
-"How am I doing?"  → Automatically uses your entry
-"What leagues am I in?"
-"Show me my performance"
-```
-
-### Player Research (Use Names, Not IDs!)
-```
-"Find me the top midfielders by form"
-"Compare Salah and Palmer"  → Just use player names!
-"Is Haaland injured?"
-"Show me Saka's upcoming fixtures"
-"Tell me about Mohamed Salah"  → Fuzzy matching handles variations
-```
-
-### Competitive Analysis (Use Friendly Names!)
-```
-"Show me the standings for Greatest Fantasy Footy"  → Use league name!
-"What team did Jaakko pick in gameweek 13?"  → Use manager name!
-"Tell me about Lewis's team in Greatest Fantasy Footy"
-"Compare Jaakko and Lewis in Greatest Fantasy Footy for gameweek 13"
-"Who did the top managers in my league captain this week?"
-```
-
-### Team & Fixture Analysis (Use Team Names!)
-```
-"What are Arsenal's next 5 fixtures?"  → Just use team name!
-"Show me Liverpool's fixture difficulty"
-"Which teams have the best fixtures?"
-"Show me all fixtures for gameweek 14"
-```
-
-### Strategic Planning
-```
-"Find players to avoid due to injuries"
-"Is Salah available to play?"  → Check specific player
-"Suggest transfers for next gameweek"
-"Compare Haaland and Watkins"  → Direct name comparison
-```
-
-### Advanced Analysis
-```
-"Analyze why Jaakko is beating me in Greatest Fantasy Footy"
-"Find differential picks in my league"
-"Which premium midfielder has the best value?"
-"Compare Arsenal and Man City players"
-```
-
-### 🔑 Key Principle: Names over IDs
+## Layout
 
 ```
-"Show Greatest Fantasy Footy standings"
-"What team did Jaakko pick?"
-"Compare Salah and Palmer"
+src/fpl_agent/       engine (storage, projection, scoring, pricing, lineups,
+                     rivals, recommend, settle) and MCP server (mcp_*, web, auth)
+.claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify
+docs/                PLAN.md, SCHEDULING.md
+learnings/           what the model learned, as markdown with frontmatter
+logs/actions.jsonl   decisions taken, append-only
 ```
 
-The system automatically:
-- Fetches your entry ID after login
-- Resolves league names from your leagues
-- Finds managers by name within leagues
-- Matches player names with fuzzy search
-- Converts team names to IDs internally
+`data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
+[CLAUDE.md](CLAUDE.md); the roadmap is in [docs/PLAN.md](docs/PLAN.md).
 
-## 🛠️ Available Tools
+## Credit
 
-The server provides **30+ MCP tools** organized by category. All tools use **friendly names** instead of IDs!
+Forked from [lewis-king/fpl-mcp-server](https://github.com/lewis-king/fpl-mcp-server).
 
-### Authentication
-- `login_to_fpl` - Generate secure login link
-- `check_login_status` - Verify authentication and activate session
+## Licence
 
-### Your Account
-- `get_my_info` - View your account, entry, and leagues
-- `get_my_squad` - View your current team
-- `get_my_performance` - Your stats, ranks, and league positions
-- `make_transfers` - Execute transfers using player names (irreversible!)
-
-### Player Research (Use Player Names!)
-- `search_players(name_query)` - Find players by name
-- `find_player(player_name)` - Intelligent fuzzy search with full details
-- `get_player_details(player_name)` - Detailed player info by name
-- `get_player_summary(player_name)` - Comprehensive analysis with fixtures
-- `compare_players(player_names)` - Side-by-side comparison using names
-- `get_top_players()` - Best performers by position
-- `search_players_by_team(team_name)` - Browse team squads by name
-
-### Injury & Availability
-- `get_injury_and_lineup_predictions()` - RotoWire lineup data
-- `get_players_to_avoid()` - Injury risk assessment
-- `check_player_availability(player_name)` - Check specific player status
-
-### Fixtures & Teams (Use Team Names!)
-- `get_fixtures_for_gameweek(gameweek)` - All matches in a gameweek
-- `analyze_team_fixtures(team_name, num_gameweeks)` - Fixture difficulty by team name
-- `get_team_info(team_name)` - Team strength ratings by name
-- `list_all_teams()` - All Premier League teams
-
-### Gameweek Information
-- `get_current_gameweek()` - Current/upcoming gameweek
-- `get_gameweek_info(gameweek_number)` - Detailed gameweek stats
-- `list_all_gameweeks()` - Season overview
-
-### Competitive Analysis (Use Friendly Names!)
-- `get_league_standings(league_name, page)` - League rankings by league name
-- `get_manager_gameweek_team(manager_name, league_name, gameweek)` - Inspect teams by manager name
-- `compare_managers(manager_names, league_name, gameweek)` - Multi-manager comparison by names
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Claude Desktop                       │
-│                    (Your AI Assistant)                       │
-└────────────────────────┬────────────────────────────────────┘
-                         │ MCP Protocol
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    FPL MCP Server                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │  MCP Tools   │  │  Data Cache  │  │  Auth System │     │
-│  │  (30+ tools) │  │  (4hr TTL)   │  │  (Secure)    │     │
-│  └──────────────┘  └──────────────┘  └──────────────┘     │
-└────────────────────────┬────────────────────────────────────┘
-                         │ HTTPS
-                         ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Fantasy Premier League API                      │
-│  • Bootstrap Data  • Fixtures  • Player Stats               │
-│  • Manager Data    • Leagues   • Gameweek Picks             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Components
-
-- **MCP Tools** - 30+ functions for FPL data access
-- **Smart Caching** - 4-hour TTL for bootstrap/fixtures data
-- **Player Rehydration** - Automatic ID-to-name conversion
-- **Secure Auth** - Out-of-band login flow
-- **RotoWire Integration** - Real-time injury updates
-
-## 🔧 Troubleshooting
-
-### Plug Icon Not Appearing
-
-**Check Logs:**
-* **Mac**: `tail -f ~/Library/Logs/Claude/mcp.log`
-* **Windows**: Check `%APPDATA%\Claude\logs\mcp.log`
-
-**Common Issues:**
-- Did you run `uv sync` first?
-- Is the `cwd` path in the JSON config correct (no typos)?
-- Is `uv` in your system PATH?
-- Try replacing `"command": "uv"` with the full path to your `uv` executable
-
-### Authentication Issues
-
-- Make sure you're using the correct FPL credentials
-- Check that the web server is running on port 8000
-- Try clearing browser cookies and logging in again
-
-### Data Not Loading
-
-- Check your internet connection
-- Verify the FPL API is accessible
-- Look for error messages in the logs
-- Try restarting the Claude Desktop app
-
-## 🤝 Contributing
-
-Contributions are welcome! Areas for improvement:
-
-- add understat and/or fbref stats to add better technical analysis to player data
-- Additional MCP tools for more FPL features
-- Enhanced fixture difficulty algorithms
-- Historical data analysis tools
-- Transfer suggestion algorithms
-- Price change predictions
-
-## 📄 License
-
-MIT License
-
-Copyright (c) 2025 Lewis King
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-## 🙏 Acknowledgments
-
-- Fantasy Premier League for API
-- RotoWire for injury and lineup data
-- The MCP community for the protocol
-- Claude for AI capabilities
-
----
-
-**Ready to dominate your FPL leagues with AI-powered insights? Get started now!** 🚀
+MIT — see [LICENSE](LICENSE).
