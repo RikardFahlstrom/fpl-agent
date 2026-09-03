@@ -154,6 +154,34 @@ class RecommendTests(unittest.TestCase):
         self.assertEqual(results[0]["in"]["profile"], "unknown")
         self.assertIsNone(results[0]["in"]["league_eo"])
 
+    def test_a_bench_upgrade_is_discounted_against_the_same_upgrade_in_the_xi(self):
+        """A bench player only scores through substitutions, so the slot is worth less.
+
+        Regression: the top six recommendations were all swaps for bench players,
+        including a reserve goalkeeper, because every slot counted the same.
+        """
+        elements = [element(1, team=1, element_type=3, cost=50, xg=0.10),   # starter
+                    element(5, team=1, element_type=3, cost=50, xg=0.10),   # bench
+                    element(2, team=2, element_type=3, cost=50, xg=0.90)]
+        conn = self._seed(squad_ids=(1, 5), elements=elements)
+        # element 5 sits at squad position 2, so move it to the bench
+        conn.execute("UPDATE my_squad SET position = 13 WHERE element_id = 5")
+        conn.commit()
+
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        by_out = {r["out"]["element_id"]: r for r in results}
+        self.assertIn(1, by_out)
+        self.assertIn(5, by_out)
+        self.assertEqual(by_out[1]["out"]["slot"], "xi")
+        self.assertEqual(by_out[5]["out"]["slot"], "bench")
+
+        # the underlying projection gain is the same; only the slot differs
+        self.assertAlmostEqual(by_out[1]["raw_xp_delta"], by_out[5]["raw_xp_delta"], places=2)
+        self.assertLess(by_out[5]["xp_delta"], by_out[1]["xp_delta"])
+        self.assertAlmostEqual(by_out[5]["xp_delta"],
+                               by_out[1]["xp_delta"] * recommend.BENCH_VALUE, places=2)
+        self.assertEqual(results[0]["out"]["slot"], "xi", "the XI upgrade must rank first")
+
     def test_requires_a_captured_squad(self):
         conn = self._seed(squad_ids=())
         with self.assertRaises(LookupError):

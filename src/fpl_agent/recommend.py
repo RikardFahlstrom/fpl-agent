@@ -37,6 +37,14 @@ DEFAULT_TEAM_LIMIT = 3
 TEMPLATE_EO = 0.50
 DIFFERENTIAL_EO = 0.15
 
+# Squad positions 1-11 start; 12-15 are the bench.
+STARTING_XI = 11
+# A bench player only scores through an automatic substitution, so improving a bench
+# slot is worth a fraction of the same upgrade in the XI. Without this the recommender
+# happily proposes a large "gain" on a reserve goalkeeper, which returns nothing.
+# A stated assumption, to be fitted once outcomes exist.
+BENCH_VALUE = 0.15
+
 
 def ownership_profile(effective_ownership: Optional[float]) -> str:
     """Classify a player by how much of your league owns him.
@@ -120,6 +128,8 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
 
     recommendations = []
     for out_row in squad:
+        starts = (out_row["position"] or 99) <= STARTING_XI
+        slot_value = 1.0 if starts else BENCH_VALUE
         out_xp = totals.get(out_row["element_id"], 0.0)
         selling = out_row["selling_price"] or 0
         budget = bank + selling
@@ -143,9 +153,11 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
             if affordability.margin < 0:
                 continue
 
-            gain = totals.get(cand["element_id"], 0.0) - out_xp
-            if gain <= 0:
+            raw_gain = totals.get(cand["element_id"], 0.0) - out_xp
+            if raw_gain <= 0:
                 continue
+            # What the swap is actually worth, given the slot it lands in.
+            gain = raw_gain * slot_value
 
             # With rivals captured, absence from every squad is 0% ownership - the
             # strongest differential - rather than an absence of information.
@@ -163,6 +175,7 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
                 "horizon": weeks,
                 "out": {"element_id": out_row["element_id"], "name": out_row["web_name"],
                         "selling_price": selling, "xp": round(out_xp, 2),
+                        "slot": "xi" if starts else "bench",
                         "league_eo": round(out_eo, 3) if out_eo is not None else None,
                         "profile": ownership_profile(out_eo)},
                 "in": {"element_id": cand["element_id"], "name": cand["web_name"],
@@ -171,6 +184,7 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
                        "league_eo": round(in_eo, 3) if in_eo is not None else None,
                        "profile": ownership_profile(in_eo)},
                 "xp_delta": round(gain, 2),
+                "raw_xp_delta": round(raw_gain, 2),
                 "urgency": affordability.urgency,
                 "affordability": affordability.as_dict(),
             })
@@ -245,12 +259,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         for i, r in enumerate(recommendations, 1):
             flag = {"tonight": "ACT TONIGHT", "soon": "watch price",
                     "none": "", "missed": "out of reach"}[r["urgency"]]
+            bench = "  [bench slot]" if r["out"]["slot"] == "bench" else ""
             print(f"{i}. {r['in']['name']} ({r['in']['team']}) "
                   f"£{r['in']['now_cost'] / 10:.1f}m  for  {r['out']['name']} "
-                  f"£{r['out']['selling_price'] / 10:.1f}m")
-            print(f"   +{r['xp_delta']} xP over {args.weeks}gw "
-                  f"({r['out']['xp']} -> {r['in']['xp']})"
-                  + (f"   [{flag}]" if flag else ""))
+                  f"£{r['out']['selling_price'] / 10:.1f}m{bench}")
+            worth = (f"+{r['xp_delta']} xP over {args.weeks}gw "
+                     f"({r['out']['xp']} -> {r['in']['xp']})")
+            if r["out"]["slot"] == "bench":
+                worth += (f", discounted from +{r['raw_xp_delta']} because the bench "
+                          f"only scores through substitutions")
+            print(f"   {worth}" + (f"   [{flag}]" if flag else ""))
             if r["urgency"] in ("tonight", "soon"):
                 print(f"   {r['affordability']['reason']}")
 
