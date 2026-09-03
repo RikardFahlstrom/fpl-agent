@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import storage
+from . import config, storage
 from .client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
@@ -300,6 +300,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--no-backfill", action="store_true",
                         help="skip fetching actuals; grade what is already stored")
     args = parser.parse_args(argv)
+
+    config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     return asyncio.run(_run(args))

@@ -12,6 +12,7 @@ try:
 
     import uvicorn
 
+    from . import config
     from . import mcp_prompts, mcp_resources  # noqa: F401  (registers prompts/resources)
     from .headless_auth import bootstrap_session, env_flag
     from .mcp_tools import mcp
@@ -61,6 +62,9 @@ def bootstrap_unattended_session():
 
 def main():
     try:
+        # Local settings, including credentials, before anything reads the environment.
+        config.load()
+
         sys.stderr.write("DEBUG: Starting Web Thread...\n")
         sys.stderr.flush()
 

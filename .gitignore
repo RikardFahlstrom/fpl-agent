@@ -15,3 +15,8 @@ build/
 # Cached FPL session token - an account credential, never commit it
 session.json
 .fpl-session.json
+
+# Local settings, including credentials in plaintext. Ignore every ini except the
+# template, so a differently-named copy cannot be committed by accident.
+*.ini
+!*.ini.example

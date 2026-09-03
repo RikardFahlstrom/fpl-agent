@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import storage
+from . import config, storage
 from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
@@ -382,6 +382,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help=f"project this many gameweeks and total them "
                              f"(default {HORIZON_GAMEWEEKS} via the recommender)")
     args = parser.parse_args(argv)
+
+    config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     conn = storage.connect(args.db)

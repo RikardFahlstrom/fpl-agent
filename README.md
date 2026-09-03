@@ -194,6 +194,31 @@ export FPL_MCP_TRANSPORT=streamable-http
 PYTHONPATH=src uv run python -m fpl_agent.main
 ```
 
+### Local settings file
+
+Instead of exporting variables, copy the template and fill it in:
+
+```bash
+cp fpl-agent.ini.example fpl-agent.ini
+chmod 600 fpl-agent.ini            # it holds a password in plaintext
+```
+
+```ini
+[auth]
+auto_login = true
+email = you@example.com
+password = ...
+read_only = true
+
+[rivals]
+leagues = 920863
+```
+
+`*.ini` is gitignored (with `!*.ini.example`), so any copy you make — under any name —
+is ignored by default. **The environment always wins**, so a scheduled run can override
+the file without editing it. Unrecognised keys are reported rather than silently skipped,
+and the loader warns if the file is readable beyond its owner.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FPL_AUTO_LOGIN` | `false` | Enable session restore and credential login at startup |

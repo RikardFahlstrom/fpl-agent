@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from . import pricing, rivals, storage
+from . import config, pricing, rivals, storage
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, project_horizon
 from .scoring import POSITIONS
 
@@ -230,6 +230,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="log the top recommendation as a proposed decision")
     parser.add_argument("--actions-log", type=Path, default=ACTIONS_LOG)
     args = parser.parse_args(argv)
+
+    config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     conn = storage.connect(args.db)
