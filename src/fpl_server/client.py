@@ -21,6 +21,16 @@ class FPLClient:
         self.team_id: Optional[int] = None
         self.user_info: Optional[Dict[str, Any]] = None  # Store user info from /me
         self._store = store
+        self._reauth_hook = None
+
+    def set_reauth_hook(self, hook) -> None:
+        """Register an async callable used to recover from an expired token.
+
+        Injected rather than imported so this module stays free of any
+        dependency on the authentication path. The hook takes this client,
+        refreshes its token in place, and returns True on success.
+        """
+        self._reauth_hook = hook
 
     def set_api_token(self, token: str):
         if not token.startswith("Bearer "):
@@ -41,7 +51,14 @@ class FPLClient:
             self._session_loop = current_loop
         return self.session
         
-    async def _request(self, method: str, endpoint: str, data: dict = None, params: dict = None) -> Any:
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        data: dict = None,
+        params: dict = None,
+        allow_reauth: bool = True,
+    ) -> Any:
         url = f"{self.BASE_URL}{endpoint}"
         session = self._get_session()
         headers = {}
@@ -53,7 +70,17 @@ class FPLClient:
             response = await session.get(url, headers=headers, params=params)
         else:
             response = await session.post(url, json=data, headers=headers)
-        
+
+        # Every authenticated call funnels through here, so recovering from an
+        # expired token in this one place covers all tools. Retry only once, so a
+        # persistently rejected token surfaces as an error instead of looping.
+        if response.status_code == 401 and allow_reauth and self._reauth_hook:
+            logger.info("FPL rejected the token; attempting to re-authenticate.")
+            if await self._reauth_hook(self):
+                return await self._request(
+                    method, endpoint, data, params, allow_reauth=False
+                )
+
         response.raise_for_status()
         return response.json()
 

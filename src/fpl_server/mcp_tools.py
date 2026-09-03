@@ -4,6 +4,7 @@ from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
+from .headless_auth import env_flag
 from .models import TransferPayload
 from .rotowire_scraper import RotoWireLineupScraper
 from .state import store
@@ -73,9 +74,17 @@ def _records_contract(value: object) -> dict:
 
 def _get_client():
     """Internal helper to get the active client"""
-    if not _active_session_id:
+    # Fall back to a session established without a human present (restored from
+    # the token cache, or a credential login at startup).
+    session_id = _active_session_id or store.active_session_id
+    if not session_id:
         return None
-    return store.get_client(_active_session_id)
+    return store.get_client(session_id)
+
+
+def _read_only() -> bool:
+    """Whether account-modifying tools are disabled for this process."""
+    return env_flag("FPL_READ_ONLY")
 
 
 @mcp.tool()
@@ -447,6 +456,12 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
     Provide lists of player names to transfer out and in.
     Example: player_names_out=["Salah"], player_names_in=["Haaland"]
     """
+    if _read_only():
+        return (
+            "Error: This server is running in read-only mode (FPL_READ_ONLY), so "
+            "transfers are disabled. Report the recommendation instead of executing it."
+        )
+
     client = _get_client()
     if not client: return "Error: Not authenticated. Please use login_to_fpl first."
     
