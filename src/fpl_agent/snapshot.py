@@ -24,9 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from . import config, storage
+from . import config, lineups, storage
 from .client import FPLClient
 from .headless_auth import authenticated_client, cache_path, env_flag
+from .rotowire_scraper import RotoWireLineupScraper
 from .state import store
 
 logger = logging.getLogger("fpl_snapshot")
@@ -116,6 +117,21 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
             logger.warning("could not capture own squad: %s", e)
     else:
         logger.info("no authenticated session; market captured without own squad")
+
+    # Predicted lineups, for the gameweek being captured. Minutes dominate scoring and
+    # FPL's own flag only reports injuries, never rotation.
+    gameweek = storage.target_gameweek(bootstrap)
+    if gameweek is not None:
+        try:
+            matches = await RotoWireLineupScraper().scrape_match_lineups()
+            if matches:
+                stored, unresolved = lineups.record_lineups(
+                    conn, snapshot_id, gameweek, matches, bootstrap)
+                logger.info("captured %s lineup entries (%s unresolved)",
+                            stored, len(unresolved))
+        except Exception as e:
+            # A third-party page being down must not cost the market snapshot.
+            logger.warning("could not capture lineups: %s", e)
 
     conn.commit()
     return snapshot_id
