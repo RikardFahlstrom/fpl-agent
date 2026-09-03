@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_server import headless_auth, mcp_tools
-from fpl_server.client import FPLClient
-from fpl_server.state import store
+from fpl_agent import headless_auth, mcp_tools
+from fpl_agent.client import FPLClient
+from fpl_agent.state import store
 
 
 class _FakeResponse:

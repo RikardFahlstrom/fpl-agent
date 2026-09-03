@@ -39,7 +39,7 @@ def _chromium_launch_options(playwright_executable: str) -> dict[str, str]:
 
     raise RuntimeError(
         "No Chromium browser is available for FPL authentication. Run "
-        "`uv run playwright install chromium` in fpl-mcp-server, or set "
+        "`uv run playwright install chromium` in fpl-agent, or set "
         "FPL_BROWSER_EXECUTABLE to an installed Chrome/Chromium binary."
     )
 

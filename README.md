@@ -102,7 +102,7 @@ Example workflow using **only friendly names**:
 ```bash
 # Clone the repository
 git clone <your-repo-url>
-cd fpl-mcp-server
+cd fpl-agent
 
 # Install dependencies
 uv sync
@@ -120,7 +120,7 @@ a server without a display it uses headless mode. To select a browser or mode ex
 ```bash
 FPL_BROWSER_EXECUTABLE=/usr/bin/google-chrome-stable \
   FPL_BROWSER_HEADLESS=false \
-  FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src uv run python -m fpl_server.main
+  FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src uv run python -m fpl_agent.main
 ```
 
 ### 2. Verify Installation (Optional)
@@ -129,7 +129,7 @@ Test the server locally before connecting to Claude:
 
 ```bash
 export PYTHONPATH=src
-uv run python -m fpl_server.main
+uv run python -m fpl_agent.main
 ```
 
 You should see:
@@ -146,7 +146,7 @@ FPLAgent uses a separately running, localhost-only streamable HTTP transport so 
 backend can perform the authentication handshake and read a structured manager snapshot:
 
 ```bash
-FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src uv run python -m fpl_server.main
+FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src uv run python -m fpl_agent.main
 ```
 
 This starts:
@@ -190,7 +190,7 @@ export FPL_READ_ONLY=true           # refuse make_transfers; analyse and report 
 export FPL_EMAIL=you@example.com
 export FPL_PASSWORD=...             # inject from your secret store, never commit
 export FPL_MCP_TRANSPORT=streamable-http
-PYTHONPATH=src uv run python -m fpl_server.main
+PYTHONPATH=src uv run python -m fpl_agent.main
 ```
 
 | Variable | Default | Purpose |
@@ -216,13 +216,13 @@ keeps browser logins rare:
 ```ini
 # /etc/systemd/system/fpl-mcp.service
 [Service]
-WorkingDirectory=/opt/fpl-mcp-server
+WorkingDirectory=/opt/fpl-agent
 Environment=PYTHONPATH=src
 Environment=FPL_AUTO_LOGIN=true
 Environment=FPL_READ_ONLY=true
 Environment=FPL_MCP_TRANSPORT=streamable-http
 EnvironmentFile=/etc/fpl-mcp/credentials.env   # 0600, holds FPL_EMAIL and FPL_PASSWORD
-ExecStart=/usr/bin/uv run python -m fpl_server.main
+ExecStart=/usr/bin/uv run python -m fpl_agent.main
 Restart=always
 
 [Install]
@@ -255,9 +255,9 @@ Open Claude's config file:
 * **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 * **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-mcp-server` with your path). Use `--directory`
+Add the FPL server (replace `/ABSOLUTE/PATH/TO/fpl-agent` with your path). Use `--directory`
 rather than a `cwd` field — Claude Desktop does not reliably apply `cwd` before `uv` resolves the
-project, which makes `uv run` fall back to a bare system Python that can't find the `fpl_server`
+project, which makes `uv run` fall back to a bare system Python that can't find the `fpl_agent`
 module:
 
 ```json
@@ -267,14 +267,14 @@ module:
       "command": "uv",
       "args": [
         "--directory",
-        "/ABSOLUTE/PATH/TO/fpl-mcp-server",
+        "/ABSOLUTE/PATH/TO/fpl-agent",
         "run",
         "python",
         "-m",
-        "fpl_server.main"
+        "fpl_agent.main"
       ],
       "env": {
-        "PYTHONPATH": "/ABSOLUTE/PATH/TO/fpl-mcp-server/src"
+        "PYTHONPATH": "/ABSOLUTE/PATH/TO/fpl-agent/src"
       }
     }
   }
@@ -283,7 +283,7 @@ module:
 
 #### Restart Claude
 
-Quit Claude completely and reopen. An error notification popup will appear if something is wrong with connecting the MCP server. If not error, this is a good sign, but go to settings and check connectors to confirm fpl-mcp-server is listed there.
+Quit Claude completely and reopen. An error notification popup will appear if something is wrong with connecting the MCP server. If not error, this is a good sign, but go to settings and check connectors to confirm fpl-agent is listed there.
 
 ## 💡 Usage Examples
 

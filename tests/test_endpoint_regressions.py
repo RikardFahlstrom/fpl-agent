@@ -6,11 +6,11 @@ here reaches the FPL API.
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from fpl_server import mcp_prompts, mcp_tools  # noqa: F401  (registers prompts)
-from fpl_server.client import FPLClient
-from fpl_server.mcp_tools import mcp
-from fpl_server.models import BootstrapData, FixtureData
-from fpl_server.state import SessionStore, store
+from fpl_agent import mcp_prompts, mcp_tools  # noqa: F401  (registers prompts)
+from fpl_agent.client import FPLClient
+from fpl_agent.mcp_tools import mcp
+from fpl_agent.models import BootstrapData, FixtureData
+from fpl_agent.state import SessionStore, store
 
 
 def _event(event_id: int, *, current=False, next_=False, finished=False, deadline=None):
