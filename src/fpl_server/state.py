@@ -2,7 +2,6 @@ from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
 import time
 import logging
-import asyncio
 from difflib import SequenceMatcher
 from .client import FPLClient
 from .models import BootstrapData, ElementData, EventData, FixtureData
@@ -243,6 +242,22 @@ class SessionStore:
         player_matches.sort(key=lambda x: x[1], reverse=True)
         
         return player_matches
+    
+    def upcoming_fixtures(self, team_id: int, *, from_gameweek: int, limit: int) -> List[FixtureData]:
+        """A team's next unplayed fixtures, earliest first.
+
+        Counts fixtures rather than gameweeks, so a finished current gameweek,
+        a blank or a double does not distort the horizon.
+        """
+        if not self.fixtures_data:
+            return []
+        upcoming = [
+            f for f in self.fixtures_data
+            if (f.team_h == team_id or f.team_a == team_id)
+            and f.event and f.event >= from_gameweek
+            and not f.finished
+        ]
+        return sorted(upcoming, key=lambda f: f.event)[:limit]
     
     def get_player_by_id(self, player_id: int) -> Optional[ElementData]:
         """Get a player by their ID"""

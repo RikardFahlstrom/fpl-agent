@@ -1,3 +1,5 @@
+import functools
+import inspect
 import logging
 import os
 import uuid
@@ -74,6 +76,26 @@ def _records_contract(value: object) -> dict:
     }
 
 
+NOT_AUTHENTICATED = "Error: Not authenticated. Please use login_to_fpl first."
+
+
+def _difficulty_bar(difficulty: int) -> str:
+    """Render a fixture difficulty rating as filled/empty pips out of 5."""
+    return "●" * difficulty + "○" * (5 - difficulty)
+
+
+def _is_ambiguous(matches) -> bool:
+    """True when several players match and the best one is not near-exact."""
+    return len(matches) > 1 and matches[0][1] < 0.95
+
+
+def _is_confident(matches) -> bool:
+    """True for a lone match, or a near-exact one that clearly beats the runner-up."""
+    return len(matches) == 1 or (
+        matches[0][1] >= 0.95 and matches[0][1] - matches[1][1] > 0.2
+    )
+
+
 def _get_client():
     """Internal helper to get the active client"""
     if not _active_session_id:
@@ -93,6 +115,31 @@ async def _ensure_reference_data(client, *, fixtures: bool = False) -> None:
             await store.ensure_fixtures_data(client)
     except Exception as e:
         logger.error(f"Failed to load reference data: {e}")
+
+
+def _with_client(*, fixtures: bool = False):
+    """Give a tool an authenticated client with reference data already loaded.
+
+    The wrapped function takes the client as its first parameter. That parameter is
+    stripped from the signature FastMCP advertises, so it never reaches the tool
+    schema - callers see only the tool's real arguments. Loading the reference data
+    here rather than in each tool is what keeps it from being forgotten.
+    """
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            client = _get_client()
+            if not client:
+                return NOT_AUTHENTICATED
+            await _ensure_reference_data(client, fixtures=fixtures)
+            return await fn(client, *args, **kwargs)
+
+        signature = inspect.signature(fn)
+        wrapper.__signature__ = signature.replace(
+            parameters=list(signature.parameters.values())[1:]
+        )
+        return wrapper
+    return decorate
 
 
 @mcp.tool()
@@ -284,14 +331,12 @@ async def check_login_status(request_id: str) -> str:
     return "✅ Authentication Successful! Your session is now active."
 
 @mcp.tool()
-async def get_my_info() -> str:
+@_with_client()
+async def get_my_info(client) -> str:
     """
     Get your FPL account information including entry ID, leagues, and basic stats.
     Use this to see what leagues you're in and your overall performance.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not client.user_info:
         return "Error: User information not available. Please try logging in again."
@@ -320,11 +365,9 @@ async def get_my_info() -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_my_squad() -> str:
+@_with_client()
+async def get_my_squad(client) -> str:
     """Get your current team squad, chips status, and transfer information."""
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -412,14 +455,12 @@ async def get_my_squad() -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def search_players(name_query: str) -> str:
+@_with_client()
+async def search_players(client, name_query: str) -> str:
     """
     Search for players by name. Returns price, form, and basic stats.
     Use player names (not IDs) for all operations.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     players = await client.get_players()
     query = name_query.lower()
@@ -437,14 +478,12 @@ async def search_players(name_query: str) -> str:
     ])
 
 @mcp.tool()
-async def get_top_players() -> str:
+@_with_client()
+async def get_top_players(client) -> str:
     """
     Get top performing players by position (GKP, DEF, MID, FWD) based on points per game.
     Returns top 3 goalkeepers and top 10 for each outfield position.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         top_players = await client.get_top_players_by_position()
@@ -467,15 +506,13 @@ async def get_top_players() -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def make_transfers(player_names_out: list[str], player_names_in: list[str]) -> str:
+@_with_client()
+async def make_transfers(client, player_names_out: list[str], player_names_in: list[str]) -> str:
     """
     Execute transfers using player names. IRREVERSIBLE.
     Provide lists of player names to transfer out and in.
     Example: player_names_out=["Salah"], player_names_in=["Haaland"]
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if len(player_names_out) != len(player_names_in):
         return "Error: Number of players out must match number of players in."
@@ -489,7 +526,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
             matches = store.find_players_by_name(name, fuzzy=True)
             if not matches:
                 return f"Error: Could not find player '{name}' to transfer out."
-            if len(matches) > 1 and matches[0][1] < 0.95:
+            if _is_ambiguous(matches):
                 return f"Error: Ambiguous player name '{name}'. Please be more specific."
             ids_out.append(matches[0][0].id)
         
@@ -497,7 +534,7 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
             matches = store.find_players_by_name(name, fuzzy=True)
             if not matches:
                 return f"Error: Could not find player '{name}' to transfer in."
-            if len(matches) > 1 and matches[0][1] < 0.95:
+            if _is_ambiguous(matches):
                 return f"Error: Ambiguous player name '{name}'. Please be more specific."
             ids_in.append(matches[0][0].id)
         
@@ -533,15 +570,13 @@ async def make_transfers(player_names_out: list[str], player_names_in: list[str]
         return f"Transfer failed: {str(e)}"
 
 @mcp.tool()
-async def get_current_gameweek() -> str:
+@_with_client()
+async def get_current_gameweek(client) -> str:
     """
     Get the current or upcoming gameweek information.
     Returns the gameweek that is currently active (before deadline) or the next gameweek (after deadline).
     Use this to determine which gameweek to plan transfers for.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data or not store.bootstrap_data.events:
         return "Error: Gameweek data not available."
@@ -588,14 +623,12 @@ async def get_current_gameweek() -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_gameweek_info(gameweek_number: int) -> str:
+@_with_client()
+async def get_gameweek_info(client, gameweek_number: int) -> str:
     """
     Get detailed information about a specific gameweek by number (1-38).
     Includes deadline, scores, top players, and statistics.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data or not store.bootstrap_data.events:
         return "Error: Gameweek data not available."
@@ -650,15 +683,13 @@ async def get_gameweek_info(gameweek_number: int) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_team_info(team_name: str) -> str:
+@_with_client()
+async def get_team_info(client, team_name: str) -> str:
     """
     Get detailed information about a specific Premier League team by name.
     Includes strength ratings for home/away attack/defence.
     Example: "Arsenal", "Man City", "Liverpool"
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Team data not available."
@@ -714,14 +745,12 @@ async def get_team_info(team_name: str) -> str:
     return "\n".join(output)
 
 @mcp.tool()
-async def list_all_teams() -> str:
+@_with_client()
+async def list_all_teams(client) -> str:
     """
     List all Premier League teams with their basic information.
     Useful for finding team names or comparing team strengths.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     teams = store.get_all_teams()
     if not teams:
@@ -744,15 +773,13 @@ async def list_all_teams() -> str:
     return "\n".join(output)
 
 @mcp.tool()
-async def search_players_by_team(team_name: str) -> str:
+@_with_client()
+async def search_players_by_team(client, team_name: str) -> str:
     """
     Search for all players from a specific team by team name.
     Returns player names, positions, prices, and form.
     Example: "Arsenal", "Liverpool", "Man City"
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Player data not available."
@@ -808,15 +835,13 @@ async def search_players_by_team(team_name: str) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_injury_and_lineup_predictions() -> str:
+@_with_client()
+async def get_injury_and_lineup_predictions(client) -> str:
     """
     Get predicted lineups and injury status for upcoming Premier League matches from RotoWire.
     This is crucial for understanding which players are likely to play and who to avoid.
     Shows OUT, DOUBTFUL, and EXPECTED players with confidence ratings.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         scraper = RotoWireLineupScraper()
@@ -864,15 +889,13 @@ async def get_injury_and_lineup_predictions() -> str:
         return f"Error fetching lineup predictions: {str(e)}"
 
 @mcp.tool()
-async def get_players_to_avoid() -> str:
+@_with_client()
+async def get_players_to_avoid(client) -> str:
     """
     Get a list of players to avoid for transfers based on injury status and lineup predictions.
     Returns players who are OUT or DOUBTFUL with risk levels.
     Use this before making transfers to avoid bringing in injured players.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         scraper = RotoWireLineupScraper()
@@ -917,15 +940,13 @@ async def get_players_to_avoid() -> str:
         return f"Error fetching players to avoid: {str(e)}"
 
 @mcp.tool()
-async def check_player_availability(player_name: str) -> str:
+@_with_client()
+async def check_player_availability(client, player_name: str) -> str:
     """
     Check if a specific player is available to play based on RotoWire lineup predictions.
     Useful before making a transfer to verify the player is not injured or suspended.
     Provide player name (can be partial match).
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         scraper = RotoWireLineupScraper()
@@ -966,14 +987,12 @@ async def check_player_availability(player_name: str) -> str:
         return f"Error checking player availability: {str(e)}"
 
 @mcp.tool()
-async def list_all_gameweeks() -> str:
+@_with_client()
+async def list_all_gameweeks(client) -> str:
     """
     List all gameweeks with their status (finished, current, upcoming).
     Useful for getting an overview of the season.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data or not store.bootstrap_data.events:
         return "Error: Gameweek data not available."
@@ -1005,15 +1024,13 @@ async def list_all_gameweeks() -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def find_player(player_name: str) -> str:
+@_with_client()
+async def find_player(client, player_name: str) -> str:
     """
     Find a player by name with intelligent fuzzy matching.
     Handles variations in spelling, partial names, and common nicknames.
     If multiple players match, returns disambiguation options.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Player data not available."
@@ -1024,7 +1041,7 @@ async def find_player(player_name: str) -> str:
         if not matches:
             return f"No players found matching '{player_name}'. Try a different spelling or use the player's surname."
         
-        if len(matches) == 1 or (matches[0][1] >= 0.95 and matches[0][1] - matches[1][1] > 0.2):
+        if _is_confident(matches):
             player = matches[0][0]
             return _format_player_details(player)
         
@@ -1047,36 +1064,32 @@ async def find_player(player_name: str) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_player_details(player_name: str) -> str:
+@_with_client()
+async def get_player_details(client, player_name: str) -> str:
     """
     Get detailed information about a specific player by name.
     Includes price, form, team, position, and current status.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     matches = store.find_players_by_name(player_name, fuzzy=True)
     
     if not matches:
         return f"No player found matching '{player_name}'"
     
-    if len(matches) > 1 and matches[0][1] < 0.95:
+    if _is_ambiguous(matches):
         return f"Ambiguous player name. Please use find_player to see all matches for '{player_name}'"
     
     player = matches[0][0]
     return _format_player_details(player)
 
 @mcp.tool()
-async def compare_players(player_names: list[str]) -> str:
+@_with_client()
+async def compare_players(client, player_names: list[str]) -> str:
     """
     Compare multiple players side-by-side using their names.
     Provide a list of 2-5 player names to compare their stats, prices, and form.
     Useful for transfer decisions.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if not store.bootstrap_data:
         return "Error: Player data not available."
@@ -1097,7 +1110,7 @@ async def compare_players(player_names: list[str]) -> str:
             if not matches:
                 return f"Error: No player found matching '{name}'"
             
-            if len(matches) == 1 or (matches[0][1] >= 0.95 and len(matches) > 1 and matches[0][1] - matches[1][1] > 0.2):
+            if _is_confident(matches):
                 players_to_compare.append(matches[0][0])
             else:
                 ambiguous.append((name, matches[:3]))
@@ -1192,14 +1205,12 @@ def _format_player_details(player: 'ElementData') -> str:
     return "\n".join(output)
 
 @mcp.tool()
-async def get_player_summary(player_name: str) -> str:
+@_with_client()
+async def get_player_summary(client, player_name: str) -> str:
     """
     Get comprehensive player summary including upcoming fixtures, gameweek history, and past season performance.
     Provide the player's name to get detailed stats, fixture difficulty, and historical performance.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         # Find player by name
@@ -1207,7 +1218,7 @@ async def get_player_summary(player_name: str) -> str:
         if not matches:
             return f"No player found matching '{player_name}'"
         
-        if len(matches) > 1 and matches[0][1] < 0.95:
+        if _is_ambiguous(matches):
             return f"Ambiguous player name. Please use find_player to see all matches for '{player_name}'"
         
         player = matches[0][0]
@@ -1286,7 +1297,8 @@ async def get_player_summary(player_name: str) -> str:
     except Exception as e:
         return f"Error fetching player summary: {str(e)}"
 @mcp.tool()
-async def analyze_squad_recent_performance(num_gameweeks: int = 5) -> str:
+@_with_client()
+async def analyze_squad_recent_performance(client, num_gameweeks: int = 5) -> str:
     """
     Analyze recent gameweek performance for all players in your current squad.
     Shows detailed stats from the last N gameweeks to identify underperforming players
@@ -1298,9 +1310,6 @@ async def analyze_squad_recent_performance(num_gameweeks: int = 5) -> str:
     Returns:
         Detailed analysis of each squad player's recent form with transfer recommendations
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -1574,14 +1583,12 @@ async def analyze_squad_recent_performance(num_gameweeks: int = 5) -> str:
 
 
 @mcp.tool()
-async def get_my_performance() -> str:
+@_with_client()
+async def get_my_performance(client) -> str:
     """
     Get your FPL performance including overall rank, gameweek rank, points, and league standings.
     Use this to check how you're doing in FPL.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -1649,16 +1656,14 @@ async def get_my_performance() -> str:
         return f"Error fetching your performance: {str(e)}"
 
 @mcp.tool()
-async def get_league_standings(league_name: str, page: int = 1) -> str:
+@_with_client()
+async def get_league_standings(client, league_name: str, page: int = 1) -> str:
     """
     Get standings for a specific FPL league by name.
     Shows manager rankings, points, and team names within the league.
     Use this to see how managers are performing in one of your leagues.
     Example: "Greatest Fantasy Footy", "Work League"
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         # Find league by name
@@ -1708,16 +1713,14 @@ async def get_league_standings(league_name: str, page: int = 1) -> str:
         return f"Error fetching league standings: {str(e)}"
 
 @mcp.tool()
-async def get_manager_gameweek_team(manager_name: str, league_name: str, gameweek: int) -> str:
+@_with_client()
+async def get_manager_gameweek_team(client, manager_name: str, league_name: str, gameweek: int) -> str:
     """
     Get a manager's team selection for a specific gameweek by their name.
     Shows the 15 players picked, captain/vice-captain, formation, and points scored.
     Provide the manager's name (or team name), the league they're in, and gameweek number.
     Example: manager_name="Jaakko", league_name="Greatest Fantasy Footy", gameweek=13
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     try:
         # Find league first
@@ -1797,16 +1800,14 @@ async def get_manager_gameweek_team(manager_name: str, league_name: str, gamewee
         return f"Error fetching manager's gameweek team: {str(e)}"
 
 @mcp.tool()
-async def compare_managers(manager_names: list[str], league_name: str, gameweek: int) -> str:
+@_with_client()
+async def compare_managers(client, manager_names: list[str], league_name: str, gameweek: int) -> str:
     """
     Compare multiple managers' teams for a specific gameweek side-by-side using their names.
     Shows differences in player selection, captaincy choices, and points scored.
     Provide 2-4 manager names (or team names), the league they're in, and gameweek number.
     Example: manager_names=["Jaakko", "Lewis"], league_name="Greatest Fantasy Footy", gameweek=13
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client)
     
     if len(manager_names) < 2:
         return "Error: Please provide at least 2 manager names to compare."
@@ -1897,14 +1898,12 @@ async def compare_managers(manager_names: list[str], league_name: str, gameweek:
         return f"Error comparing managers: {str(e)}"
 
 @mcp.tool()
-async def get_fixtures_for_gameweek(gameweek: int) -> str:
+@_with_client(fixtures=True)
+async def get_fixtures_for_gameweek(client, gameweek: int) -> str:
     """
     Get all fixtures for a specific gameweek with team names and kickoff times.
     Useful for planning transfers and understanding fixture difficulty.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client, fixtures=True)
     
     if not store.fixtures_data:
         return "Error: Fixtures data not available."
@@ -1943,16 +1942,14 @@ async def get_fixtures_for_gameweek(gameweek: int) -> str:
         return f"Error fetching fixtures: {str(e)}"
 
 @mcp.tool()
-async def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
+@_with_client(fixtures=True)
+async def analyze_team_fixtures(client, team_name: str, num_gameweeks: int = 5) -> str:
     """
     Analyze upcoming fixtures for a specific team to assess difficulty.
     Shows next N gameweeks with opponent strength and home/away status.
     Useful for identifying good times to bring in or sell team assets.
     Provide team name and number of gameweeks to analyze (default: 5).
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client, fixtures=True)
     
     if not store.bootstrap_data or not store.fixtures_data:
         return "Error: Team or fixtures data not available."
@@ -1976,17 +1973,9 @@ async def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
         if not current_gw:
             return "Error: Could not determine current gameweek"
         
-        start_gw = current_gw.id
-        
-        upcoming = [
-            f for f in store.fixtures_data
-            if (f.team_h == team.id or f.team_a == team.id)
-            and f.event and f.event >= start_gw
-            and not f.finished
-        ]
-        # Take the next N unplayed fixtures rather than an N-gameweek window, so a
-        # finished current gameweek (or a blank) does not eat one of the slots.
-        team_fixtures = sorted(upcoming, key=lambda f: f.event)[:num_gameweeks]
+        team_fixtures = store.upcoming_fixtures(
+            team.id, from_gameweek=current_gw.id, limit=num_gameweeks
+        )
         
         if not team_fixtures:
             return f"No upcoming fixtures found for {team.name}"
@@ -2007,7 +1996,7 @@ async def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
             difficulty = fixture.get('team_h_difficulty') if is_home else fixture.get('team_a_difficulty')
             total_difficulty += difficulty
             
-            difficulty_str = "●" * difficulty + "○" * (5 - difficulty)
+            difficulty_str = _difficulty_bar(difficulty)
             home_away = "H" if is_home else "A"
             kickoff = fixture.get('kickoff_time', '')[:10] if fixture.get('kickoff_time') else "TBD"
             
@@ -2028,14 +2017,12 @@ async def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
         return f"Error analyzing fixtures: {str(e)}"
 
 @mcp.tool()
-async def recommend_chip_strategy() -> str:
+@_with_client(fixtures=True)
+async def recommend_chip_strategy(client) -> str:
     """
     Analyze your available chips and recommend optimal timing based on upcoming fixtures.
     Considers double gameweeks, blank gameweeks, and fixture difficulty to suggest when to play each chip.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client, fixtures=True)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -2384,14 +2371,12 @@ async def recommend_chip_strategy() -> str:
         return f"Error analyzing chip strategy: {str(e)}"
 
 @mcp.tool()
-async def recommend_transfers() -> str:
+@_with_client(fixtures=True)
+async def recommend_transfers(client) -> str:
     """
     Analyze your squad and recommend transfer strategy based on available free transfers,
     upcoming fixtures, player form, and injury status. Considers the economics of points hits.
     """
-    client = _get_client()
-    if not client: return "Error: Not authenticated. Please use login_to_fpl first."
-    await _ensure_reference_data(client, fixtures=True)
     
     try:
         entry_id = store.get_user_entry_id(client)
@@ -2443,16 +2428,10 @@ async def recommend_transfers() -> str:
                 continue
             
             # Get player's next 5 fixtures
-            upcoming = [
-                f for f in store.fixtures_data
-                if (f.team_h == player.team or f.team_a == player.team)
-                and f.event and f.event >= current_gw_id
-                and not f.finished
-            ]
-            # Take the next N unplayed fixtures rather than an N-gameweek window, so a
-            # finished current gameweek (or a blank) does not eat one of the slots.
             player_fixtures = []
-            for fixture in sorted(upcoming, key=lambda f: f.event)[:5]:
+            for fixture in store.upcoming_fixtures(
+                player.team, from_gameweek=current_gw_id, limit=5
+            ):
                 is_home = fixture.team_h == player.team
                 difficulty = fixture.team_h_difficulty if is_home else fixture.team_a_difficulty
                 
@@ -2577,7 +2556,7 @@ async def recommend_transfers() -> str:
                     fixtures_str = []
                     for f in pp['fixtures']:
                         ha = "H" if f['is_home'] else "A"
-                        diff_str = "●" * f['difficulty'] + "○" * (5 - f['difficulty'])
+                        diff_str = _difficulty_bar(f['difficulty'])
                         fixtures_str.append(f"GW{f['gw']}({ha}): {diff_str}")
                     output.append(f"├─ Next fixtures: {' | '.join(fixtures_str)}")
                 

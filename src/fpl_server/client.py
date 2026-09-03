@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import httpx
 
-from .models import Player, TransferPayload, BootstrapData
+from .models import Player, TransferPayload
 
 if TYPE_CHECKING:
     from .state import SessionStore
