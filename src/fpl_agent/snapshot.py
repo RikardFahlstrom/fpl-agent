@@ -26,7 +26,7 @@ from typing import Optional
 
 from . import config, storage
 from .client import FPLClient
-from .headless_auth import cache_path, env_flag
+from .headless_auth import bootstrap_session, cache_path, env_flag
 from .state import store
 
 logger = logging.getLogger("fpl_snapshot")
@@ -74,7 +74,7 @@ def report_readiness(readiness: Readiness) -> None:
     for line in readiness.detail:
         logger.info("  %s", line)
     if readiness.complete:
-        logger.info("auth ready: this snapshot will include your squad")
+        logger.info("auth configured; will try to establish a session before capturing")
         return
     logger.warning("auth incomplete - missing: %s", ", ".join(readiness.missing))
     logger.warning(
@@ -85,6 +85,39 @@ def report_readiness(readiness: Readiness) -> None:
         "  fix: export FPL_AUTO_LOGIN=true with FPL_EMAIL and FPL_PASSWORD, or log in "
         "once through the local browser flow to create the token cache.")
     logger.warning("  to capture the market anyway, re-run with --allow-partial")
+
+
+async def authenticated_client() -> tuple[FPLClient, bool]:
+    """Establish a session if one is configured, and return the client to capture with.
+
+    Checking the configuration is not the same as having a session: the preflight only
+    proves the settings exist, and something has to actually log in. Returns the
+    authenticated client when that succeeds, otherwise a bare client that can still read
+    the public market.
+    """
+    if not env_flag("FPL_AUTO_LOGIN"):
+        return FPLClient(store=store), False
+
+    try:
+        session_id = await bootstrap_session()
+    except Exception as e:
+        logger.error("could not establish a session: %s", e)
+        return FPLClient(store=store), False
+
+    if not session_id:
+        logger.error(
+            "login did not produce a session. The credential path drives a headless "
+            "browser, so check `uv run playwright install chromium` has been run and "
+            "that FPL_EMAIL / FPL_PASSWORD are correct.")
+        return FPLClient(store=store), False
+
+    client = store.get_client(session_id)
+    if client is None:
+        logger.error("session %s established but no client was registered", session_id)
+        return FPLClient(store=store), False
+
+    logger.info("session established; the squad will be captured")
+    return client, True
 
 
 async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
@@ -151,7 +184,7 @@ async def backfill_actuals(conn, client: FPLClient, element_ids: list[int]) -> i
 
 async def _run(args) -> int:
     conn = storage.connect(args.db)
-    client = FPLClient(store=store)
+    client, authenticated = await authenticated_client()
     try:
         if not args.backfill_only:
             readiness = auth_readiness()
@@ -159,6 +192,14 @@ async def _run(args) -> int:
             if not readiness.complete and not args.allow_partial:
                 logger.error("refusing to take a partial snapshot; see above")
                 return 2
+            # Configured but the login failed: the squad was promised and cannot be
+            # delivered, so do not quietly record half a snapshot.
+            if readiness.complete and not authenticated and not args.allow_partial:
+                logger.error(
+                    "auth is configured but no session could be established, so the "
+                    "squad cannot be captured. Fix the login, or re-run with "
+                    "--allow-partial to record the market alone.")
+                return 3
 
             if storage.snapshot_taken_today(conn) and not args.force:
                 logger.info("a snapshot already exists for today; use --force to add another")
