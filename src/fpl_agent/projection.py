@@ -32,6 +32,10 @@ logger = logging.getLogger("fpl_projection")
 
 MODEL_VERSION = "0.1.0"
 
+# Transfer value is judged over three gameweeks, so a good fixture run counts and a
+# single-week spike does not dominate the decision.
+HORIZON_GAMEWEEKS = 3
+
 # --- stated assumptions, to be replaced by fitted values in P5 -----------------------
 # Minutes a player gets when they start, and when they appear off the bench.
 START_MINUTES = 82.0
@@ -338,33 +342,77 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     return len(rows)
 
 
+def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = None,
+                    weeks: int = HORIZON_GAMEWEEKS,
+                    model_version: str = MODEL_VERSION) -> dict[int, float]:
+    """Project each gameweek in the horizon and return the per-player totals.
+
+    Blanks contribute nothing and doubles contribute twice, which is the point of
+    summing over fixtures rather than gameweeks.
+    """
+    snapshot = conn.execute(
+        "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
+    if not snapshot:
+        raise LookupError("no snapshot captured yet; run python -m fpl_agent.snapshot")
+    start = start_gameweek or snapshot["gameweek"]
+    if start is None:
+        raise LookupError("no target gameweek; the season may be over")
+
+    for gameweek in range(start, start + weeks):
+        project_gameweek(conn, gameweek, model_version)
+
+    totals: dict[int, float] = {}
+    for row in conn.execute(
+        """SELECT element_id, SUM(expected_points) AS total FROM projection
+           WHERE model_version = ? AND gameweek BETWEEN ? AND ?
+             AND snapshot_id = ? GROUP BY element_id""",
+        (model_version, start, start + weeks - 1, snapshot["id"]),
+    ):
+        totals[row["element_id"]] = row["total"]
+    logger.info("horizon: gameweeks %s-%s", start, start + weeks - 1)
+    return totals
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Project expected points for a gameweek.")
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
     parser.add_argument("--gameweek", type=int, default=None)
     parser.add_argument("--top", type=int, default=15, help="how many to print")
+    parser.add_argument("--horizon", type=int, default=None,
+                        help=f"project this many gameweeks and total them "
+                             f"(default {HORIZON_GAMEWEEKS} via the recommender)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     conn = storage.connect(args.db)
     try:
-        project_gameweek(conn, args.gameweek)
+        if args.horizon:
+            project_horizon(conn, args.gameweek, weeks=args.horizon)
+        else:
+            project_gameweek(conn, args.gameweek)
+        # One row per player over the whole horizon, not one per gameweek.
         rows = conn.execute(
-            """SELECT p.web_name, t.short_name AS team, pr.expected_points, pr.p_start,
-                      pr.fixture_count, ps.now_cost
+            """SELECT p.web_name, t.short_name AS team, ps.now_cost,
+                      SUM(pr.expected_points) AS xp, AVG(pr.p_start) AS p_start,
+                      SUM(pr.fixture_count) AS fixtures,
+                      COUNT(DISTINCT pr.gameweek) AS gameweeks
                FROM projection pr
                JOIN player p ON p.element_id = pr.element_id
                JOIN team t ON t.id = p.team_id
                JOIN player_snapshot ps ON ps.snapshot_id = pr.snapshot_id
                                       AND ps.element_id = pr.element_id
                WHERE pr.model_version = ?
-               ORDER BY pr.expected_points DESC LIMIT ?""",
+                 AND pr.snapshot_id = (SELECT MAX(id) FROM snapshot)
+               GROUP BY pr.element_id
+               ORDER BY xp DESC LIMIT ?""",
             (MODEL_VERSION, args.top),
         ).fetchall()
-        print(f"\n{'player':16} {'team':5} {'price':>6} {'xP':>6} {'P(start)':>9} {'fix':>4}")
+        span = rows[0]["gameweeks"] if rows else 0
+        label = f"xP({span}gw)" if span > 1 else "xP"
+        print(f"\n{'player':16} {'team':5} {'price':>6} {label:>9} {'P(start)':>9} {'fix':>4}")
         for r in rows:
             print(f"{r['web_name']:16} {r['team']:5} £{r['now_cost']/10:>4.1f}m "
-                  f"{r['expected_points']:>6.2f} {r['p_start']:>9.2f} {r['fixture_count']:>4}")
+                  f"{r['xp']:>9.2f} {r['p_start']:>9.2f} {r['fixtures']:>4}")
         return 0
     finally:
         conn.close()
