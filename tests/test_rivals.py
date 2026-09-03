@@ -1,4 +1,5 @@
 """Rival capture and league-relative ownership."""
+import os
 import unittest
 
 from fpl_agent import rivals, storage
@@ -82,6 +83,71 @@ class OwnershipTests(unittest.TestCase):
         self._squads({1: [(8, False)]}, gameweek=2)
         self.assertIn(7, rivals.league_ownership(self.conn, 1))
         self.assertNotIn(7, rivals.league_ownership(self.conn, 2))
+
+
+class ConfiguredLeagueTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = os.environ.get(rivals.RIVAL_LEAGUES_ENV)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._saved is None:
+            os.environ.pop(rivals.RIVAL_LEAGUES_ENV, None)
+        else:
+            os.environ[rivals.RIVAL_LEAGUES_ENV] = self._saved
+
+    def _set(self, value):
+        os.environ[rivals.RIVAL_LEAGUES_ENV] = value
+
+    def test_unset_means_every_capturable_league(self):
+        os.environ.pop(rivals.RIVAL_LEAGUES_ENV, None)
+        self.assertIsNone(rivals.configured_league_ids())
+
+    def test_single_and_multiple_ids(self):
+        self._set("920863")
+        self.assertEqual(rivals.configured_league_ids(), [920863])
+        self._set("920863, 18891")
+        self.assertEqual(rivals.configured_league_ids(), [920863, 18891])
+
+    def test_junk_is_ignored_rather_than_fatal(self):
+        self._set("920863,not-an-id,")
+        self.assertEqual(rivals.configured_league_ids(), [920863])
+        self._set("   ")
+        self.assertIsNone(rivals.configured_league_ids())
+
+
+class ScopedOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = storage.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        # Two leagues. Entry 1 is in both; entries 2 and 3 sit in one each.
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO league VALUES (?,?,?,?,?)",
+            [(100, "Wanted", "x", 2, "now"), (200, "Other", "x", 2, "now")])
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO rival VALUES (?,?,?,?,?,?)",
+            [(1, 100, "A", "TA", 1, 10), (2, 100, "B", "TB", 2, 9),
+             (1, 200, "A", "TA", 1, 10), (3, 200, "C", "TC", 2, 8)])
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO rival_squad VALUES (?,?,?,?,?,?,?)",
+            [(1, 2, 500, 1, 1, 0, 0),      # owned in both leagues
+             (2, 2, 600, 1, 1, 0, 0),      # only in league 100
+             (3, 2, 700, 1, 1, 0, 0)])     # only in league 200
+        self.conn.commit()
+
+    def test_scoping_changes_the_denominator_and_the_field(self):
+        wanted = rivals.league_ownership(self.conn, 2, [100])
+        self.assertEqual(wanted[500]["managers"], 2)       # entries 1 and 2 only
+        self.assertIn(600, wanted)
+        self.assertNotIn(700, wanted, "a player only owned in another league is out of scope")
+
+    def test_unscoped_counts_everyone_captured(self):
+        everyone = rivals.league_ownership(self.conn, 2)
+        self.assertEqual(everyone[500]["managers"], 3)
+        self.assertIn(700, everyone)
+
+    def test_scoping_to_a_league_with_no_squads_is_empty(self):
+        self.assertEqual(rivals.league_ownership(self.conn, 2, [999]), {})
 
 
 class ProfileTests(unittest.TestCase):

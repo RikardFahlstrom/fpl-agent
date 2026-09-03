@@ -98,7 +98,10 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     # Ownership comes from the most recent gameweek rivals were captured for; squads are
     # only public once a gameweek has started, so this necessarily lags the target one.
     row = conn.execute("SELECT MAX(gameweek) AS gw FROM rival_squad").fetchone()
-    ownership = rivals.league_ownership(conn, row["gw"]) if row and row["gw"] else {}
+    ownership = (
+        rivals.league_ownership(conn, row["gw"], rivals.configured_league_ids())
+        if row and row["gw"] else {}
+    )
 
     owned = {row["element_id"] for row in squad}
     club_counts: dict[int, int] = {}

@@ -15,6 +15,7 @@ around 9.9 million entries.
 import argparse
 import asyncio
 import logging
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -33,6 +34,28 @@ PRIVATE_LEAGUE_TYPE = "x"
 # rivals the ownership signal stops being about anyone you are actually racing.
 DEFAULT_MAX_RIVALS = 50
 RIVAL_CONCURRENCY = 6
+# Which leagues count as "your rivals". Comma-separated ids; unset means every private
+# league under the cap. Narrowing this to the one league you actually care about makes
+# the ownership numbers mean something specific rather than averaging across leagues you
+# are not really competing in.
+RIVAL_LEAGUES_ENV = "FPL_RIVAL_LEAGUES"
+
+
+def configured_league_ids() -> Optional[list[int]]:
+    """League ids from FPL_RIVAL_LEAGUES, or None to mean 'all capturable'."""
+    raw = os.environ.get(RIVAL_LEAGUES_ENV, "").strip()
+    if not raw:
+        return None
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                ids.append(int(part))
+            except ValueError:
+                logger.warning("ignoring non-numeric league id %r in %s",
+                               part, RIVAL_LEAGUES_ENV)
+    return ids or None
 
 
 def _now() -> str:
@@ -110,26 +133,39 @@ async def capture_league(conn: sqlite3.Connection, client: FPLClient, league: di
     return captured
 
 
-def league_ownership(conn: sqlite3.Connection, gameweek: int) -> dict[int, dict[str, float]]:
-    """Ownership and effective ownership across all captured rivals for a gameweek.
+def league_ownership(conn: sqlite3.Connection, gameweek: int,
+                     league_ids: Optional[list[int]] = None) -> dict[int, dict[str, float]]:
+    """Ownership and effective ownership among rivals for a gameweek.
 
     Effective ownership counts a captain twice, because that is how much of the field's
     score a player actually drives: EO = (owners + captains) / managers.
+
+    `league_ids` restricts the field to those leagues. Without it every captured rival
+    counts, which blends leagues you care about with ones you do not.
     """
+    scope = ""
+    params: list[Any] = [gameweek]
+    if league_ids:
+        placeholders = ",".join("?" * len(league_ids))
+        scope = (f" AND rs.entry_id IN (SELECT entry_id FROM rival "
+                 f"WHERE league_id IN ({placeholders}))")
+        params.extend(league_ids)
+
     total = conn.execute(
-        "SELECT COUNT(DISTINCT entry_id) AS n FROM rival_squad WHERE gameweek = ?",
-        (gameweek,),
+        f"SELECT COUNT(DISTINCT rs.entry_id) AS n FROM rival_squad rs "
+        f"WHERE rs.gameweek = ?{scope}", params,
     ).fetchone()["n"]
     if not total:
         return {}
 
     ownership: dict[int, dict[str, float]] = {}
     for row in conn.execute(
-        """SELECT element_id,
-                  COUNT(DISTINCT entry_id) AS owners,
-                  SUM(is_captain) AS captains
-           FROM rival_squad WHERE gameweek = ? GROUP BY element_id""",
-        (gameweek,),
+        f"""SELECT rs.element_id,
+                   COUNT(DISTINCT rs.entry_id) AS owners,
+                   SUM(rs.is_captain) AS captains
+            FROM rival_squad rs WHERE rs.gameweek = ?{scope}
+            GROUP BY rs.element_id""",
+        params,
     ):
         owners = row["owners"] or 0
         captains = row["captains"] or 0
@@ -162,8 +198,9 @@ async def _run(args) -> int:
             return 1
 
         leagues = capturable_leagues(client.user_info, args.max_rivals, args.include_global)
-        if args.league:
-            leagues = [lg for lg in leagues if lg["id"] in set(args.league)]
+        wanted = args.league or configured_league_ids()
+        if wanted:
+            leagues = [lg for lg in leagues if lg["id"] in set(wanted)]
         if not leagues:
             logger.error("no capturable leagues; all are global or above the rival cap")
             return 1
@@ -171,7 +208,7 @@ async def _run(args) -> int:
         for league in leagues:
             await capture_league(conn, client, league, gameweek, args.max_rivals, own_entry)
 
-        ownership = league_ownership(conn, gameweek)
+        ownership = league_ownership(conn, gameweek, [lg["id"] for lg in leagues])
         logger.info("%s players owned across your leagues in gw%s", len(ownership), gameweek)
         return 0
     finally:
@@ -185,7 +222,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--gameweek", type=int, default=None)
     parser.add_argument("--max-rivals", type=int, default=DEFAULT_MAX_RIVALS)
     parser.add_argument("--league", type=int, action="append",
-                        help="restrict to these league ids")
+                        help=f"restrict to these league ids "
+                             f"(default: ${RIVAL_LEAGUES_ENV}, else all capturable)")
     parser.add_argument("--include-global", action="store_true",
                         help="also consider FPL's global leagues (usually far too large)")
     args = parser.parse_args(argv)
