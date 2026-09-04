@@ -8,7 +8,7 @@ from unittest import mock
 from fpl_agent.engine import settle, storage
 from fpl_agent.engine.projection import MODEL_VERSION
 from fpl_agent.engine.settle import ActualsMissing, GameweekNotFinished
-from fpl_agent.engine.snapshot import BackfillResult
+from fpl_agent.engine.actuals import BackfillResult
 
 
 def _seed_outcomes(conn, rows):

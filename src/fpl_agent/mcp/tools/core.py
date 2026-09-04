@@ -10,14 +10,10 @@ import functools
 import inspect
 import logging
 import os
-import uuid
-from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
 
 from ...headless_auth import env_flag
-from ...models import TransferPayload
-from ...rotowire_scraper import RotoWireLineupScraper
 from ...sessions import sessions
 from ...reference import reference
 

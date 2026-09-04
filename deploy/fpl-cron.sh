@@ -61,14 +61,46 @@ run() {
     "$AGENT" "$@"
 }
 
+# Ask the warehouse a question, and fail loudly if it could not be asked.
+#
+# The obvious version of this swallowed stderr and returned an empty string, so
+# a missing sqlite3 binary - which is the default state of a fresh Debian or
+# Ubuntu box, where python has the module but the CLI is a separate package -
+# produced "nothing to project" and exit 0. That is this project's oldest bug
+# wearing a shell script: a confident report of nothing to do, from a run that
+# never managed to look.
+ask() {
+    local out
+    if ! out=$(sqlite3 -readonly "$DB" "$1" 2>&1); then
+        echo "could not read $DB: ${out:-sqlite3 failed with no message}" >&2
+        return 1
+    fi
+    printf '%s' "$out"
+}
+
+require_sqlite() {
+    command -v sqlite3 >/dev/null 2>&1 && return 0
+    echo "sqlite3 is not installed, so this script cannot ask the warehouse what" >&2
+    echo "needs doing. Install it (apt install sqlite3) - python's sqlite3 module" >&2
+    echo "is not the same thing and does not provide the command." >&2
+    return 1
+}
+
 # The highest finished gameweek that has never been graded. Absence from
 # `outcome` is the test rather than a marker file: the warehouse is the only
 # state worth trusting, and a marker file can disagree with it.
+# A gameweek is only settleable if a projection was made *before* it was played, from a
+# snapshot targeting it. Without that second condition this offers up every gameweek that
+# finished before the warehouse existed - `settle` refuses them with exit 1, correctly,
+# and cron then mails a failure every morning for the rest of the season. An alert that
+# fires daily and can never be acted on is worse than no alert.
 next_gameweek_to_settle() {
-    sqlite3 -readonly "$DB" "
-        SELECT MAX(event) FROM fixture
-         WHERE finished = 1
-           AND event NOT IN (SELECT DISTINCT gameweek FROM outcome);" 2>/dev/null
+    ask "SELECT MAX(event) FROM fixture
+          WHERE finished = 1
+            AND event NOT IN (SELECT DISTINCT gameweek FROM outcome)
+            AND event IN (SELECT DISTINCT p.gameweek FROM projection p
+                            JOIN snapshot s ON s.id = p.snapshot_id
+                                           AND s.gameweek = p.gameweek);"
 }
 
 # FPL's deadline is 90 minutes before the first kickoff of the gameweek. Derived
@@ -77,12 +109,11 @@ next_gameweek_to_settle() {
 # deadline. bootstrap-static's `deadline_time` is authoritative and the warehouse
 # does not store it yet.
 hours_to_deadline() {
-    sqlite3 -readonly "$DB" "
-        SELECT CAST((julianday(MIN(kickoff_time)) - 90.0/1440 - julianday('now'))
-                    * 24 AS INTEGER)
-          FROM fixture
-         WHERE finished = 0
-           AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0);" 2>/dev/null
+    ask "SELECT CAST((julianday(MIN(kickoff_time)) - 90.0/1440 - julianday('now'))
+                     * 24 AS INTEGER)
+           FROM fixture
+          WHERE finished = 0
+            AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0);"
 }
 
 job_daily() {
@@ -92,7 +123,12 @@ job_daily() {
     run snapshot --backfill-only || { rc=$?; status=$rc
         echo "backfill exited $rc" >&2; }
 
-    gw="$(next_gameweek_to_settle)"
+    # A failed query is not "nothing to settle". Say so and give up the settle,
+    # rather than reporting a clean run that never asked the question.
+    if ! gw="$(next_gameweek_to_settle)"; then
+        echo "cannot tell whether a gameweek needs grading; not settling" >&2
+        return "${status:-0}"
+    fi
     if [ -n "$gw" ]; then
         echo "gameweek $gw has finished and has never been graded; settling it"
         run settle --gameweek "$gw" --learn || { rc=$?; status=$rc
@@ -108,7 +144,13 @@ job_daily() {
 # answers. Re-snapshot each time rather than projecting over stale lineups.
 job_deadline() {
     local hours status=0 rc
-    hours="$(hours_to_deadline)"
+    # Distinguish "the warehouse says there is no next fixture" from "the
+    # warehouse could not be read". The first is a quiet, correct no-op at the
+    # end of a season; the second used to look exactly like it.
+    if ! hours="$(hours_to_deadline)"; then
+        echo "cannot tell when the next deadline is; not projecting" >&2
+        return 2
+    fi
     if [ -z "$hours" ]; then
         echo "no unfinished fixtures; nothing to project"
         return 0
@@ -142,11 +184,25 @@ job_notify() {
 }
 
 case "$JOB" in
+    daily|deadline) require_sqlite || exit 2 ;;
+esac
+
+case "$JOB" in
     daily)    job_daily ;;
     deadline) job_deadline ;;
     *)        echo "usage: $0 [--dry-run] {daily|deadline}" >&2; exit 64 ;;
 esac
 JOB_STATUS=$?
+
+# Write the brief before notifying. `notify` only ever sends the handful of lines worth
+# interrupting someone for; the brief is the rest of the reasoning, and `logs/` is
+# tracked precisely so that record survives. Failing to write it is not worth failing a
+# run over - the snapshot is the irrecoverable asset - so its exit code is reported and
+# then dropped.
+#
+# It rewrites a tracked file, so a server's checkout will show `logs/gwNN.md` modified.
+# `git pull` there will refuse until those changes are committed or discarded.
+run brief || echo "brief exited $?; the push below still reflects the same evaluation" >&2
 
 # The job's own exit code wins. A failed push must never be what makes a `daily` run
 # look like it lost the snapshot it actually captured: the snapshot is the irrecoverable

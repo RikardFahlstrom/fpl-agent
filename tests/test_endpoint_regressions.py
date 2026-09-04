@@ -264,7 +264,16 @@ class CurrentGameweekTests(_StoreFixture):
 
 class FixtureWindowTests(_StoreFixture):
     async def test_requesting_n_gameweeks_returns_n_upcoming_fixtures(self):
-        """The window started at the finished current GW, so N returned N-1 fixtures."""
+        """The window started at the finished current GW, so N returned N-1 fixtures.
+
+        A second case used to assert the same thing through the old MCP
+        `recommend_transfers`, which listed each candidate's next three fixtures.
+        That tool re-derived its advice from the live API and has been replaced by an
+        adapter over the engine, so the fixture list it printed is gone - but the
+        window is `reference.upcoming_fixtures`, and both callers always shared it.
+        The negative assertion moved here rather than being dropped: GW2 is the
+        current gameweek and is already played, so it must not appear.
+        """
         self.activate(_FakeClient())
 
         output = await self.call_tool(
@@ -272,36 +281,9 @@ class FixtureWindowTests(_StoreFixture):
         )
 
         self.assertIn("Next 2 Fixtures", output)
+        self.assertNotIn("GW2:", output)
         self.assertIn("GW3", output)
         self.assertIn("GW4", output)
-
-
-    async def test_transfer_candidate_fixtures_skip_the_finished_gameweek(self):
-        """recommend_transfers listed the current GW even once it had been played."""
-        bootstrap = _bootstrap()
-        bootstrap["elements"] = [_element(1, 1, status="i", news="Knock")]
-        reference.bootstrap_data = BootstrapData(**bootstrap)
-        reference._build_player_indices()
-
-        class _InjuredSquadClient(_FakeClient):
-            async def get_my_team(self, entry_id):
-                return {
-                    "picks": [{"element": 1, "position": 1, "multiplier": 1,
-                               "is_captain": False, "is_vice_captain": False,
-                               "selling_price": 50, "purchase_price": 50}],
-                    "chips": [],
-                    "transfers": {"bank": 5, "value": 1000, "limit": 1,
-                                  "made": 0, "cost": 4},
-                }
-
-        self.activate(_InjuredSquadClient())
-
-        output = await self.call_tool("recommend_transfers")
-
-        self.assertIn("Next fixtures:", output)
-        # GW2 is the current gameweek but is already finished, so it must not appear
-        self.assertNotIn("GW2(", output)
-        self.assertIn("GW3(", output)
 
 
 class SquadAnalysisTests(_StoreFixture):

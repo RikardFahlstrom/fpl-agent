@@ -319,6 +319,84 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     return recommendations[:limit]
 
 
+def banner(context: dict[str, Any]) -> str:
+    """What the whole list is priced against, in one line.
+
+    It comes first and it is not decoration. Under an active transfer chip nothing
+    below is charged a hit and single like-for-like swaps say much less than usual,
+    because a wildcard rebuilds the squad rather than replacing one player. With no
+    free transfer every line has already been docked four points. A reader who sees
+    the ranking without this line is reading a different recommendation.
+    """
+    if context["chip"]:
+        return (f"{context['chip'].upper()} ACTIVE this gameweek: transfers cost "
+                f"nothing, so no hit is charged below. Bear in mind these are single "
+                f"like-for-like swaps ranked one at a time - a wildcard rebuilds the "
+                f"whole squad, which this tool does not plan.")
+    if context["hit_cost"]:
+        why = ("no free transfers left"
+               if context["free_transfers"] == 0
+               else "free transfers not recorded in this snapshot, so assumed none")
+        return (f"{why}: every move below is charged a {context['hit_cost']}-point "
+                f"hit and ranked on the net gain.")
+    count = context["free_transfers"]
+    return (f"{count} free transfer{'' if count == 1 else 's'}: no hit. Each "
+            f"option is priced as the one move you make, not as a running plan.")
+
+
+def render(context: dict[str, Any], recommendations: list[dict[str, Any]],
+           weeks: int = HORIZON_GAMEWEEKS) -> str:
+    """The banner and the ranked list, as text.
+
+    One renderer, because there is one recommendation. The CLI prints this and the
+    MCP tool returns it; neither formats a list of its own, so the two interfaces
+    cannot drift into giving the same warehouse two different answers.
+    """
+    lines = ["", banner(context)]
+
+    if not recommendations:
+        tail = (f" that survives a {context['hit_cost']}-point hit"
+                if context["hit_cost"] else "")
+        lines.append(
+            f"No transfer improves the squad over the horizon within budget{tail}.")
+        return "\n".join(lines)
+
+    lines += ["", f"Transfer candidates over the next {weeks} gameweeks", ""]
+    for i, r in enumerate(recommendations, 1):
+        flag = {"tonight": "ACT TONIGHT", "soon": "watch price",
+                "none": "", "missed": "out of reach"}[r["urgency"]]
+        bench = "  [bench slot]" if r["out"]["slot"] == "bench" else ""
+        lines.append(f"{i}. {r['in']['name']} ({r['in']['team']}) "
+                     f"£{r['in']['now_cost'] / 10:.1f}m  for  {r['out']['name']} "
+                     f"£{r['out']['selling_price'] / 10:.1f}m{bench}")
+        worth = (f"+{r['xp_delta']} xP over {weeks}gw "
+                 f"({r['out']['xp']} -> {r['in']['xp']})")
+        if r["out"]["slot"] == "bench":
+            worth += (f", discounted from +{r['raw_xp_delta']} because the bench "
+                      f"only scores through substitutions")
+        if r["hit_cost"]:
+            worth += (f"; net +{r['net_xp_delta']} after the "
+                      f"{r['hit_cost']}-point hit")
+        lines.append(f"   {worth}" + (f"   [{flag}]" if flag else ""))
+        if r["urgency"] in ("tonight", "soon"):
+            lines.append(f"   {r['affordability']['reason']}")
+
+        notes = []
+        if r["in"].get("status") == "d":
+            notes.append(f"doubtful: {r['in']['chance']}% chance of playing, "
+                         f"already priced into the xP above")
+        if r["in"]["league_eo"] is not None:
+            notes.append(f"in: {r['in']['profile']} "
+                         f"({r['in']['league_eo'] * 100:.0f}% EO in your leagues)")
+        if r["out"]["profile"] == "template":
+            notes.append(f"selling {r['out']['name']}, owned by "
+                         f"{r['out']['league_eo'] * 100:.0f}% of your leagues - "
+                         f"a haul costs you ground")
+        if notes:
+            lines.append(f"   {' | '.join(notes)}")
+    return "\n".join(lines)
+
+
 def record_decision(conn: sqlite3.Connection, recommendation: dict[str, Any],
                     kind: str = "transfer", status: str = "proposed") -> int:
     # The `xp_delta` column keeps its meaning - gross gain - so existing rows stay
@@ -395,61 +473,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"\nCannot recommend: {missing}", file=sys.stderr)
             return 1
 
-        if context["chip"]:
-            print(f"\n{context['chip'].upper()} ACTIVE this gameweek: transfers cost "
-                  f"nothing, so no hit is charged below. Bear in mind these are single "
-                  f"like-for-like swaps ranked one at a time - a wildcard rebuilds the "
-                  f"whole squad, which this tool does not plan.")
-        elif context["hit_cost"]:
-            why = ("no free transfers left"
-                   if context["free_transfers"] == 0
-                   else "free transfers not recorded in this snapshot, so assumed none")
-            print(f"\n{why}: every move below is charged a {context['hit_cost']}-point "
-                  f"hit and ranked on the net gain.")
-        else:
-            count = context["free_transfers"]
-            print(f"\n{count} free transfer{'' if count == 1 else 's'}: no hit. Each "
-                  f"option is priced as the one move you make, not as a running plan.")
-
+        print(render(context, recommendations, args.weeks))
         if not recommendations:
-            tail = (f" that survives a {context['hit_cost']}-point hit"
-                    if context["hit_cost"] else "")
-            print(f"No transfer improves the squad over the horizon within budget{tail}.")
             return 0
-
-        print(f"\nTransfer candidates over the next {args.weeks} gameweeks\n")
-        for i, r in enumerate(recommendations, 1):
-            flag = {"tonight": "ACT TONIGHT", "soon": "watch price",
-                    "none": "", "missed": "out of reach"}[r["urgency"]]
-            bench = "  [bench slot]" if r["out"]["slot"] == "bench" else ""
-            print(f"{i}. {r['in']['name']} ({r['in']['team']}) "
-                  f"£{r['in']['now_cost'] / 10:.1f}m  for  {r['out']['name']} "
-                  f"£{r['out']['selling_price'] / 10:.1f}m{bench}")
-            worth = (f"+{r['xp_delta']} xP over {args.weeks}gw "
-                     f"({r['out']['xp']} -> {r['in']['xp']})")
-            if r["out"]["slot"] == "bench":
-                worth += (f", discounted from +{r['raw_xp_delta']} because the bench "
-                          f"only scores through substitutions")
-            if r["hit_cost"]:
-                worth += (f"; net +{r['net_xp_delta']} after the "
-                          f"{r['hit_cost']}-point hit")
-            print(f"   {worth}" + (f"   [{flag}]" if flag else ""))
-            if r["urgency"] in ("tonight", "soon"):
-                print(f"   {r['affordability']['reason']}")
-
-            notes = []
-            if r["in"].get("status") == "d":
-                notes.append(f"doubtful: {r['in']['chance']}% chance of playing, "
-                             f"already priced into the xP above")
-            if r["in"]["league_eo"] is not None:
-                notes.append(f"in: {r['in']['profile']} "
-                             f"({r['in']['league_eo'] * 100:.0f}% EO in your leagues)")
-            if r["out"]["profile"] == "template":
-                notes.append(f"selling {r['out']['name']}, owned by "
-                             f"{r['out']['league_eo'] * 100:.0f}% of your leagues - "
-                             f"a haul costs you ground")
-            if notes:
-                print(f"   {' | '.join(notes)}")
 
         if args.record:
             decision_id = record_decision(conn, recommendations[0])

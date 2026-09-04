@@ -22,9 +22,21 @@ attempting it every morning costs one process and answers correctly.
 | `deadline` | hourly | Cheap when idle: it reads one row and exits. Inside 26 hours of a deadline it re-snapshots and re-projects, because predicted lineups firm up on matchday and a projection built 24 hours out is a different answer from one built 3 hours out. |
 
 `daily` also attempts to settle: it asks the warehouse for the highest finished
-gameweek that has never been graded and, if there is one, grades it and drafts a
-learning. Absence from the `outcome` table is the test, not a marker file - the
+gameweek that has never been graded **and can be** - one with a projection made before
+it was played, from a snapshot targeting it - and if there is one, grades it and drafts
+a learning. Absence from the `outcome` table is the test, not a marker file: the
 warehouse is the only state worth trusting.
+
+Both conditions matter. Gameweeks that finished before this warehouse existed have no
+such projection and never will, so offering them up would make `settle` refuse with
+exit 1 every morning for the rest of the season. An alert that fires daily and can never
+be acted on is worse than no alert at all.
+
+Both jobs end by writing `logs/gwNN.md` and then notifying. The push carries only the few
+lines worth interrupting someone for; the brief is the rest of the reasoning, and `logs/`
+is tracked so that record survives. Note that this rewrites a tracked file, so a server's
+checkout will show it modified and `git pull` will refuse until those changes are
+committed or discarded.
 
 ## `status` is the last line of a run
 
