@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .. import config
-from . import brief, storage
+from . import brief, status, storage
 from .brief import Trigger
 
 logger = logging.getLogger("fpl_notify")
@@ -239,7 +239,12 @@ def pending(conn: sqlite3.Connection,
     cannot legitimately share a fingerprint, but if they ever did, one push is the right
     answer and two is the failure mode this module exists to prevent.
     """
-    already = storage.sent_fingerprints(conn, [t.fingerprint for t in triggers])
+    try:
+        already = storage.sent_fingerprints(conn, [t.fingerprint for t in triggers])
+    except sqlite3.OperationalError:
+        # A warehouse captured before this table existed, opened read-only by a dry run
+        # so that it stays read-only. Nothing has ever been sent from it.
+        already = set()
     seen: set[str] = set()
     new: list[Trigger] = []
     suppressed: list[Trigger] = []
@@ -360,7 +365,13 @@ def main(argv: Optional[list[str]] = None) -> int:
               f"Run `make snapshot`.", file=sys.stderr)
         return EXIT_UNREADABLE
     try:
-        conn = storage.connect(args.db)
+        # A dry run must leave the warehouse exactly as it found it. `storage.connect`
+        # migrates the schema, which writes - so a dry run that used it would change the
+        # file's mtime while printing "nothing recorded", which is the shape of untruth
+        # this project keeps having to fix. Read-only, and `pending` copes if the
+        # notification table is not there yet.
+        conn = (status.connect_readonly(args.db) if args.dry_run
+                else storage.connect(args.db))
     except sqlite3.Error as e:
         print(f"could not open {args.db}: {e}", file=sys.stderr)
         return EXIT_UNREADABLE

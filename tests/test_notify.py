@@ -425,6 +425,37 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(self.recorded(), [])
         self.assertIn("nothing recorded", out)
 
+    def test_a_dry_run_does_not_write_to_the_warehouse_at_all(self):
+        """Not one byte, on a warehouse that is already up to date.
+
+        This one passes even against a dry run that opens read-write, because the schema
+        is already migrated here and there is nothing left to write. It is the sibling
+        below, on a warehouse predating the notification table, that actually fails when
+        the connection is not read-only. Both are kept: this guards the day a dry run
+        starts recording, that one guards the day it starts migrating.
+        """
+        before = self.db.read_bytes()
+        code, out, _ = self.run_notify("--gameweek", str(GAMEWEEK), "--dry-run")
+        self.assertEqual(code, notify.EXIT_OK)
+        self.assertIn("nothing recorded", out)
+        self.assertEqual(self.db.read_bytes(), before,
+                         "a dry run modified the warehouse")
+
+    def test_a_dry_run_works_on_a_warehouse_predating_the_notifier(self):
+        """Read-only means the notification table may genuinely not be there yet."""
+        conn = storage.connect(self.db)
+        conn.execute("DROP TABLE notification")
+        conn.commit()
+        conn.close()
+        before = self.db.read_bytes()
+
+        code, out, _ = self.run_notify("--gameweek", str(GAMEWEEK), "--dry-run")
+
+        self.assertEqual(code, notify.EXIT_OK)
+        self.assertIn("would be sent", out)
+        self.assertEqual(self.db.read_bytes(), before,
+                         "a dry run created the table it was only meant to read")
+
     def test_a_dry_run_names_what_is_being_suppressed_as_already_sent(self):
         code, _, _ = self.run_notify("--gameweek", str(GAMEWEEK))
         self.assertEqual(code, notify.EXIT_OK)
