@@ -2,7 +2,7 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: snapshot backfill project rivals recommend record deadline settle status test
+.PHONY: snapshot backfill project rivals recommend record deadline settle status brief test
 
 # --force is deliberate. Bare `snapshot` skips when one already exists for today, which
 # is a guard for a hand-run repeat; every scheduled caller wants the opposite. Prices
@@ -40,6 +40,12 @@ deadline: snapshot backfill project rivals recommend status
 
 settle:              ## grade a finished gameweek and draft a learning: make settle GW=3
 	$(AGENT) settle --gameweek $(GW) --learn
+
+# Read-only, and writes exactly one file: logs/gwNN.md, which is tracked. Separate from
+# `deadline` because the brief is what a person reads, and a person is not always there
+# when the cron runs - the notifier decides when to push, this decides what to say.
+brief:               ## write the gameweek brief: make brief
+	$(AGENT) brief
 
 test:                ## run the suite (tests/ is not a package, so -t tests)
 	PYTHONPATH=src:tests .venv/bin/python -m unittest discover -s tests -t tests -p 'test_*.py'
