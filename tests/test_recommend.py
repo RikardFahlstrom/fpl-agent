@@ -27,8 +27,20 @@ def element(element_id, team, element_type, cost, xg=0.5, likelihood=0, percent=
     }
 
 
-class RecommendTests(unittest.TestCase):
-    def _seed(self, bank=10, squad_ids=(1,), elements=None):
+def chip(name, status, chip_type="transfer"):
+    """A chip in the shape `my-team` actually returns it.
+
+    Copied from a real snapshot: `status_for_entry` is "active" while the chip is in
+    play, and `chip_type` separates transfer chips from team ones.
+    """
+    return {"chip_type": chip_type, "id": 1, "is_pending": False, "name": name,
+            "number": 1, "played_by_entry": [], "start_event": 2,
+            "status_for_entry": status, "stop_event": 19}
+
+
+class SeedMixin:
+    def _seed(self, bank=10, squad_ids=(1,), elements=None,
+              limit=1, made=0, cost=4, chips=()):
         conn = storage.connect(":memory:")
         self.addCleanup(conn.close)
         elements = elements or [
@@ -61,10 +73,13 @@ class RecommendTests(unittest.TestCase):
                        "is_captain": False, "is_vice_captain": False,
                        "selling_price": 50, "purchase_price": 50}
                       for i, eid in enumerate(squad_ids)],
-            "transfers": {"bank": bank, "value": 1000, "limit": 1, "made": 0, "cost": 4},
-            "chips": []})
+            "transfers": {"bank": bank, "value": 1000, "limit": limit, "made": made,
+                          "cost": cost},
+            "chips": list(chips)})
         return conn
 
+
+class RecommendTests(SeedMixin, unittest.TestCase):
     def test_recommends_a_like_for_like_upgrade(self):
         conn = self._seed()
         results = recommend.recommend(conn, weeks=3)
@@ -186,6 +201,115 @@ class RecommendTests(unittest.TestCase):
         conn = self._seed(squad_ids=())
         with self.assertRaises(LookupError):
             recommend.recommend(conn, weeks=3)
+
+
+class TransferCostTests(SeedMixin, unittest.TestCase):
+    """The hit a move costs, and what it does to the ranking.
+
+    Regression: every recommendation was ranked on gross xP gain. With no free
+    transfers a +1.2 upgrade is net -2.8 and was still offered first.
+    """
+
+    # A squad with an XI upgrade worth +7.25 and the same upgrade on the bench, which
+    # the bench discount reduces to about +1.09 - the shape the review describes.
+    ELEMENTS = [element(1, team=1, element_type=3, cost=50, xg=0.10),   # starter
+                element(5, team=1, element_type=3, cost=50, xg=0.10),   # bench
+                element(2, team=2, element_type=3, cost=50, xg=0.90)]   # the upgrade
+
+    def _bench_seed(self, **kwargs):
+        conn = self._seed(squad_ids=(1, 5), elements=self.ELEMENTS, **kwargs)
+        conn.execute("UPDATE my_squad SET position = 13 WHERE element_id = 5")
+        conn.commit()
+        return conn
+
+    def test_a_hit_is_charged_when_no_free_transfers_remain(self):
+        conn = self._seed(limit=0, made=0, cost=4)
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        self.assertTrue(results)
+        for r in results:
+            self.assertEqual(r["hit_cost"], 4)
+            self.assertEqual(r["free_transfers"], 0)
+            self.assertIsNone(r["chip"])
+            self.assertAlmostEqual(r["net_xp_delta"], r["xp_delta"] - 4, places=2)
+
+    def test_a_move_that_does_not_survive_its_hit_is_dropped(self):
+        """+1.09 gross on the bench is net -2.91, which is not a recommendation."""
+        free = recommend.recommend(self._bench_seed(limit=1), weeks=3, limit=50)
+        by_out = {r["out"]["element_id"]: r for r in free}
+        self.assertIn(5, by_out, "with a free transfer the bench swap is still offered")
+        self.assertLess(by_out[5]["xp_delta"], 4)
+
+        hit = recommend.recommend(self._bench_seed(limit=0), weeks=3, limit=50)
+        outs = {r["out"]["element_id"] for r in hit}
+        self.assertNotIn(5, outs, "a net-negative move must not be offered")
+        self.assertIn(1, outs, "the +7.25 XI upgrade clears the hit and survives")
+        for r in hit:
+            self.assertGreater(r["net_xp_delta"], 0)
+
+    def test_every_option_is_priced_as_the_next_transfer_not_as_a_plan(self):
+        """The list is alternatives, not a sequence, so option 2 is not billed for 1.
+
+        With one free transfer every option is free: you are going to make one of
+        these moves, not all of them.
+        """
+        results = recommend.recommend(self._bench_seed(limit=1), weeks=3, limit=50)
+        self.assertGreater(len(results), 1)
+        for r in results:
+            self.assertEqual(r["hit_cost"], 0)
+            self.assertAlmostEqual(r["net_xp_delta"], r["xp_delta"], places=2)
+
+    def test_an_active_wildcard_charges_nothing(self):
+        conn = self._seed(limit=0, made=0, cost=4,
+                          chips=[chip("wildcard", "active"),
+                                 chip("freehit", "unavailable")])
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        self.assertTrue(results)
+        for r in results:
+            self.assertEqual(r["chip"], "wildcard")
+            self.assertEqual(r["hit_cost"], 0)
+            self.assertAlmostEqual(r["net_xp_delta"], r["xp_delta"], places=2)
+
+    def test_a_free_hit_also_charges_nothing(self):
+        conn = self._seed(limit=0, chips=[chip("freehit", "active")])
+        self.assertEqual(recommend.transfer_context(conn)["hit_cost"], 0)
+        self.assertEqual(recommend.transfer_context(conn)["chip"], "freehit")
+
+    def test_a_played_or_available_chip_is_not_an_active_one(self):
+        for status in ("available", "played", "unavailable"):
+            conn = self._seed(limit=0, chips=[chip("wildcard", status)])
+            context = recommend.transfer_context(conn)
+            self.assertIsNone(context["chip"], status)
+            self.assertEqual(context["hit_cost"], 4, status)
+
+    def test_a_team_chip_does_not_make_transfers_free(self):
+        """A bench boost changes what the squad scores, not what a move costs."""
+        conn = self._seed(limit=0, chips=[chip("bboost", "active", chip_type="team")])
+        context = recommend.transfer_context(conn)
+        self.assertIsNone(context["chip"])
+        self.assertEqual(context["hit_cost"], 4)
+
+    def test_unrecorded_free_transfers_are_priced_as_none(self):
+        """A snapshot missing `transfers.limit` is not evidence of a free transfer."""
+        conn = self._seed(limit=None, cost=4)
+        context = recommend.transfer_context(conn)
+        self.assertIsNone(context["free_transfers"])
+        self.assertEqual(context["hit_cost"], 4)
+
+    def test_the_gross_gain_stays_visible_alongside_the_net(self):
+        """-2.8 net on a +1.2 gross move is a different message from -2.8 flat."""
+        r = recommend.recommend(self._seed(limit=0), weeks=3, limit=50)[0]
+        self.assertGreater(r["xp_delta"], r["net_xp_delta"])
+        self.assertEqual(r["xp_delta"], r["raw_xp_delta"])
+
+    def test_the_hit_reaches_the_decision_log(self):
+        conn = self._seed(limit=0)
+        top = recommend.recommend(conn, weeks=3, limit=50)[0]
+        recommend.record_decision(conn, top)
+        row = conn.execute("SELECT payload, rationale, xp_delta FROM decision").fetchone()
+        self.assertIn("4-point hit", row["rationale"])
+        # the column keeps its meaning - gross - while the net rides along in the JSON
+        self.assertEqual(row["xp_delta"], top["xp_delta"])
+        self.assertEqual(json.loads(row["payload"])["net_xp_delta"], top["net_xp_delta"])
 
 
 class DecisionLogTests(unittest.TestCase):
