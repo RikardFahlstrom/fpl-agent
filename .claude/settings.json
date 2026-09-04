@@ -21,7 +21,9 @@
       "Read(./fpl-agent.ini)",
       "Read(./*.ini)",
       "Read(./session.json)",
-      "Read(./.fpl-session.json)"
+      "Read(./.fpl-session.json)",
+      "Read(~/.config/fpl-mcp/session.json)",
+      "Read(~/.config/fpl-mcp/**)"
     ]
   },
   "hooks": {

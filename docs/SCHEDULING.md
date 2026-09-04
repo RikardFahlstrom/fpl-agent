@@ -87,7 +87,7 @@ actionable without opening the log:
 | --- | --- | --- |
 | 0 | Success, or nothing to do | Nothing. |
 | 1 | `settle`: the gameweek has not finished, or there was nothing to grade | Nothing. This is the normal answer most mornings. |
-| 2 | `snapshot`: auth is not configured | Fix `fpl-agent.ini` or the environment. |
+| 2 | `snapshot`: auth is not configured. `status`: the warehouse could not be read at all | Fix `fpl-agent.ini` or the environment; for `status`, the database is missing or is not a warehouse. |
 | 3 | `snapshot`: auth is configured but no session could be established | The refresh token has died and the browser fallback failed. Log in once by hand. |
 | 4 | `snapshot`: the squad the preflight promised was not captured | Usually `my-team/` returning 403 during an FPL maintenance window. The market half was kept; re-run later. |
 | 5 | Backfill failed for more than 5% of players | Transient FPL trouble. Re-run; if it persists, the API shape may have changed. |
@@ -176,7 +176,9 @@ the scheduler currently believes.
 
 | Path | Tracked | Why |
 | --- | --- | --- |
-| `src/`, `tests/`, `deploy/`, `.claude/skills/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
+| `src/`, `tests/`, `deploy/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
+| `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/` | yes | shared: the workflow, the command allowlist, and the pre-commit test hook |
+| `.claude/settings.local.json` | no | personal, and globally gitignored on this machine |
 | `learnings/*.md` | yes | the reasoning, which is not re-derivable |
 | `logs/actions.jsonl` | yes | what was decided, append-only |
 | `docs/` | yes | plan and conventions |
