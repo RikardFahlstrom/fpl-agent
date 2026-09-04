@@ -176,6 +176,15 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     second set of rows behind under whatever MODEL_VERSION the code has moved on to.
     An unprojected horizon is an error, not a cue to project - see `stored_horizon`.
 
+    Candidates include the *doubtful* as well as the fully available. FPL's `d` status
+    always comes with a `chance_of_playing_next_round`, and `projection.availability`
+    already scales the whole projection by exactly that percentage: a 75% doubt is
+    worth 75% of his points before he reaches this list. Filtering him out as well
+    charged the same doubt twice and then rounded it to zero - the same double-count
+    that was taking predicted starters out of the XI in `lineups`. Statuses with no
+    percentage to scale by (`i`, `s`, `u`, `n` - injured, suspended, unavailable, on
+    loan) project to zero anyway and are excluded outright, so the whitelist stays
+    explicit rather than trusting a status code FPL has not invented yet.
     """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
@@ -212,13 +221,16 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     for row in squad:
         club_counts[row["team_id"]] = club_counts.get(row["team_id"], 0) + 1
 
+    # 'a' available, 'd' doubtful. See the docstring for why the doubtful belong here:
+    # their projection has already been cut by FPL's own percentage.
     candidates = conn.execute(
         """SELECT ps.element_id, ps.now_cost, p.web_name, p.element_type, p.team_id,
-                  t.short_name AS team
+                  t.short_name AS team, ps.status,
+                  ps.chance_of_playing_next_round AS chance
            FROM player_snapshot ps
            JOIN player p ON p.element_id = ps.element_id
            JOIN team t ON t.id = p.team_id
-           WHERE ps.snapshot_id = ? AND ps.status = 'a'""",
+           WHERE ps.snapshot_id = ? AND ps.status IN ('a', 'd')""",
         (snapshot["id"],),
     ).fetchall()
 
@@ -281,6 +293,9 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
                 "in": {"element_id": cand["element_id"], "name": cand["web_name"],
                        "team": cand["team"], "now_cost": cand["now_cost"],
                        "xp": round(totals.get(cand["element_id"], 0.0), 2),
+                       # A doubt already discounted the xP above; it is carried through
+                       # so the reader is told, not so it can be charged again.
+                       "status": cand["status"], "chance": cand["chance"],
                        "league_eo": round(in_eo, 3) if in_eo is not None else None,
                        "profile": ownership_profile(in_eo)},
                 "xp_delta": round(gain, 2),
@@ -421,6 +436,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(f"   {r['affordability']['reason']}")
 
             notes = []
+            if r["in"].get("status") == "d":
+                notes.append(f"doubtful: {r['in']['chance']}% chance of playing, "
+                             f"already priced into the xP above")
             if r["in"]["league_eo"] is not None:
                 notes.append(f"in: {r['in']['profile']} "
                              f"({r['in']['league_eo'] * 100:.0f}% EO in your leagues)")

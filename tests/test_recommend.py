@@ -260,6 +260,44 @@ class StoredHorizonTests(SeedMixin, unittest.TestCase):
         self.assertLess(results[0]["in"]["xp"], three[0]["in"]["xp"])
 
 
+class DoubtfulCandidateTests(SeedMixin, unittest.TestCase):
+    """A doubtful player is a candidate; his doubt is applied once, in the projection.
+
+    `projection.availability` already multiplies his whole projection by FPL's own
+    `chance_of_playing_next_round`. Excluding him from the candidate list on top of
+    that charged the same doubt twice and rounded the second charge to certainty.
+    """
+
+    ELEMENTS = [element(1, team=1, element_type=3, cost=50, xg=0.10),
+                element(2, team=2, element_type=3, cost=50, xg=0.90,
+                        status="d", chance=75),
+                element(6, team=2, element_type=3, cost=50, xg=0.90,
+                        status="i", chance=0)]
+
+    def test_a_doubtful_player_can_be_recommended(self):
+        conn = self._seed(elements=self.ELEMENTS)
+        incoming = {r["in"]["element_id"]: r["in"]
+                    for r in recommend.recommend(conn, weeks=3, limit=50)}
+        self.assertIn(2, incoming, "a 75% doubt is a discount, not a disqualification")
+        self.assertEqual(incoming[2]["status"], "d")
+        self.assertEqual(incoming[2]["chance"], 75)
+
+    def test_the_doubt_is_charged_once_at_fpls_own_percentage(self):
+        fit = self._seed(elements=[
+            element(1, team=1, element_type=3, cost=50, xg=0.10),
+            element(2, team=2, element_type=3, cost=50, xg=0.90)])
+        doubtful = self._seed(elements=self.ELEMENTS)
+        fit_xp = recommend.recommend(fit, weeks=3, limit=50)[0]["in"]["xp"]
+        doubtful_xp = {r["in"]["element_id"]: r["in"]["xp"]
+                       for r in recommend.recommend(doubtful, weeks=3, limit=50)}[2]
+        self.assertAlmostEqual(doubtful_xp, fit_xp * 0.75, places=1)
+
+    def test_the_ruled_out_are_still_excluded(self):
+        """No percentage to scale by, so `i` projects to zero and is not a candidate."""
+        conn = self._seed(elements=self.ELEMENTS)
+        ids = {r["in"]["element_id"] for r in recommend.recommend(conn, weeks=3, limit=50)}
+        self.assertNotIn(6, ids)
+
 
 class TransferCostTests(SeedMixin, unittest.TestCase):
     """The hit a move costs, and what it does to the ranking.
