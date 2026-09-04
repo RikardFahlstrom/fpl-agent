@@ -165,7 +165,6 @@ def recommend_transfers(free_transfers: int = 1) -> str:
 Use these resources:
 - `fpl://my/squad` - Current squad with transfer info
 - `fpl://injuries` - Injury and lineup predictions
-- `fpl://injuries/avoid` - Players to avoid
 - `fpl://player/{{player_name}}/summary` - Detailed player analysis
 - `fpl://team/{{team_name}}/fixtures` - Fixture difficulty
 

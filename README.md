@@ -78,7 +78,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (Window
 Use `--directory` rather than `cwd`: Claude Desktop does not reliably apply `cwd` before
 `uv` resolves the project. Restart Claude fully, then check Settings → Connectors.
 
-The server exposes 34 tools, 18 resources (`fpl://…`) and 7 prompts. Ask in names, not
+The server exposes 33 tools, 17 resources (`fpl://…`) and 7 prompts. Ask in names, not
 ids: *"compare Salah and Haaland"*, *"who should I transfer out?"*
 
 ## How it works

@@ -16,17 +16,6 @@ the moment the gameweek turns.**
 Every gameweek without a snapshot is permanently unlearnable. Phase 1 therefore lands
 before any modelling work.
 
-## 1. Repo identity — `fpl-agent`, detached
-
-The login page already brands itself **FPLAgent** (`web.py`: the `FA` seal, "FPLAgent ·
-local connection"). The product name exists; the repo name hasn't caught up.
-`fpl-agent` needs no invention and stops undersells once there is a warehouse and a
-learning loop inside.
-
-Detaching: self-serve fork detachment on GitHub is inconsistent and often needs Support.
-With no stars or issues to preserve, the reliable path is a fresh repo plus a full
-history push. Confirm before relying on either route.
-
 ## 2. Data layer — SQLite, hybrid schema
 
 Typed columns for what the model reads; `raw JSON` for the rest. FPL adds fields between
@@ -236,37 +225,3 @@ in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
 Single manager, not multi-tenant. Python with stdlib `sqlite3`, no ORM. Projections one
 gameweek ahead initially; multi-gameweek horizon later. `make_transfers` stays manual —
 the engine recommends, a human executes. `FPL_READ_ONLY` stays set for scheduled runs.
-
-## 9. Open questions
-
-- *(resolved)* ~~Does `likelihood` mean the same thing at +5 and −5?~~ See below.
-
-### Decided
-
-- **Price changes follow FPL's documented rule.** From its Price Changes page: *Progress
-  shows how far a player has currently moved towards a price change. Predicted Progress
-  estimates where they will be by the time of the next update. When Predicted Progress
-  exceeds 100%, the player is considered Very Likely to rise or fall.*
-
-  So the signal is `projected_percent` crossing ±100, not `likelihood`. `likelihood`
-  turns out to be a derived ordinal band of the same number (±5 is ≥100%, ±4 is 95–99.4,
-  ±3 is 40–94.7, ±2 is 20–39.7, ±1 is 0.1–19.6), so driving off `projected_percent`
-  follows the documented rule directly rather than a banding that could be re-cut.
-
-  FPL is explicit that predictions are *a guide, not a guarantee*, and that team news and
-  the gameweek deadline matter too — which is why urgency is reported alongside expected
-  points rather than folded into it.
-
-- **Planning horizon: 3 gameweeks.** Transfer value is judged on projected points over
-  the next three gameweeks rather than the next one, so a good fixture run counts and a
-  one-week spike does not dominate.
-- **Rivals are modelled.** Squads of managers in your leagues are public for completed
-  gameweeks, so the engine tracks them and reports effective ownership *within your
-  leagues* rather than globally. A template player everyone owns is a risk to skip, not
-  an edge; a differential is only a differential relative to the people you are actually
-  playing against.
-
-  Implemented in `rivals.py`. Only private leagues (`league_type` `x`) under a rival cap
-  are captured: FPL's own leagues are type `s` and unusably large — "Overall" carries
-  around 9.9 million entries. Effective ownership counts a captain twice, matching how
-  much of the field's score a player actually drives.
