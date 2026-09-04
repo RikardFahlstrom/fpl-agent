@@ -91,9 +91,11 @@ class CaptureResult:
     fixtures: int
     squad_rows: int
     lineup_rows: int
-    # The gameweek the lineups were filed under, which is not always the one a reader
-    # expects. Reported, not corrected: the filing rule is a separate question.
-    lineup_gameweek: Optional[int]
+    # The gameweeks the lineups were filed under. Plural, and not assumed equal to
+    # `gameweek`: a match is filed under the event whose fixture list holds its pair of
+    # clubs, which between a deadline and that round's last kickoff is the round being
+    # played rather than the one bootstrap has already moved on to.
+    lineup_gameweeks: list[int]
 
 
 @dataclass
@@ -177,16 +179,20 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> CaptureRe
     # Predicted lineups, for the gameweek being captured. Minutes dominate scoring and
     # FPL's own flag only reports injuries, never rotation.
     gameweek = storage.target_gameweek(bootstrap)
-    lineup_gameweek = None
+    lineup_gameweeks: list[int] = []
     if gameweek is not None:
         try:
             matches = await RotoWireLineupScraper().scrape_match_lineups()
             if matches:
-                lineup_gameweek = gameweek
-                stored, unresolved = lineups.record_lineups(
-                    conn, snapshot_id, gameweek, matches, bootstrap)
+                # The fixtures just fetched are what says which round a scraped match is
+                # in; `gameweek` is bootstrap's `is_next`, which has already advanced by
+                # the time the round it names is being played.
+                captured = lineups.record_lineups(
+                    conn, snapshot_id, gameweek, matches, bootstrap,
+                    fixture_events=lineups.fixture_events(fixtures, bootstrap))
+                lineup_gameweeks = captured.gameweeks
                 logger.info("captured %s lineup entries (%s unresolved)",
-                            stored, len(unresolved))
+                            captured.rows, len(captured.unresolved))
         except Exception as e:
             # A third-party page being down must not cost the market snapshot. It stays a
             # warning, but the summary reports the zero rows rather than staying silent.
@@ -206,7 +212,7 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> CaptureRe
         fixtures=fixture_count,
         squad_rows=count("my_squad"),
         lineup_rows=count("predicted_lineup"),
-        lineup_gameweek=lineup_gameweek,
+        lineup_gameweeks=lineup_gameweeks,
     )
 
 
@@ -214,8 +220,14 @@ def summarise(result: CaptureResult, *, squad_expected: bool) -> str:
     """One line for whoever reads the nightly job's log at 03:00 with no other context."""
     squad = (f"{result.squad_rows} of {SQUAD_SIZE} squad rows" if squad_expected
              else f"{result.squad_rows} squad rows (no session; market only)")
-    filed = (f"filed under gameweek {result.lineup_gameweek}"
-             if result.lineup_gameweek is not None else "filed under no gameweek")
+    # Named individually, not summarised: two gameweeks here means the scrape straddled a
+    # deadline, and that is worth seeing at 03:00 rather than inferring later.
+    if not result.lineup_gameweeks:
+        filed = "filed under no gameweek"
+    else:
+        plural = "s" if len(result.lineup_gameweeks) > 1 else ""
+        filed = (f"filed under gameweek{plural} "
+                 + ", ".join(str(gw) for gw in result.lineup_gameweeks))
     return (f"snapshot {result.snapshot_id} for gameweek {result.gameweek}: "
             f"{result.players} players, {result.fixtures} fixtures, {squad}, "
             f"{result.lineup_rows} lineup rows {filed}")
