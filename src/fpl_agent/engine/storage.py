@@ -3,7 +3,11 @@
 The FPL API serves current state only: prices, ownership, form and the price-change
 projections are overwritten in place with no historical endpoint. Whatever is not
 captured before a gameweek turns cannot be recovered, so this module exists to make
-capture cheap and idempotent.
+capture cheap and repeatable. Reference, per-snapshot and per-gameweek rows are upserted
+on their keys, so re-running a capture overwrites rather than duplicates. `snapshot`
+itself is a plain INSERT: every capture is a new row on purpose, because two captures of
+the same day are two different markets. That is the whole price history, and it is why
+`snapshot_taken_today` guards a hand-run repeat while the scheduled callers force past it.
 
 Shape of the schema: typed columns for the fields the model reads, plus a `raw` JSON
 column holding the untouched payload. A new FPL field (defensive_contribution was added
@@ -296,7 +300,13 @@ def create_snapshot(conn: sqlite3.Connection, bootstrap: dict, kind: str = "manu
 
 
 def snapshot_taken_today(conn: sqlite3.Connection) -> bool:
-    """Whether a snapshot already exists for today (UTC), so capture stays idempotent."""
+    """Whether a snapshot already exists for today (UTC).
+
+    This guards a hand-run repeat, not the scheduled path: `make snapshot` and
+    `deploy/fpl-cron.sh` both pass --force, because a later capture on the same day is a
+    different market - prices resolve nightly and predicted lineups firm up through
+    matchday - and a snapshot skipped at the deadline projects over stale state.
+    """
     today = datetime.now(timezone.utc).date().isoformat()
     row = conn.execute(
         "SELECT 1 FROM snapshot WHERE substr(captured_at, 1, 10) = ? LIMIT 1", (today,)

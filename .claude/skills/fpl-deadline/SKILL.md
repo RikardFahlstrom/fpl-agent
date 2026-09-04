@@ -66,5 +66,8 @@ whole league gains on you. That is reported separately for a reason.
 
 ## Afterwards
 
-`make recommend` with `--record` logs the chosen decision to `logs/actions.jsonl`, which is
-committed. Record what was actually done, not what was suggested.
+Run `make record` once the transfer has actually been made. It logs the top-ranked move to
+`logs/actions.jsonl`, creating the file and its directory on the first run, and that file
+is committed. `make deadline` deliberately does not record: recording is a claim about
+what was done, not about what was suggested. If the move you made was not the top-ranked
+one, edit the recorded line rather than leaving a decision the log misattributes.
