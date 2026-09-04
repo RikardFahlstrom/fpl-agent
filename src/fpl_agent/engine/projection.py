@@ -380,9 +380,36 @@ def _fixtures_by_team(conn: sqlite3.Connection, gameweek: int) -> dict[int, list
     return by_team
 
 
+class SettledProjection(RuntimeError):
+    """Raised when re-projecting would overwrite a projection that has been graded."""
+
+
+def graded_projections(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
+                       model_version: str) -> int:
+    """How many of these projections have already been graded against actuals.
+
+    The rows a re-projection would replace, not every outcome for the gameweek: a
+    *new* snapshot projecting a played gameweek writes new rows and mutates nothing,
+    so it is not this rule's business.
+    """
+    return conn.execute(
+        """SELECT COUNT(*) FROM outcome o JOIN projection pr ON pr.id = o.projection_id
+           WHERE pr.snapshot_id = ? AND pr.gameweek = ? AND pr.model_version = ?""",
+        (snapshot_id, gameweek, model_version),
+    ).fetchone()[0]
+
+
 def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
                      model_version: str = MODEL_VERSION) -> int:
-    """Project every player for a gameweek from the most recent snapshot."""
+    """Project every player for a gameweek from the most recent snapshot.
+
+    Refuses to overwrite a projection that settle has already graded. `INSERT OR
+    REPLACE` deletes the old row and inserts a new one with a new autoincrement id,
+    so the `outcome` row grading it would be orphaned - which the foreign key already
+    caught, as an opaque IntegrityError. The refusal is the same one, said out loud:
+    a graded projection is the record of what the model believed *at decision time*,
+    and rewriting it under today's code turns the learning loop into a tautology.
+    """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
@@ -390,6 +417,16 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     gameweek = gameweek or snapshot["gameweek"]
     if gameweek is None:
         raise LookupError("no target gameweek; the season may be over")
+
+    graded = graded_projections(conn, snapshot["id"], gameweek, model_version)
+    if graded:
+        raise SettledProjection(
+            f"gameweek {gameweek} has been settled: {graded} of snapshot "
+            f"{snapshot['id']}'s projections under model {model_version} are already "
+            f"graded against actuals. Re-projecting would rewrite what the model "
+            f"believed before the gameweek was played, and the calibration would then "
+            f"be scoring today's code against a result it can see. Bump MODEL_VERSION "
+            f"to project the same gameweek again, or take a new snapshot")
 
     scoring = Scoring.from_db(conn)
     history = _player_history(conn)

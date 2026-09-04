@@ -284,7 +284,7 @@ class PlayerHistoryTests(unittest.TestCase):
         self.assertAlmostEqual(history[3]["start_prior"], 0.5)   # 1 start / 2 FWD games
 
 
-class ProjectGameweekTests(unittest.TestCase):
+class SeedMixin:
     def _seed(self):
         conn = storage.connect(":memory:")
         bootstrap = {
@@ -319,6 +319,8 @@ class ProjectGameweekTests(unittest.TestCase):
             "kickoff_time": "2026-09-04T14:00:00Z", "finished": False}])
         return conn
 
+
+class ProjectGameweekTests(SeedMixin, unittest.TestCase):
     def test_projects_and_is_rerunnable(self):
         conn = self._seed()
         self.addCleanup(conn.close)
@@ -348,6 +350,75 @@ class ProjectGameweekTests(unittest.TestCase):
         self.addCleanup(conn.close)
         with self.assertRaises(LookupError):
             projection.project_gameweek(conn, 3)
+
+
+class SettledProjectionTests(SeedMixin, unittest.TestCase):
+    """A graded projection is the record of a belief held before the result was known.
+
+    `INSERT OR REPLACE` deletes the row and reinserts it with a fresh autoincrement id,
+    orphaning the `outcome` that grades it - which the foreign key caught as an opaque
+    IntegrityError. The check says the same thing out loud, and says why.
+    """
+
+    def _settle(self, conn, gameweek=3, model_version=projection.MODEL_VERSION):
+        """Grade whatever was projected, the way settle does."""
+        rows = conn.execute(
+            "SELECT id, element_id FROM projection WHERE gameweek = ? "
+            "AND model_version = ?", (gameweek, model_version)).fetchall()
+        conn.executemany(
+            "INSERT INTO outcome VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [(r["id"], r["element_id"], gameweek, model_version, 5.0, 2.0, 3.0,
+              0.9, 90, 4, "2026-09-04T00:00:00Z") for r in rows])
+        conn.commit()
+        return len(rows)
+
+    def test_re_projecting_a_settled_gameweek_is_refused_by_name(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        self.assertEqual(self._settle(conn), 1)
+
+        with self.assertRaises(projection.SettledProjection) as caught:
+            projection.project_gameweek(conn, 3)
+        message = str(caught.exception)
+        self.assertIn("settled", message)
+        self.assertIn("MODEL_VERSION", message)
+
+    def test_the_graded_projection_survives_the_refusal(self):
+        """The effect, not the exception: the row and its outcome are still intact."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        self._settle(conn)
+        before = conn.execute(
+            "SELECT id, expected_points, created_at FROM projection").fetchall()
+
+        with self.assertRaises(projection.SettledProjection):
+            projection.project_gameweek(conn, 3)
+
+        after = conn.execute(
+            "SELECT id, expected_points, created_at FROM projection").fetchall()
+        self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM outcome o JOIN projection pr "
+                         "ON pr.id = o.projection_id").fetchone()[0], 1,
+            "the outcome must still point at a projection that exists")
+
+    def test_a_new_model_version_may_project_the_same_gameweek(self):
+        """Bumping the version writes new rows and mutates nothing; that is the escape."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3, model_version="0.5.0")
+        self._settle(conn, model_version="0.5.0")
+        self.assertEqual(projection.project_gameweek(conn, 3, model_version="0.6.0"), 1)
+
+    def test_an_ungraded_gameweek_re_projects_freely(self):
+        """The horizon is re-run every deadline; only graded rows are protected."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        projection.project_gameweek(conn, 3)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM projection").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

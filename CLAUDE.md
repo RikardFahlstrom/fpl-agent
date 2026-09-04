@@ -26,6 +26,10 @@ Run it against real data and read the output.
   in the warehouse and can be compared, rather than one silently replacing the other.
 - **Never grade a gameweek that has not finished.** Absence of an actual is not a zero
   until the fixtures are played. See `engine/settle.gameweek_is_finished`.
+- **Never re-project a settled gameweek.** A graded projection is the record of what the
+  model believed before the result was known; rewriting it under today's code scores the
+  model against a result it can see. Bump `MODEL_VERSION` instead. See
+  `engine/projection.SettledProjection`.
 - **Snapshot before deciding.** `bootstrap-static` is current-state only: prices,
   ownership and price forecasts are overwritten in place with no historical endpoint. A
   gameweek without a snapshot can never be learned from.
