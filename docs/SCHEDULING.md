@@ -26,6 +26,26 @@ gameweek that has never been graded and, if there is one, grades it and drafts a
 learning. Absence from the `outcome` table is the test, not a marker file - the
 warehouse is the only state worth trusting.
 
+## `status` is the last line of a run
+
+`fpl-agent status` reads the warehouse - read-only, `mode=ro`, no network, no token
+exchange - and answers in one block: is the latest snapshot complete, are projections
+attached to it under the current model, are the actuals current, which gameweek's
+lineups will `project` find, and will tonight's job need a browser. It fixes nothing.
+
+It is the natural last step of any scheduled run, and `make deadline` ends on it for
+that reason. Every command before it reports its own success; `status` is the one that
+checks the state they claim to have left behind - which is the whole lesson of this
+project's bug history. Adding it to the end of a `daily` job costs one process:
+
+```sh
+"$AGENT" status || echo "warehouse check failed"   # exits 7 on an inconsistency
+```
+
+Run it by hand the same way, and it is also what a notifier (review item 13) should be
+built from: `status.gather()` returns the checks as data rather than as text, so the
+mail and the push message say the same thing.
+
 **Use UTC, not UK time.** The API speaks UTC and British Summer Time moves the UK
 clock twice a season. 02:30 UTC is safely after the price change in both halves of
 the year.
@@ -67,14 +87,18 @@ actionable without opening the log:
 | --- | --- | --- |
 | 0 | Success, or nothing to do | Nothing. |
 | 1 | `settle`: the gameweek has not finished, or there was nothing to grade | Nothing. This is the normal answer most mornings. |
-| 2 | `snapshot`: auth is not configured | Fix `fpl-agent.ini` or the environment. |
+| 2 | `snapshot`: auth is not configured. `status`: the warehouse could not be read at all | Fix `fpl-agent.ini` or the environment; for `status`, the database is missing or is not a warehouse. |
 | 3 | `snapshot`: auth is configured but no session could be established | The refresh token has died and the browser fallback failed. Log in once by hand. |
 | 4 | `snapshot`: the squad the preflight promised was not captured | Usually `my-team/` returning 403 during an FPL maintenance window. The market half was kept; re-run later. |
 | 5 | Backfill failed for more than 5% of players | Transient FPL trouble. Re-run; if it persists, the API shape may have changed. |
 | 6 | `settle`: the gameweek is finished but the actuals are not there to grade it | Run the backfill first. Never force this - grading against absent actuals is the bug this code exists to prevent. |
+| 7 | `status`: the warehouse disagrees with itself | Read the `FAIL` lines - each names what is wrong and what to run. Nothing is broken *by* status; it only reports. |
 
 Codes 3 and 4 are the two worth alerting on loudly. 4 in particular is the one that
 used to exit 0.
+
+Codes are not shared between commands, deliberately: a 7 in the subject line means
+`status` and nothing else, so the mail is actionable before it is opened.
 
 ## Authentication: Chromium runs once, not nightly
 
@@ -136,18 +160,15 @@ token_cache = /srv/fpl-agent/state/session.json
 
 ## What is not automated yet
 
-Two gaps, both known, both with review items against them:
+One gap, known, with a review item against it:
 
 - **Nothing notifies you.** Today the only channel is cron's `MAILTO` and the log.
   The intended shape is a pre-deadline brief pushed to a channel you actually read
   (review item 13), which is what makes this an assistant coach rather than a cron
-  job you have to remember to check.
-- **There is no single "is the warehouse trustworthy?" command.** `fpl-agent status`
-  (review item 10) is meant to answer that in one line - last snapshot, last graded
-  gameweek, whether the squad is present - so a morning check is one command rather
-  than three SQL queries.
+  job you have to remember to check. `status` is what that brief should be built
+  from; the facts already exist, only the transport is missing.
 
-Until then, `deploy/fpl-cron.sh --dry-run daily` and `--dry-run deadline` print what
+Meanwhile `deploy/fpl-cron.sh --dry-run daily` and `--dry-run deadline` print what
 each job would do without touching anything, which is the quickest way to see what
 the scheduler currently believes.
 
@@ -155,7 +176,9 @@ the scheduler currently believes.
 
 | Path | Tracked | Why |
 | --- | --- | --- |
-| `src/`, `tests/`, `deploy/`, `.claude/skills/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
+| `src/`, `tests/`, `deploy/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
+| `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/` | yes | shared: the workflow, the command allowlist, and the pre-commit test hook |
+| `.claude/settings.local.json` | no | personal, and globally gitignored on this machine |
 | `learnings/*.md` | yes | the reasoning, which is not re-derivable |
 | `logs/actions.jsonl` | yes | what was decided, append-only |
 | `docs/` | yes | plan and conventions |

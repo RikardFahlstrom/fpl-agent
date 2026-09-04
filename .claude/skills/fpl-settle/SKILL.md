@@ -8,6 +8,23 @@ description: Grade projections against a finished gameweek, read the calibration
 Run `make settle GW=n`. It backfills actuals, grades the decision-time projections, prints
 calibration slices and drafts a learning file.
 
+## Check the warehouse first
+
+Run `.venv/bin/fpl-agent status` **before `make settle`.** It is read-only - it
+authenticates against nothing and writes nothing - and it says whether gameweek `n` has a
+decision-time projection and the actuals to grade it against.
+
+Exit 0 means there is something real to settle. Any non-zero exit names a specific
+inconsistency; the code table is in `docs/SCHEDULING.md`, shared with `deploy/fpl-cron.sh`.
+Look the code up there before reacting to it - some are the normal answer rather than a
+fault. "The gameweek has not finished, or there was nothing to grade" is most mornings,
+and it means stop, not investigate.
+
+**A non-zero status is not something to work around.** Settle's own guards will refuse the
+run anyway, and they exist because grading a gameweek the warehouse cannot honestly
+support once produced a confident +1.65 bias out of actuals that did not exist. If status
+says the actuals are missing, backfill and re-check; do not force the grade.
+
 ## Preconditions the tool enforces, and why
 
 **The gameweek must be finished.** Grading early scores every player against a zero that
