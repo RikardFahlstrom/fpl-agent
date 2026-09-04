@@ -5,10 +5,16 @@ FPL changes them between seasons - defensive_contribution is new this year - and
 projection made under old weights has to stay reproducible.
 
 The one rule that is *not* in the API payload is the defensive-contribution threshold.
-It was derived empirically from 622 scored appearances: reconstructing every player's
-total from its components leaves a residual of exactly 0 or 2 points, and the split
+It was derived empirically from the 622 played appearances in `player_gameweek` - the
+rows with minutes > 0, out of 1236 stored rows, the other 614 being benchings that
+score nothing and so carry no signal. Reconstructing each total from its components
+with the DC term withheld leaves a residual of exactly 0 or 2 points, and the split
 lands at DEF >= 10 actions (highest non-scoring row: 9) and MID >= 12 (highest
 non-scoring: 11). See DC_THRESHOLDS.
+
+Both numbers are true of different things and the two must not be conflated: all 1236
+stored rows reconstruct exactly once the DC term is included, which is what validates
+the weights; only the 622 played rows separate the threshold.
 """
 
 import json

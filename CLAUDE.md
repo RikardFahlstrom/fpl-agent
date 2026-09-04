@@ -45,7 +45,7 @@ Each lives in the docstring of the code it constrains:
 | Fact | Where |
 | --- | --- |
 | Price change rule: Predicted Progress > 100% is "Very Likely"; `likelihood` is a derived band of the same number | `engine/pricing.py` |
-| Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from 1236 scored appearances | `engine/scoring.py` |
+| Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from the 622 played appearances, not the 1236 stored rows | `engine/scoring.py` |
 | `/me/` carries no league membership - leagues are on `entry/{id}/` | `state.get_user_leagues` |
 | `league_type` `x` is a private league, `s` is global and unusable ("Overall" has ~9.9M entries) | `engine/rivals.py` |
 | Per-90 rates from tiny samples must be shrunk toward a prior | `engine/projection.shrink` |
