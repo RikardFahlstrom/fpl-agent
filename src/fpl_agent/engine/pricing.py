@@ -39,6 +39,7 @@ the projection rather than folded into it.
 import json
 import sqlite3
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 # FPL's documented rule: Predicted Progress over 100% is "Very Likely" to change.
@@ -58,7 +59,7 @@ class PriceOutlook:
     percent: float               # Progress: how far the player has already moved
     projected_percent: float     # Predicted Progress at the next update
     likelihood: Optional[int]
-    locked: bool
+    locked: bool                 # frozen *as of now*, not merely stamped once; see is_locked
     net_transfers: int
 
     @property
@@ -105,6 +106,34 @@ class PriceOutlook:
         return self.now_cost
 
 
+def is_locked(locked_until: Optional[str], now: Optional[datetime] = None) -> bool:
+    """Whether a player's price is still frozen, as of now.
+
+    `price_change_locked_until` is a timestamp, not a flag: a player who moved last
+    night carries one that expired hours ago. Reading it as `bool(...)` marked him
+    locked forever, which suppresses "very likely to rise" and with it the urgency on
+    every transfer targeting him. In the snapshots captured so far every stored lock is
+    still in the future, so this corrects no answer visible today - it stops one that a
+    day-old snapshot, or a lock that lapses while the process runs, would produce.
+
+    An unparseable value stays locked, which is what the old `bool` did: a lock we
+    cannot read the end of is not evidence the lock has lifted.
+    """
+    if not locked_until:
+        return False
+    text = str(locked_until).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        expiry = datetime.fromisoformat(text)
+    except ValueError:
+        return True
+    if expiry.tzinfo is None:
+        # FPL stamps these in UTC; a naive value is not a local one.
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry > (now or datetime.now(timezone.utc))
+
+
 def _first_projection(raw: Optional[str]) -> Optional[dict]:
     if not raw:
         return None
@@ -118,9 +147,13 @@ def _first_projection(raw: Optional[str]) -> Optional[dict]:
     return min(entries, key=lambda e: e.get("offset", 0))
 
 
-def price_outlooks(conn: sqlite3.Connection,
-                   snapshot_id: Optional[int] = None) -> dict[int, PriceOutlook]:
-    """Price outlook per player, from the most recent snapshot unless told otherwise."""
+def price_outlooks(conn: sqlite3.Connection, snapshot_id: Optional[int] = None,
+                   now: Optional[datetime] = None) -> dict[int, PriceOutlook]:
+    """Price outlook per player, from the most recent snapshot unless told otherwise.
+
+    `now` fixes the moment locks are judged against; it defaults to the real one.
+    """
+    now = now or datetime.now(timezone.utc)
     if snapshot_id is None:
         row = conn.execute("SELECT MAX(id) AS id FROM snapshot").fetchone()
         snapshot_id = row["id"] if row else None
@@ -149,7 +182,7 @@ def price_outlooks(conn: sqlite3.Connection,
             percent=row["price_change_percent"] or 0.0,
             projected_percent=projected,
             likelihood=likelihood,
-            locked=bool(row["price_change_locked_until"]),
+            locked=is_locked(row["price_change_locked_until"], now),
             net_transfers=(row["transfers_in_event"] or 0) - (row["transfers_out_event"] or 0),
         )
     return outlooks

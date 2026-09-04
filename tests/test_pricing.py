@@ -5,6 +5,7 @@ Progress exceeds 100%, the player is considered Very Likely to rise or fall."
 """
 import json
 import unittest
+from datetime import datetime, timezone
 
 from fpl_agent.engine import pricing
 from fpl_agent.engine.pricing import (
@@ -121,6 +122,47 @@ class ProjectionParsingTests(unittest.TestCase):
     def test_thresholds_match_the_documented_rule(self):
         self.assertEqual(VERY_LIKELY_PROGRESS, 100.0)
         self.assertLess(APPROACHING_PROGRESS, VERY_LIKELY_PROGRESS)
+
+
+class LockExpiryTests(unittest.TestCase):
+    """`price_change_locked_until` is a deadline, not a flag.
+
+    Every lock in every snapshot captured so far is still in the future, so reading it
+    as `bool(...)` gave the right answer on all of today's data. The case that does not
+    exist in the warehouse - a lock that has already lapsed - is the one under test:
+    a player marked locked forever never reads as "very likely to rise", and every
+    transfer targeting him silently loses its urgency.
+    """
+
+    NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+
+    def test_a_lock_that_has_expired_is_not_a_lock(self):
+        self.assertFalse(pricing.is_locked("2026-09-04T11:30:00Z", self.NOW))
+        self.assertFalse(pricing.is_locked("2026-09-03T19:30:07.492167Z", self.NOW))
+
+    def test_a_lock_still_running_holds(self):
+        # the real shape, copied from snapshot 7
+        self.assertTrue(pricing.is_locked("2026-09-04T19:30:49.058576Z", self.NOW))
+
+    def test_no_lock_at_all(self):
+        self.assertFalse(pricing.is_locked(None, self.NOW))
+        self.assertFalse(pricing.is_locked("", self.NOW))
+
+    def test_a_naive_timestamp_is_read_as_utc(self):
+        self.assertTrue(pricing.is_locked("2026-09-04T19:30:49", self.NOW))
+        self.assertFalse(pricing.is_locked("2026-09-04T11:30:49", self.NOW))
+
+    def test_an_unreadable_lock_stays_locked(self):
+        """We cannot see when it ends, which is not evidence that it has ended."""
+        self.assertTrue(pricing.is_locked("whenever", self.NOW))
+
+    def test_an_expired_lock_lets_the_price_move_again(self):
+        """The effect, not the parse: a lapsed lock restores rising and its urgency."""
+        expired = outlook(projected_percent=106.0,
+                          locked=pricing.is_locked("2026-09-04T11:30:00Z", self.NOW))
+        self.assertTrue(expired.rising)
+        self.assertEqual(expired.status, "very likely to rise")
+        self.assertEqual(assess(budget=56, target=expired).urgency, "tonight")
 
 
 if __name__ == "__main__":
