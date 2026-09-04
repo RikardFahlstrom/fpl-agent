@@ -8,11 +8,16 @@ prices, bank and free transfers exist in no public endpoint - so that half is lo
 good, silently, unless something checks first. Capture therefore refuses to run
 half-blind unless explicitly told to.
 
-    python -m fpl_agent.snapshot                  # capture, skip if already done today
-    python -m fpl_agent.snapshot --force          # capture regardless
-    python -m fpl_agent.snapshot --allow-partial  # market only, knowingly without a squad
-    python -m fpl_agent.snapshot --backfill       # also pull per-gameweek actuals
-    python -m fpl_agent.snapshot --backfill-only  # actuals only, no new snapshot
+    fpl-agent snapshot                  # capture, skip if already done today
+    fpl-agent snapshot --force          # capture regardless
+    fpl-agent snapshot --allow-partial  # market only, knowingly without a squad
+    fpl-agent snapshot --backfill       # also pull per-gameweek actuals
+    fpl-agent snapshot --backfill-only  # actuals only, no new snapshot
+
+The default skip is a guard for a hand-run repeat, not the behaviour the scheduled
+callers want: both `make snapshot` and `deploy/fpl-cron.sh` pass --force deliberately.
+Prices resolve nightly and predicted lineups firm up through matchday, so a second
+capture on the same day is a different market, not a duplicate of the first.
 
 Exit codes, for whoever is reading a scheduled run that failed: 2 auth is not configured,
 3 it is configured but no session was established, 4 a session was established and the

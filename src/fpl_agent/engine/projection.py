@@ -11,8 +11,8 @@ produced it rather than re-derived. That is what makes P4's calibration actionab
 This is v0 and deliberately uncalibrated - the rate constants below are stated
 assumptions, not fitted values. Fitting them is the point of the learning loop.
 
-    python -m fpl_agent.projection              # project the upcoming gameweek
-    python -m fpl_agent.projection --gameweek 5
+    fpl-agent project              # project the upcoming gameweek
+    fpl-agent project --gameweek 5
 """
 
 import argparse
@@ -413,7 +413,7 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
-        raise LookupError("no snapshot captured yet; run python -m fpl_agent.snapshot")
+        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
     gameweek = gameweek or snapshot["gameweek"]
     if gameweek is None:
         raise LookupError("no target gameweek; the season may be over")
@@ -540,7 +540,7 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
-        raise LookupError("no snapshot captured yet; run python -m fpl_agent.snapshot")
+        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
     start = start_gameweek or snapshot["gameweek"]
     if start is None:
         raise LookupError("no target gameweek; the season may be over")

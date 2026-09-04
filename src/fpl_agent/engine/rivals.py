@@ -9,7 +9,7 @@ FPL site uses. Only classic private leagues are captured: FPL's `league_type` is
 those and 's' for the global ones, and the global ones are unusable here - "Overall" has
 around 9.9 million entries.
 
-    python -m fpl_agent.rivals --gameweek 2
+    fpl-agent rivals --gameweek 2
 """
 
 import argparse

@@ -1,9 +1,10 @@
 """One entry point over the engine's commands.
 
-Each command already had its own `main()` invoked as `python -m fpl_agent.engine.x`,
-which is why the Makefile existed: to hide the module paths. A single dispatcher gives
-`fpl-agent snapshot` instead, and keeps the module entry points working for anyone who
-prefers them.
+Each command already had its own `main()`, invoked as a module under
+`fpl_agent.engine`, which is why the Makefile existed: to hide the module paths. A
+single dispatcher gives `fpl-agent snapshot` instead. Those module entry points still
+work and are deliberately kept for anyone who prefers them; the docs name the
+`fpl-agent` form because it is the one that does not encode the package layout.
 """
 
 import inspect

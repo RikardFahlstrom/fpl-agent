@@ -25,8 +25,8 @@ that too, and refuses to settle at all behind a backfill that lost players.
 
 Error is signed as predicted minus actual, so a positive bias means over-projecting.
 
-    python -m fpl_agent.settle --gameweek 3
-    python -m fpl_agent.settle --gameweek 3 --learn
+    fpl-agent settle --gameweek 3
+    fpl-agent settle --gameweek 3 --learn
 """
 
 import argparse

@@ -12,10 +12,12 @@ while +1.2 gross under an active wildcard is simply +1.2. Ranking is on the net,
 a move that does not survive its own hit is not a recommendation.
 
 Decisions are written to the `decision` table and exported to logs/actions.jsonl, which
-is the version-controlled record. Appending there produces a pure-addition diff.
+is the version-controlled record. Appending there produces a pure-addition diff. The
+file and its directory are created by the first --record run; until one has happened
+there is nothing to commit, which is why neither is in the checkout.
 
-    python -m fpl_agent.recommend                 # show recommendations
-    python -m fpl_agent.recommend --record        # and log the top one as a decision
+    fpl-agent recommend                 # show recommendations
+    fpl-agent recommend --record        # and log the top one as a decision
 """
 
 import argparse

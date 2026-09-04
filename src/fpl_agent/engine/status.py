@@ -32,7 +32,7 @@ and `snapshot`):
     7   at least one inconsistency, named on its own line
     2   the warehouse could not be opened at all
 
-    python -m fpl_agent.engine.status
+    fpl-agent status
     fpl-agent status --db data/fpl.db
 """
 
