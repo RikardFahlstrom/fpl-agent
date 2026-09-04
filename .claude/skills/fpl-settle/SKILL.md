@@ -67,5 +67,7 @@ A learning that is rejected is still worth keeping - set `status: rejected` and 
 
 ## Committed
 
-`learnings/*.md` and `logs/actions.jsonl` are tracked. The database is not: it is derived
-and re-fetchable, the reasoning is not.
+`learnings/*.md` and `logs/actions.jsonl` are tracked once they exist. Neither is in the
+checkout yet: `--learn` writes the first learning file and creates `learnings/` doing it.
+Commit what it wrote. The database is not tracked: it is derived and re-fetchable, the
+reasoning is not.

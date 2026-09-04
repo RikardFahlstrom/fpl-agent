@@ -179,12 +179,18 @@ the scheduler currently believes.
 | `src/`, `tests/`, `deploy/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
 | `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/` | yes | shared: the workflow, the command allowlist, and the pre-commit test hook |
 | `.claude/settings.local.json` | no | personal, and globally gitignored on this machine |
-| `learnings/*.md` | yes | the reasoning, which is not re-derivable |
-| `logs/actions.jsonl` | yes | what was decided, append-only |
+| `learnings/*.md` | yes, once written | the reasoning, which is not re-derivable |
+| `logs/actions.jsonl` | yes, once written | what was decided, append-only |
 | `docs/` | yes | plan and conventions |
 | `data/fpl.db` | no | derived, and re-fetchable except for the snapshot history |
 | `fpl-agent.ini` | no | credentials |
 | the token cache | no | a live bearer credential, and it rotates |
+
+Neither `learnings/` nor `logs/` is in the checkout yet, because the loop that fills them
+has not run: `settle --learn` creates the first and `recommend --record` the second, each
+making its own directory. An empty repo is the honest state - a placeholder committed
+ahead of them would make a fresh clone look as though the loop had already produced
+something. Once a file appears there, commit it.
 
 The database is the one asset that is *not* re-fetchable in full - past snapshots
 cannot be recovered - but it is too large and too churny for git. Back it up

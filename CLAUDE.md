@@ -64,5 +64,11 @@ executes transfers. See `docs/SCHEDULING.md`.
 
 ## What is committed
 
-Code, `learnings/`, `logs/actions.jsonl`, `docs/PLAN.md`. **Not** `data/fpl.db` (derived
-and re-fetchable) or `fpl-agent.ini` (credentials).
+Code, `docs/PLAN.md`, and the reasoning trail: `learnings/` and `logs/actions.jsonl`.
+**Not** `data/fpl.db` (derived and re-fetchable) or `fpl-agent.ini` (credentials).
+
+The reasoning trail is tracked but does not exist yet - no gameweek has been settled with
+`--learn` and no decision has been recorded. `settle --learn` and `recommend --record`
+each create their own directory on first write; commit what they leave behind. Do not
+commit a placeholder to make the directories appear: an empty `learnings/` in a fresh
+clone claims a loop has run that has not.

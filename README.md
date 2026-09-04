@@ -47,11 +47,13 @@ make test
 
 `make deadline` runs the steps in order because the order matters: actuals feed the
 projection's rates, and rivals must exist before ownership means anything. Individual steps are `fpl-agent snapshot`, `fpl-agent project`, `fpl-agent rivals`,
-`fpl-agent recommend`, `fpl-agent settle` — run `fpl-agent` for the list.
+`fpl-agent recommend`, `fpl-agent settle` and `fpl-agent status` — run `fpl-agent` for
+the list. `make record` logs the move you actually made; nothing records for you.
 
 Snapshot daily. `bootstrap-static` serves current state only — prices, ownership and
 price forecasts are overwritten in place with no history endpoint — so a day not captured
-can never be recovered. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for a launchd job.
+can never be recovered. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for the unattended
+setup: cron calls `deploy/fpl-cron.sh`, which decides whether there is anything to do.
 
 Snapshotting **refuses to run** if it cannot capture your squad, because selling prices,
 bank and free transfers exist in no public endpoint. Pass `--allow-partial` to take the
@@ -102,10 +104,14 @@ src/fpl_agent/
   mcp/               server: tools/, resources, prompts, web
   (root)             auth, client, config, models, state, rotowire_scraper
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify
+deploy/              fpl-cron.sh, the unattended entry point
 docs/                PLAN.md, SCHEDULING.md
 learnings/           what the model learned, as markdown with frontmatter
 logs/actions.jsonl   decisions taken, append-only
 ```
+
+The last two are tracked but not yet present: `fpl-agent settle --learn` and
+`fpl-agent recommend --record` create them on first write.
 
 `data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
 [CLAUDE.md](CLAUDE.md), the roadmap in [docs/PLAN.md](docs/PLAN.md), and a brief for
