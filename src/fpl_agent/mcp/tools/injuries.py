@@ -62,58 +62,6 @@ async def get_injury_and_lineup_predictions(client) -> str:
 
 @mcp.tool()
 @_with_client()
-async def get_players_to_avoid(client) -> str:
-    """
-    Get a list of players to avoid for transfers based on injury status and lineup predictions.
-    Returns players who are OUT or DOUBTFUL with risk levels.
-    Use this before making transfers to avoid bringing in injured players.
-    """
-    
-    try:
-        scraper = RotoWireLineupScraper()
-        lineup_statuses = await scraper.scrape_premier_league_lineups()
-        
-        if not lineup_statuses:
-            return "No lineup data available at this time."
-        
-        ai_format = scraper.convert_to_ai_format(lineup_statuses)
-        players_to_avoid = ai_format['players_to_avoid']
-        
-        if not players_to_avoid:
-            return "✅ No players currently flagged to avoid based on injury/lineup status."
-        
-        output = [
-            f"**⚠️ Players to Avoid ({len(players_to_avoid)} players)**\n",
-            "These players are OUT or DOUBTFUL and should be avoided for transfers:\n"
-        ]
-        
-        high_risk = [p for p in players_to_avoid if p['risk_level'] == 'high']
-        medium_risk = [p for p in players_to_avoid if p['risk_level'] == 'medium']
-        
-        if high_risk:
-            output.append("**🔴 HIGH RISK (OUT):**")
-            for player in high_risk:
-                output.append(
-                    f"├─ {player['player_name']} - {player['reason']} "
-                    f"(Expected points: {player['predicted_points_next_3_gameweeks']:.1f})"
-                )
-            output.append("")
-        
-        if medium_risk:
-            output.append("**🟡 MEDIUM RISK (DOUBTFUL):**")
-            for player in medium_risk:
-                output.append(
-                    f"├─ {player['player_name']} - {player['reason']} "
-                    f"(Expected points: {player['predicted_points_next_3_gameweeks']:.1f})"
-                )
-        
-        return "\n".join(output)
-    except Exception as e:
-        return f"Error fetching players to avoid: {str(e)}"
-
-
-@mcp.tool()
-@_with_client()
 async def check_player_availability(client, player_name: str) -> str:
     """
     Check if a specific player is available to play based on RotoWire lineup predictions.

@@ -24,7 +24,6 @@ from .tools import (
     get_my_performance,
     get_my_squad,
     get_player_summary,
-    get_players_to_avoid,
     get_team_info,
     list_all_gameweeks,
     list_all_teams,
@@ -273,10 +272,3 @@ async def get_injuries_resource() -> str:
         return NOT_AUTHENTICATED
     return await get_injury_and_lineup_predictions()
 
-
-@mcp.resource("fpl://injuries/avoid")
-async def get_players_to_avoid_resource() -> str:
-    """Get players to avoid based on injury and lineup status."""
-    if not _get_client():
-        return NOT_AUTHENTICATED
-    return await get_players_to_avoid()
