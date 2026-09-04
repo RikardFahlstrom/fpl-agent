@@ -389,7 +389,7 @@ def analyze_team_fixtures(team_name: str, num_gameweeks: int = 5) -> str:
    - Long-term fixture outlook
 
 **Data Access:**
-Use: `fpl://team/{team_name}/fixtures?num_gameweeks={num_gameweeks}`
+Use: `fpl://team/{team_name}/fixtures/{num_gameweeks}`
 
 **Output Format:**
 1. Fixture list with difficulty visualization
@@ -574,10 +574,10 @@ def find_league_differentials(league_name: str, max_ownership: float = 30.0) -> 
    - Low Risk: Decent ownership, nailed on, good fixtures
 
 **Data Access:**
-- `fpl://league/{league_name}/standings` - League ownership patterns
+- `fpl://league/{league_name}/standings/1` - League ownership patterns
 - `fpl://bootstrap/players` - All players with ownership
 - `fpl://player/{{player_name}}/summary` - Detailed player analysis
-- `fpl://team/{{team_name}}/fixtures` - Fixture difficulty
+- `fpl://team/{{team_name}}/fixtures/5` - Fixture difficulty
 
 **Output Format:**
 1. League template analysis (most owned players)

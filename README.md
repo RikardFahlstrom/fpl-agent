@@ -80,8 +80,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (Window
 Use `--directory` rather than `cwd`: Claude Desktop does not reliably apply `cwd` before
 `uv` resolves the project. Restart Claude fully, then check Settings → Connectors.
 
-The server exposes 33 tools, 17 resources (`fpl://…`) and 7 prompts. Ask in names, not
-ids: *"compare Salah and Haaland"*, *"who should I transfer out?"*
+The server exposes 32 tools, 17 resources (`fpl://…`) and 7 prompts. Ask in names, not
+ids: *"compare Salah and Haaland"*, *"who should I transfer out?"* Most of them are a
+browsing view of the live FPL API and need a session; `recommend_transfers` is the
+exception — it reads the warehouse `make deadline` left behind, so it answers offline
+and gives the same ranking as `fpl-agent recommend` rather than a second opinion.
 
 ## How it works
 

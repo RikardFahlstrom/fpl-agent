@@ -11,18 +11,61 @@ character, or there are two recommenders again.
 import ast
 import asyncio
 import pathlib
+import re
 import tempfile
 import unittest
 
+from pydantic import AnyUrl
+
+from fpl_agent.client import FPLClient
 from fpl_agent.engine import recommend as engine
 from fpl_agent.engine import storage
+from fpl_agent.models import BootstrapData
+from fpl_agent.reference import reference
+from fpl_agent.sessions import sessions
 from fpl_agent.mcp import prompts as mcp_prompts  # noqa: F401  (registers prompts)
 from fpl_agent.mcp import resources as mcp_resources  # noqa: F401  (registers them)
-from fpl_agent.mcp.tools import mcp, set_active_session
+from fpl_agent.mcp.tools import get_active_session, mcp, set_active_session
 from fpl_agent.mcp.tools import warehouse
 from test_recommend import SeedMixin, chip
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "fpl_agent"
+
+
+def _element(element_id, web_name, first, second, team=1):
+    return {"id": element_id, "web_name": web_name, "first_name": first,
+            "second_name": second, "team": team, "element_type": 3, "now_cost": 95,
+            "form": "10.0", "points_per_game": "10.0", "news": "", "status": "a",
+            "total_points": 20, "minutes": 157}
+
+
+def _lookup_bootstrap():
+    """Names chosen for the two cases the lookup tools are supposed to separate.
+
+    "Saka" matches one player exactly and three by substring; "Silva" matches two
+    equally well, which is the tie `get_player_details` used to break by guessing.
+    """
+    return {
+        "elements": [
+            _element(1, "Saka", "Bukayo", "Saka"),
+            _element(2, "Sakamoto", "Tatsuhiro", "Sakamoto", team=2),
+            _element(3, "Wan-Bissaka", "Aaron", "Wan-Bissaka", team=2),
+            _element(4, "B.Silva", "Bernardo", "Silva"),
+            _element(5, "M.Silva", "Marcos", "Silva", team=2),
+        ],
+        "teams": [
+            {"id": 1, "name": "Arsenal", "short_name": "ARS", "strength": 4},
+            {"id": 2, "name": "Test City", "short_name": "TSC", "strength": 3},
+        ],
+        "element_types": [
+            {"id": 3, "singular_name_short": "MID", "plural_name_short": "MID"},
+        ],
+        "events": [{"id": 3, "name": "Gameweek 3", "deadline_time": "2025-09-13T10:00:00Z",
+                    "finished": False, "data_checked": False,
+                    "deadline_time_epoch": 1757757600, "is_previous": False,
+                    "is_current": True, "is_next": False, "can_enter": False,
+                    "released": True}],
+    }
 
 
 def _decorators(node: ast.AST) -> set[str]:
@@ -112,7 +155,6 @@ class SurfaceTests(unittest.TestCase):
             "get_my_info",
             "get_my_performance",
             "get_my_squad",
-            "get_player_details",
             "get_player_summary",
             "get_team_info",
             "get_top_players",
@@ -148,6 +190,31 @@ class SurfaceTests(unittest.TestCase):
         templates = asyncio.run(mcp.list_resource_templates())
         self.assertEqual(8, len(fixed))
         self.assertEqual(9, len(templates))
+
+    def test_every_resource_uri_a_prompt_names_actually_resolves(self) -> None:
+        """A prompt sending the model to a URI the server does not serve is dead.
+
+        Three of them were: `.../standings` without its page, `.../fixtures` without
+        its gameweek count, and a `?num_gameweeks=` query string on a path template.
+        Nothing raises when a prompt is rendered, so only reading them against the
+        registry finds it.
+        """
+        registered = {str(resource.uri)
+                      for resource in asyncio.run(mcp.list_resources())}
+        patterns = [re.compile("^" + re.sub(r"\{[^}]+\}", "[^/]+", template.uriTemplate) + "$")
+                    for template in asyncio.run(mcp.list_resource_templates())]
+
+        source = (SRC / "mcp" / "prompts.py").read_text()
+        named = {uri.replace("{{", "{").replace("}}", "}")
+                 for uri in re.findall(r"fpl://[a-zA-Z0-9{}_/-]*", source)}
+        self.assertTrue(named, "the prompts should still point at resources")
+
+        for uri in sorted(named):
+            concrete = re.sub(r"\{[^}]+\}", "X", uri)
+            with self.subTest(uri=uri):
+                self.assertTrue(
+                    concrete in registered or any(p.match(concrete) for p in patterns),
+                    f"{uri} is not a resource this server serves")
 
     def test_readme_quotes_the_registry(self) -> None:
         """The counts in the README are the counts the server advertises."""
@@ -279,6 +346,83 @@ class RecommendTransfersToolTests(SeedMixin, unittest.TestCase):
         output = self._call()
         self.assertIn("Cannot recommend:", output)
         self.assertNotIn("Traceback", output)
+
+
+class PlayerLookupTests(unittest.TestCase):
+    """The two surviving name lookups, and why they are two and not one.
+
+    `get_player_details` was the third. It ran the identical
+    `reference.find_players_by_name` call and either returned find_player's card,
+    told the caller to use find_player, or - among several equally good matches -
+    picked one and presented the guess as an answer.
+    """
+
+    def setUp(self) -> None:
+        self._saved = (reference.bootstrap_data, dict(reference.player_name_map),
+                       dict(reference.player_id_map), get_active_session())
+        reference.bootstrap_data = BootstrapData(**_lookup_bootstrap())
+        reference._build_player_indices()
+        client = FPLClient(reference=reference)
+        client.user_info = {"player": {"entry": 1}}
+        sessions.active_sessions["lookup"] = client
+        set_active_session("lookup")
+        self.addCleanup(sessions.active_sessions.pop, "lookup", None)
+
+    def tearDown(self) -> None:
+        (reference.bootstrap_data, reference.player_name_map,
+         reference.player_id_map, session) = self._saved
+        set_active_session(session)
+
+    def _call(self, name, **kwargs) -> str:
+        blocks = asyncio.run(mcp.call_tool(name, kwargs))
+        content = blocks[0] if isinstance(blocks, tuple) else blocks
+        return "".join(block.text for block in content)
+
+    def test_find_player_answers_the_name_that_get_player_details_answered(self) -> None:
+        """Its whole confident branch was this call and this formatter."""
+        output = self._call("find_player", player_name="Saka")
+
+        self.assertIn("**Saka** (Bukayo Saka)", output)
+        self.assertIn("Position: MID", output)
+
+    def test_find_player_lists_candidates_where_details_would_have_guessed(self) -> None:
+        """`get_player_details` returned one of these and called it the answer."""
+        output = self._call("find_player", player_name="Silva")
+
+        self.assertIn("players matching", output)
+        self.assertIn("Bernardo Silva", output)
+        self.assertIn("Marcos Silva", output)
+
+    def test_search_players_finds_what_find_player_short_circuits_past(self) -> None:
+        """Why search_players survived the pruning.
+
+        `find_players_by_name` returns on an exact hit and never runs its substring
+        pass, so a query that names one player exactly can never surface the others
+        who contain it. This is the counterexample, and it is why these two tools
+        are not the same tool under two names.
+        """
+        found = self._call("find_player", player_name="Saka")
+        searched = self._call("search_players", name_query="Saka")
+
+        self.assertNotIn("Sakamoto", found)
+        self.assertIn("Sakamoto", searched)
+        self.assertIn("Wan-Bissaka", searched)
+
+    def test_the_player_resource_is_the_find_player_tool(self) -> None:
+        """Delegated, not reimplemented - resources.py says so in its own docstring.
+
+        "Silva" is the name that catches a reimplementation: the inlined copy only
+        disambiguated when the top score fell below 0.95, so two players scoring 1.0
+        left it returning the first as though it were the answer, while the tool
+        listed both. Asserting on an unambiguous name would pass either way, which is
+        exactly how the two had drifted apart unnoticed.
+        """
+        for name in ("Saka", "Silva"):
+            with self.subTest(player=name):
+                resource = asyncio.run(mcp.read_resource(AnyUrl(f"fpl://player/{name}")))
+                text = "".join(item.content for item in resource)
+
+                self.assertEqual(self._call("find_player", player_name=name), text)
 
 
 if __name__ == "__main__":

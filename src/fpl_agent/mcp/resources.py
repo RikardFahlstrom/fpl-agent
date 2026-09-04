@@ -11,9 +11,9 @@ Only the resources whose output has no tool equivalent are implemented here.
 
 from .tools import (
     _ensure_reference_data,
-    _format_player_details,
     _get_client,
     analyze_team_fixtures,
+    find_player,
     get_current_gameweek,
     get_fixtures_for_gameweek,
     get_gameweek_info,
@@ -119,33 +119,14 @@ async def get_current_gameweek_resource() -> str:
 @mcp.resource("fpl://player/{player_name}")
 async def get_player_resource(player_name: str) -> str:
     """Get detailed information about a specific player by name."""
-    if not await _ready_client():
+    if not _get_client():
         return NOT_AUTHENTICATED
-
-    if not reference.bootstrap_data:
-        return "Error: Player data not available."
-
-    matches = reference.find_players_by_name(player_name, fuzzy=True)
-
-    if not matches:
-        return f"No player found matching '{player_name}'"
-
-    if len(matches) > 1 and matches[0][1] < 0.95:
-        output = [f"Found {len(matches)} players matching '{player_name}':\n"]
-        for player, score in matches[:10]:
-            price = player.now_cost / 10
-            news_indicator = " ⚠️" if player.news else ""
-            status_indicator = "" if player.status == 'a' else f" [{player.status}]"
-
-            output.append(
-                f"├─ {player.first_name} {player.second_name} ({player.web_name}) - "
-                f"{player.team_name} {player.position} | £{price:.1f}m | "
-                f"Form: {player.form} | PPG: {player.points_per_game}{status_indicator}{news_indicator}"
-            )
-        output.append("\nPlease specify the full name for more details.")
-        return "\n".join(output)
-
-    return _format_player_details(matches[0][0])
+    # Delegated, like every other resource here. It used to inline its own copy of
+    # find_player's matching and formatting, which had already drifted: it took the
+    # detail card whenever the top score reached 0.95, where the tool also requires a
+    # clear gap over the runner-up, so the same name could resolve to a player through
+    # the URI and to a disambiguation list through the tool.
+    return await find_player(player_name)
 
 
 @mcp.resource("fpl://player/{player_name}/summary")

@@ -34,7 +34,6 @@ from .warehouse import (  # noqa: F401
 from .players import (  # noqa: F401
     compare_players,
     find_player,
-    get_player_details,
     get_player_summary,
     get_top_players,
     search_players,

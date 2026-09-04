@@ -5,7 +5,7 @@ from ...sessions import sessions
 from ...reference import reference
 from .core import NOT_AUTHENTICATED
 from .core import logger
-from datetime import datetime, timezone
+from datetime import datetime
 from .core import mcp
 from .core import _ensure_reference_data, _get_client, _is_ambiguous, _optional_int, _pick_price_text, _read_only, _with_client
 
