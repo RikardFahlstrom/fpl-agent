@@ -34,6 +34,11 @@ MAPPING: dict[tuple[str, str], str] = {
     ("auth", "token_endpoint"): "FPL_TOKEN_ENDPOINT",
     ("auth", "client_id"): "FPL_OAUTH_CLIENT_ID",
     ("rivals", "leagues"): "FPL_RIVAL_LEAGUES",
+    ("brief", "min_net_xp"): "FPL_BRIEF_MIN_NET_XP",
+    # The ntfy topic is a credential: ntfy has no accounts, so knowing a topic is enough
+    # to read every message posted to it. Hence its place in SECRET_ENV below.
+    ("notify", "ntfy_server"): "FPL_NTFY_SERVER",
+    ("notify", "ntfy_topic"): "FPL_NTFY_TOPIC",
     ("server", "transport"): "FPL_MCP_TRANSPORT",
     ("server", "host"): "FPL_MCP_HOST",
     ("server", "port"): "FPL_MCP_PORT",
@@ -41,7 +46,7 @@ MAPPING: dict[tuple[str, str], str] = {
     ("server", "auth_base_url"): "FPL_AUTH_BASE_URL",
 }
 
-SECRET_ENV = {"FPL_PASSWORD", "FPL_EMAIL"}
+SECRET_ENV = {"FPL_PASSWORD", "FPL_EMAIL", "FPL_NTFY_TOPIC"}
 
 
 def _warn_if_world_readable(path: Path) -> None:
