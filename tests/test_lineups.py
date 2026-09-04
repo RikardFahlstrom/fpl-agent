@@ -96,12 +96,32 @@ class RecordTests(unittest.TestCase):
         self.assertIn("Nobody At All", unresolved[0])
 
     def test_a_doubtful_starter_is_stored_once_keeping_the_flag(self):
-        """The player appears in the XI and the injury list; the flag has to survive."""
+        """The player appears in the XI and the injury list; the flag has to survive.
+
+        And so does the selection: the injury entry says `is_starter` 0 only because it
+        sits below the separator, not because anyone benched him.
+        """
         lineups.record_lineups(self.conn, self.snapshot_id, 3, [_match()], BOOTSTRAP)
         rows = self.conn.execute(
             "SELECT * FROM predicted_lineup WHERE element_id = 11").fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["injury"], "QUES")
+        self.assertEqual(rows[0]["is_starter"], 1)
+
+    def test_the_position_stored_is_the_one_he_will_play(self):
+        """The XI names the shirt; the injury list abbreviates it."""
+        lineups.record_lineups(self.conn, self.snapshot_id, 3, [_match()], BOOTSTRAP)
+        row = self.conn.execute(
+            "SELECT * FROM predicted_lineup WHERE element_id = 11").fetchone()
+        self.assertEqual(row["position"], "FW")
+
+    def test_a_player_only_in_the_injury_list_is_not_promoted(self):
+        """Nothing about the merge should invent a start for a player nobody named."""
+        lineups.record_lineups(self.conn, self.snapshot_id, 3, [_match()], BOOTSTRAP)
+        row = self.conn.execute(
+            "SELECT * FROM predicted_lineup WHERE element_id = 12").fetchone()
+        self.assertEqual(row["is_starter"], 0)
+        self.assertEqual(row["injury"], "OUT")
 
 
 class StartRateTests(unittest.TestCase):
@@ -135,6 +155,29 @@ class StartRateTests(unittest.TestCase):
 
     def test_a_player_ruled_out_is_zero(self):
         self.assertEqual(self._rates()[12], 0.0)
+
+    def test_a_doubtful_player_named_in_the_xi_gets_the_starter_rate(self):
+        """Regression: Isak was landing on 0.15, as if benched as well as injured.
+
+        Fitness is FPL's flag's job - `project_player` multiplies this rate by
+        `chance_of_playing_next_round` - so charging the doubt here too counts it twice.
+        """
+        self.assertAlmostEqual(self._rates()[11], 0.90)
+
+    def test_a_doubtful_starter_is_confirmed_like_any_other(self):
+        self.assertAlmostEqual(self._rates(confirmed=True)[11], 0.97)
+
+    def test_a_doubtful_player_left_out_of_the_xi_is_demoted(self):
+        """The other side of the same coin: QUES and unnamed is still a doubt."""
+        match = MatchLineup(
+            home_team="LIV", away_team="MCI", confirmed=False,
+            players=[LineupPlayer("Haaland", "MCI", "FW", True)],
+            injuries=[LineupPlayer("Djordje Petrovic", "MCI", "G", False, injury="QUES")],
+        )
+        lineups.record_lineups(self.conn, self.snapshot_id, 3, [match], BOOTSTRAP)
+        rates = lineups.lineup_start_rates(self.conn, 3, starter=0.90, omitted=0.15,
+                                           confirmed_starter=0.97)
+        self.assertAlmostEqual(rates[13], 0.15)
 
     def test_a_squad_player_left_out_of_the_lineup_is_demoted(self):
         """The rotation case FPL's own flag never reports: silence is the signal."""
