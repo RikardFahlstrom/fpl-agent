@@ -27,6 +27,8 @@ from .squad import (  # noqa: F401
     get_my_squad,
     make_transfers,
     recommend_chip_strategy,
+)
+from .warehouse import (  # noqa: F401
     recommend_transfers,
 )
 from .players import (  # noqa: F401

@@ -40,14 +40,17 @@ def chip(name, status, chip_type="transfer"):
 
 class SeedMixin:
     def _seed(self, bank=10, squad_ids=(1,), elements=None,
-              limit=1, made=0, cost=4, chips=(), project=True):
+              limit=1, made=0, cost=4, chips=(), project=True, db=":memory:"):
         """A snapshot, and by default the horizon `project` would have written for it.
 
         `recommend` reads projections rather than running them, so the fixture has to
         do what `make deadline` does: project, then recommend. Pass project=False to
         exercise the horizon that was never run.
+
+        `db` takes a path for callers that need a warehouse on disk - the MCP tool
+        opens one by path, read-only, rather than being handed a connection.
         """
-        conn = storage.connect(":memory:")
+        conn = storage.connect(db)
         self.addCleanup(conn.close)
         elements = elements or [
             element(1, team=1, element_type=3, cost=50, xg=0.10),   # owned, weak

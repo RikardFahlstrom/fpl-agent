@@ -86,96 +86,64 @@ Present findings in a clear, actionable format with:
 
 
 @mcp.prompt()
-def recommend_transfers(free_transfers: int = 1) -> str:
+def recommend_transfers() -> str:
     """
-    Generate a prompt for transfer recommendations based on available free transfers.
-    
-    This prompt guides the LLM to analyze the squad and recommend optimal transfer
-    strategy considering:
-    - Player availability (injuries, suspensions)
-    - Recent performance and form
-    - Upcoming fixture difficulty
-    - Points hit economics
-    - Strategic timing
-    
-    Args:
-        free_transfers: Number of free transfers available (default: 1)
+    Generate a prompt for reading and acting on the engine's transfer ranking.
+
+    It does not describe how to rank transfers. There is one recommender - the engine
+    behind the `recommend_transfers` tool - and a prompt that re-derived the ranking
+    from form and fixture difficulty would be a second, contradictory answer to the
+    same question. This one says how to read the answer and what to check before
+    acting on it.
+
+    No free-transfer argument: the count is a fact the snapshot recorded, and telling
+    the model a different one is how the two get to disagree.
     """
-    return f"""Analyze my squad and recommend transfer strategy.
+    return """Recommend a transfer for my FPL squad.
 
-**Current Situation:**
-- Free Transfers Available: {free_transfers}
-- Transfer Cost: 4 points per additional transfer
+**Get the ranking first:**
 
-**Analysis Framework:**
+Call the `recommend_transfers` tool. It reads the warehouse - the squad, prices and
+projections captured by `make deadline` - and returns the engine's ranking. Do not
+compose your own from form or fixture difficulty; the engine already weighed those,
+and a second opinion here is just a contradiction.
 
-1. **Player Priority Scoring:**
-   For each squad player, calculate priority score based on:
-   - **Availability Status** (+100 pts): Injured, suspended, doubtful, unavailable
-   - **DNP Last Game** (+50 pts): Did not play in most recent gameweek
-   - **Fixture Difficulty** (+15-30 pts): Hard upcoming fixtures (avg 3.5+/5)
-   - **Poor Form** (+10-25 pts): Low form score (<3)
-   - **Low Minutes** (+20 pts): Less than 200 minutes total
+If it reports that nothing has been projected, say so and stop. `make deadline` has
+not been run for this gameweek, so there is no recommendation to give and the live
+API cannot substitute for one.
 
-2. **Strategic Advice by Free Transfers:**
+**Read the banner before the list.**
 
-   **{free_transfers} Free Transfer(s):**
-   {'🔴 **0 Free Transfers** - Only take a hit (-4pts) if:' if free_transfers == 0 else ''}
-   {'   • Player is injured/suspended (unavailable)' if free_transfers == 0 else ''}
-   {'   • Replacement has a double gameweek' if free_transfers == 0 else ''}
-   {'   • Replacement expected to score 6+ more points (to break even)' if free_transfers == 0 else ''}
-   {'   • Otherwise, wait for next gameweek to bank a free transfer' if free_transfers == 0 else ''}
-   
-   {'🟡 **1 Free Transfer** - Consider:' if free_transfers == 1 else ''}
-   {'   • Banking if no urgent issues (gives 2 FT next week)' if free_transfers == 1 else ''}
-   {'   • Use for injured/suspended players' if free_transfers == 1 else ''}
-   {'   • Use for players with very poor fixtures' if free_transfers == 1 else ''}
-   {'   • Banking provides more flexibility next week' if free_transfers == 1 else ''}
-   
-   {'🟢 **2 Free Transfers** - Good flexibility:' if free_transfers >= 2 else ''}
-   {'   • Address top 2 priority problems' if free_transfers >= 2 else ''}
-   {'   • Don\'t waste transfers - only make valuable moves' if free_transfers >= 2 else ''}
-   {'   • Unused transfers don\'t roll over beyond 2' if free_transfers >= 2 else ''}
+The first line says what the whole ranking is priced against, and it changes what the
+list means:
 
-3. **Transfer Candidates Analysis:**
-   Identify top 5 players to consider transferring out:
-   - Priority score and specific reasons
-   - Next 3 fixtures with difficulty visualization
-   - Bench vs starting XI status
-   - Urgency level:
-     * 🚨 URGENT (100+ pts): Transfer out immediately
-     * ⚠️ HIGH (50+ pts): Strong transfer candidate
-     * 🟡 MEDIUM (30+ pts): Consider if spare FT
-     * 🟢 LOW (<30 pts): Monitor, not urgent
+- **A wildcard or free hit is active.** No move is charged a hit, and the ranking is a
+  list of single like-for-like swaps. A wildcard rebuilds the whole squad, which this
+  ranking does not plan - treat it as evidence, not as the plan.
+- **No free transfer.** Every gain shown is already net of the points hit. A move on
+  the list has cleared the hit; one that did not is not on the list at all.
+- **A free transfer is available.** Nothing is charged. Each option is priced as the
+  one move you make, not as a running plan, so do not add two of them together.
 
-4. **Points Hit Economics:**
-   - Each additional transfer costs 4 points
-   - Replacement must score 6+ more points to break even:
-     * 4 points to recover the hit
-     * 2+ points to actually gain value
-   - Only justified for injured players or exceptional opportunities
+**Then, for the top few candidates:**
 
-5. **Timing Considerations:**
-   - Make transfers early in week to monitor price changes
-   - Wait for Friday press conferences for injury news
-   - Check lineup predictions before finalizing
-   - Consider banking transfers for future flexibility
+1. **Read both numbers.** Expected-points gain says whether the move is worth making;
+   price urgency says whether the chance to make it is about to close. `ACT TONIGHT`
+   is about the price, not about the size of the gain.
+2. **Check the note lines.** A doubtful player's chance of playing is already priced
+   into his projected points - do not discount him a second time. Selling a player
+   the rest of your league owns costs you ground if he hauls.
+3. **Confirm availability before acting.** Call `check_player_availability` on the
+   incoming player. Projections are as fresh as the last snapshot; a press conference
+   since then is not in them.
 
-**Data Access:**
-Use these resources:
-- `fpl://my/squad` - Current squad with transfer info
-- `fpl://injuries` - Injury and lineup predictions
-- `fpl://player/{{player_name}}/summary` - Detailed player analysis
-- `fpl://team/{{team_name}}/fixtures` - Fixture difficulty
+**Output:**
 
-**Output Format:**
-1. Strategic advice summary based on free transfers
-2. Top 5 transfer candidates with:
-   - Priority score and reasons
-   - Fixture difficulty visualization
-   - Specific recommendations
-3. Points hit economics explanation
-4. Timing advice"""
+- The banner, in your own words, first.
+- The top candidate, with its gain, its hit if any, and its urgency.
+- One or two alternatives and what would make you prefer them.
+- Anything that argues against acting at all - a doubt, stale projections, or a chip
+  that makes single swaps the wrong frame."""
 
 
 @mcp.prompt()
