@@ -30,6 +30,32 @@ read_only = true
 ; Leave empty to use every private league under the rival cap.
 leagues =
 
+[brief]
+; The net expected-points bar a transfer has to clear before `notify` will interrupt
+; you for it, over the 3-gameweek horizon. Default 2.0. Raise it if the pushes feel
+; like noise; lower it only once `settle` has graded enough gameweeks to say what a
+; 2-point edge is actually worth.
+; min_net_xp = 2.0
+
+[notify]
+; Push notifications over ntfy (https://ntfy.sh). No account is needed - the topic IS
+; the address.
+;
+; THE TOPIC IS A SHARED SECRET. ntfy has no authentication: anyone who knows or guesses
+; your topic can subscribe to it and read every message it carries - your squad, your
+; transfers, when you are about to act. So do not use "fpl", your name, or anything
+; anyone would try. Use a long random string and treat it like a password:
+;
+;   ntfy_topic = $(python3 -c "import secrets; print('fpl-' + secrets.token_urlsafe(24))")
+;
+; Then subscribe to that exact topic in the ntfy app on your phone. Leave it empty and
+; `fpl-agent notify` exits 2 and sends nothing; `notify --dry-run` still works without
+; one, and prints what would have been sent.
+ntfy_topic =
+; A self-hosted ntfy instance, if you would rather not post to the public one. The topic
+; is still a secret there unless you have put access control in front of it.
+; ntfy_server = https://ntfy.sh
+
 [server]
 ; transport = stdio
 ; auth_port = 8020

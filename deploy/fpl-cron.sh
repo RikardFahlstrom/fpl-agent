@@ -14,6 +14,11 @@
 #   fpl-cron.sh deadline           project and recommend, if a deadline is near
 #   fpl-cron.sh --dry-run <job>    print what would run, touch nothing
 #
+# Both jobs end in `notify`, which pushes whatever the brief thinks is worth
+# interrupting a person for and remembers what it has already said. Its failure
+# never masks the job's: a lost notification is recoverable and a lost snapshot
+# is not.
+#
 # Every job takes the same lock. The token cache holds a refresh token that the
 # account service ROTATES on each exchange, so two jobs refreshing concurrently
 # leave one of them holding a dead token and falling back to a browser login.
@@ -120,8 +125,40 @@ job_deadline() {
     return "$status"
 }
 
+# Push whatever the brief thinks is worth interrupting a person for. Runs after both
+# jobs, on the state they just left behind, and says each thing once - the fingerprints
+# it has already sent live in the warehouse, which is what makes an hourly job safe to
+# notify from.
+#
+# Skipped, not failed, when no topic is configured: notify is opt-in, and a host that
+# has never set one should not be mailed an error every hour. `notify` exits 2 on its
+# own if called without one anyway.
+job_notify() {
+    if [ -z "${FPL_NTFY_TOPIC:-}" ] && ! grep -qs '^[[:space:]]*ntfy_topic[[:space:]]*=[[:space:]]*[^[:space:]]' fpl-agent.ini; then
+        echo "no ntfy topic configured; not notifying (see docs/SCHEDULING.md)"
+        return 0
+    fi
+    run notify
+}
+
 case "$JOB" in
     daily)    job_daily ;;
     deadline) job_deadline ;;
     *)        echo "usage: $0 [--dry-run] {daily|deadline}" >&2; exit 64 ;;
 esac
+JOB_STATUS=$?
+
+# The job's own exit code wins. A failed push must never be what makes a `daily` run
+# look like it lost the snapshot it actually captured: the snapshot is the irrecoverable
+# asset and a notification is not. So notify's 8 is only ever reported when the job
+# itself succeeded, and is never allowed to overwrite a 3, 4 or 5 above.
+job_notify
+NOTIFY_STATUS=$?
+
+if [ "$JOB_STATUS" -ne 0 ]; then
+    if [ "$NOTIFY_STATUS" -ne 0 ]; then
+        echo "notify also exited $NOTIFY_STATUS, masked by the job's $JOB_STATUS" >&2
+    fi
+    exit "$JOB_STATUS"
+fi
+exit "$NOTIFY_STATUS"
