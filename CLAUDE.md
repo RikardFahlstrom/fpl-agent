@@ -26,6 +26,10 @@ Run it against real data and read the output.
   in the warehouse and can be compared, rather than one silently replacing the other.
 - **Never grade a gameweek that has not finished.** Absence of an actual is not a zero
   until the fixtures are played. See `engine/settle.gameweek_is_finished`.
+- **Never re-project a settled gameweek.** A graded projection is the record of what the
+  model believed before the result was known; rewriting it under today's code scores the
+  model against a result it can see. Bump `MODEL_VERSION` instead. See
+  `engine/projection.SettledProjection`.
 - **Snapshot before deciding.** `bootstrap-static` is current-state only: prices,
   ownership and price forecasts are overwritten in place with no historical endpoint. A
   gameweek without a snapshot can never be learned from.
@@ -41,18 +45,30 @@ Each lives in the docstring of the code it constrains:
 | Fact | Where |
 | --- | --- |
 | Price change rule: Predicted Progress > 100% is "Very Likely"; `likelihood` is a derived band of the same number | `engine/pricing.py` |
-| Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from 1236 scored appearances | `engine/scoring.py` |
+| Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from the 622 played appearances, not the 1236 stored rows | `engine/scoring.py` |
 | `/me/` carries no league membership - leagues are on `entry/{id}/` | `state.get_user_leagues` |
 | `league_type` `x` is a private league, `s` is global and unusable ("Overall" has ~9.9M entries) | `engine/rivals.py` |
 | Per-90 rates from tiny samples must be shrunk toward a prior | `engine/projection.shrink` |
 | The sell-on fee returns only half of any profit, so budget grows slower than the market | `engine/pricing.py` |
+| The account service rotates the refresh token on every exchange, so two concurrent refreshes leave one caller holding a dead credential | `headless_auth.refresh_access_token` |
+| Each recommendation is priced as the *next* transfer you would make, not as the nth move of a plan | `engine/recommend.transfer_price` |
 
 ## Workflow
 
 `make deadline` before a deadline, `make settle GW=n` after the gameweek. The skills
 `/fpl-deadline` and `/fpl-settle` wrap those with what to check and when not to act.
 
+Unattended, those same commands run from `deploy/fpl-cron.sh`, which decides *whether*
+there is anything to do rather than encoding the FPL calendar in a crontab. It never
+executes transfers. See `docs/SCHEDULING.md`.
+
 ## What is committed
 
-Code, `learnings/`, `logs/actions.jsonl`, `docs/PLAN.md`. **Not** `data/fpl.db` (derived
-and re-fetchable) or `fpl-agent.ini` (credentials).
+Code, `docs/PLAN.md`, and the reasoning trail: `learnings/` and `logs/actions.jsonl`.
+**Not** `data/fpl.db` (derived and re-fetchable) or `fpl-agent.ini` (credentials).
+
+The reasoning trail is tracked but does not exist yet - no gameweek has been settled with
+`--learn` and no decision has been recorded. `settle --learn` and `recommend --record`
+each create their own directory on first write; commit what they leave behind. Do not
+commit a placeholder to make the directories appear: an empty `learnings/` in a fresh
+clone claims a loop has run that has not.

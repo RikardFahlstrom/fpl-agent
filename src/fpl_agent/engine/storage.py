@@ -3,7 +3,11 @@
 The FPL API serves current state only: prices, ownership, form and the price-change
 projections are overwritten in place with no historical endpoint. Whatever is not
 captured before a gameweek turns cannot be recovered, so this module exists to make
-capture cheap and idempotent.
+capture cheap and repeatable. Reference, per-snapshot and per-gameweek rows are upserted
+on their keys, so re-running a capture overwrites rather than duplicates. `snapshot`
+itself is a plain INSERT: every capture is a new row on purpose, because two captures of
+the same day are two different markets. That is the whole price history, and it is why
+`snapshot_taken_today` guards a hand-run repeat while the scheduled callers force past it.
 
 Shape of the schema: typed columns for the fields the model reads, plus a `raw` JSON
 column holding the untouched payload. A new FPL field (defensive_contribution was added
@@ -233,6 +237,25 @@ CREATE TABLE IF NOT EXISTS decision (
     status        TEXT NOT NULL DEFAULT 'proposed'
 );
 
+-- What has already been pushed to a phone, keyed by the fingerprint `brief.Trigger`
+-- builds from the identity of the underlying fact. This is what stops the hourly
+-- `deadline` job telling the owner the same thing dozens of times before one deadline.
+--
+-- It is a table and not a state file for the same reason everything else here is: the
+-- warehouse is the state of record, and a marker file next to it is a second answer that
+-- can disagree with the first. A row here means "this was accepted by the server", never
+-- "this was attempted" - see `engine/notify.send_pending`, which inserts only after the
+-- POST has returned 2xx. `sent_at` is when the send succeeded, not when it was tried.
+CREATE TABLE IF NOT EXISTS notification (
+    fingerprint  TEXT PRIMARY KEY,
+    trigger_name TEXT NOT NULL,
+    gameweek     INTEGER,
+    headline     TEXT NOT NULL,
+    channel      TEXT NOT NULL,
+    sent_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_sent ON notification(sent_at);
 CREATE INDEX IF NOT EXISTS idx_decision_gw ON decision(gameweek);
 CREATE INDEX IF NOT EXISTS idx_projection_gw ON projection(gameweek, model_version);
 CREATE INDEX IF NOT EXISTS idx_player_snapshot_element ON player_snapshot(element_id);
@@ -296,7 +319,13 @@ def create_snapshot(conn: sqlite3.Connection, bootstrap: dict, kind: str = "manu
 
 
 def snapshot_taken_today(conn: sqlite3.Connection) -> bool:
-    """Whether a snapshot already exists for today (UTC), so capture stays idempotent."""
+    """Whether a snapshot already exists for today (UTC).
+
+    This guards a hand-run repeat, not the scheduled path: `make snapshot` and
+    `deploy/fpl-cron.sh` both pass --force, because a later capture on the same day is a
+    different market - prices resolve nightly and predicted lineups firm up through
+    matchday - and a snapshot skipped at the deadline projects over stale state.
+    """
     today = datetime.now(timezone.utc).date().isoformat()
     row = conn.execute(
         "SELECT 1 FROM snapshot WHERE substr(captured_at, 1, 10) = ? LIMIT 1", (today,)
@@ -440,3 +469,47 @@ def record_my_team(conn: sqlite3.Connection, snapshot_id: int, entry_id: Optiona
          json.dumps(my_team.get("chips") or [], sort_keys=True)),
     )
     return len(picks)
+
+
+# --------------------------------------------------------------------------
+# Notifications already sent
+# --------------------------------------------------------------------------
+
+def sent_fingerprints(conn: sqlite3.Connection,
+                      fingerprints: Iterable[str]) -> set[str]:
+    """Which of these have already been pushed successfully.
+
+    Asked as one question rather than one per trigger, so a single run cannot answer
+    "new" for a fingerprint it answered "already sent" for a moment earlier.
+    """
+    wanted = [str(f) for f in fingerprints]
+    if not wanted:
+        return set()
+    placeholders = ",".join("?" * len(wanted))
+    rows = conn.execute(
+        f"SELECT fingerprint FROM notification WHERE fingerprint IN ({placeholders})",
+        wanted).fetchall()
+    return {r["fingerprint"] for r in rows}
+
+
+def record_notification(conn: sqlite3.Connection, fingerprint: str, trigger_name: str,
+                        headline: str, channel: str,
+                        gameweek: Optional[int] = None) -> None:
+    """Mark one notification as delivered. Call this only after a send has succeeded.
+
+    The order is the whole point, and it is stated here as well as at the call site: a
+    row written before the POST, on a POST that then fails, silently retires a
+    notification that was never delivered, and no later run will ever send it. That is
+    exactly the class of bug CLAUDE.md opens with - reporting success for something that
+    did not happen - so `notify.send_pending` inserts here strictly after a 2xx, and
+    `tests/test_notify.py` fails if the two are ever swapped.
+
+    INSERT OR REPLACE rather than INSERT: a deliberate resend of the same fact (the row
+    was cleared by hand, say) should refresh `sent_at` rather than crash the run.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO notification "
+        "(fingerprint, trigger_name, gameweek, headline, channel, sent_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (fingerprint, trigger_name, _i(gameweek), headline, channel, _now()),
+    )

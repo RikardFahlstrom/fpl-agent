@@ -278,11 +278,23 @@ class FPLClient:
         return await self._request("GET", f"my-team/{team_id}/")
 
     async def get_current_gameweek(self) -> int:
+        """The gameweek transfers would be submitted for.
+
+        Raises rather than falling back. This number goes straight into a transfer
+        payload as `event`, so a guess is not a degraded answer - it is a real transfer
+        made in the wrong week, against a squad and prices that belong to another one.
+        The old fallback of 38 was the worst available guess: it is only correct on the
+        final week of the season and unrecoverable on every other.
+        """
         data = await self.get_bootstrap_data()
         for event in data['events']:
             if event['is_next']:
                 return event['id']
-        return 38
+        raise RuntimeError(
+            "bootstrap-static reports no upcoming gameweek (no event has is_next), so "
+            "there is no week to act in: the season has ended, or the payload arrived "
+            "incomplete. Refusing to guess - a wrong event submits transfers for a "
+            "gameweek you did not choose.")
 
     async def execute_transfers(self, payload: TransferPayload) -> Dict[str, Any]:
         return await self._request("POST", "transfers/", payload.model_dump())

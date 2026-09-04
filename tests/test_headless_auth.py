@@ -1,10 +1,14 @@
 import asyncio
+import json
 import os
 import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import httpx
 
 from fpl_agent import headless_auth
 from fpl_agent.mcp import tools
@@ -39,6 +43,63 @@ class _FakeSession:
     async def post(self, url, json=None, headers=None):
         self.calls += 1
         return self._responses.pop(0)
+
+
+class _FakeTokenEndpoint:
+    """Stands in for httpx.AsyncClient around the refresh grant.
+
+    Records the request so a test can assert the wire shape, not just that
+    something was called.
+    """
+
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.requests = []
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def post(self, url, data=None, headers=None):
+        self.requests.append({"url": url, "data": data, "headers": headers})
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+class _NoBrowser:
+    """Fails the test if a browser login is constructed."""
+
+    def __init__(self, *args, **kwargs):
+        raise AssertionError(
+            "FPLAutomation was constructed: this path launched headless Chromium"
+        )
+
+
+class _AcceptingClient:
+    """An FPLClient that accepts whatever token it is given."""
+
+    def __init__(self, reference=None):
+        self.api_token = None
+        self.user_info = None
+
+    def set_api_token(self, token):
+        self.api_token = token if token.startswith("Bearer ") else f"Bearer {token}"
+
+    def set_reauth_hook(self, hook):
+        pass
+
+    async def get_me(self):
+        return {"player": {"entry": 431892}}
+
+    async def close(self):
+        pass
 
 
 class EnvFlagTests(unittest.TestCase):
@@ -105,10 +166,24 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
             mode, 0o600, f"token cache must not be readable by others (got {oct(mode)})"
         )
 
-    def test_expired_cache_is_ignored(self) -> None:
+    def test_expired_cache_keeps_its_refresh_token(self) -> None:
+        """Expiry makes the access token unusable, not the whole cache."""
         with mock.patch.dict(os.environ, {"FPL_TOKEN_CACHE": str(self.cache_file)}):
-            headless_auth.save_cached_session(self._client(), expires_in=-10)
-            self.assertIsNone(headless_auth._read_cache())
+            headless_auth.save_cached_session(
+                self._client(), refresh_token="refresh-1", expires_in=-10
+            )
+            data = headless_auth._read_cache()
+            self.assertIsNotNone(data)
+            self.assertFalse(headless_auth.token_is_fresh(data))
+        self.assertEqual(data["refresh_token"], "refresh-1")
+
+    def test_a_token_expiring_within_the_margin_is_already_expired(self) -> None:
+        """A token that dies mid-run is no use; refresh it before the run starts."""
+        with mock.patch.dict(os.environ, {"FPL_TOKEN_CACHE": str(self.cache_file)}):
+            headless_auth.save_cached_session(self._client(), expires_in=30)
+            self.assertFalse(headless_auth.token_is_fresh(headless_auth._read_cache()))
+            headless_auth.save_cached_session(self._client(), expires_in=3600)
+            self.assertTrue(headless_auth.token_is_fresh(headless_auth._read_cache()))
 
     def test_unreadable_cache_does_not_raise(self) -> None:
         self.cache_file.write_text("{ not json")
@@ -180,6 +255,168 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self.cache_file.exists(), "a working token stays cached")
         finally:
             sessions.active_sessions.pop(session_id, None)
+
+
+class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
+    """The cached token outlives its eight hours via the refresh grant, not a browser."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache_file = Path(self._tmp.name) / "session.json"
+        self.env = {
+            "FPL_TOKEN_CACHE": str(self.cache_file),
+            "FPL_TOKEN_ENDPOINT": "https://stub.invalid/as/token",
+            "FPL_OAUTH_CLIENT_ID": "test-client-id",
+            "FPL_AUTO_LOGIN": "true",
+        }
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_expired_cache(self, refresh_token="refresh-1") -> None:
+        with mock.patch.dict(os.environ, self.env):
+            headless_auth._write_cache(
+                {
+                    "api_token": "Bearer stale-token",
+                    "entry_id": 431892,
+                    "obtained_at": time.time() - 28_800,
+                    "refresh_token": refresh_token,
+                    "expires_at": time.time() - 60,
+                }
+            )
+
+    def _cached(self) -> dict:
+        return json.loads(self.cache_file.read_text())
+
+    async def _load(self, endpoint: _FakeTokenEndpoint):
+        """Run load_cached_session with the token endpoint stubbed and no browser."""
+        with mock.patch.dict(os.environ, self.env), \
+             mock.patch.object(headless_auth.httpx, "AsyncClient", endpoint), \
+             mock.patch.object(headless_auth, "FPLAutomation", _NoBrowser), \
+             mock.patch.object(headless_auth, "FPLClient", _AcceptingClient):
+            return await headless_auth.load_cached_session()
+
+    async def test_expired_cache_refreshes_instead_of_launching_a_browser(self) -> None:
+        """The acceptance case: expired token in, session out, no Chromium."""
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(
+            _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
+        )
+
+        session_id = await self._load(endpoint)
+        try:
+            self.assertIsNotNone(session_id, "the refresh grant should restore a session")
+            self.assertEqual(sessions.get_client(session_id).api_token, "Bearer fresh-token")
+        finally:
+            sessions.active_sessions.pop(session_id, None)
+
+        self.assertEqual(len(endpoint.requests), 1)
+        request = endpoint.requests[0]
+        self.assertEqual(request["url"], "https://stub.invalid/as/token")
+        self.assertEqual(
+            request["data"],
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": "refresh-1",
+                "client_id": "test-client-id",
+            },
+            "the refresh must be the RFC 6749 public-client form post",
+        )
+        self.assertEqual(
+            request["headers"]["Content-Type"], "application/x-www-form-urlencoded"
+        )
+
+    async def test_a_rotated_refresh_token_is_persisted(self) -> None:
+        """Dropping a rotated token would silently restore nightly browser logins."""
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(
+            _FakeResponse(
+                200,
+                {
+                    "access_token": "fresh-token",
+                    "refresh_token": "refresh-2",
+                    "expires_in": 28800,
+                },
+            )
+        )
+        session_id = await self._load(endpoint)
+        sessions.active_sessions.pop(session_id, None)
+
+        self.assertEqual(self._cached()["refresh_token"], "refresh-2")
+
+    async def test_a_response_without_rotation_keeps_the_old_refresh_token(self) -> None:
+        """RFC 6749 makes a new refresh token optional; absence is not a deletion."""
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(
+            _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
+        )
+        session_id = await self._load(endpoint)
+        sessions.active_sessions.pop(session_id, None)
+
+        self.assertEqual(self._cached()["refresh_token"], "refresh-1")
+
+    async def test_the_refreshed_cache_keeps_the_entry_id(self) -> None:
+        """The token response knows nothing about the entry; the cache must not forget it."""
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(
+            _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
+        )
+        session_id = await self._load(endpoint)
+        sessions.active_sessions.pop(session_id, None)
+
+        cached = self._cached()
+        self.assertEqual(cached["entry_id"], 431892)
+        self.assertEqual(cached["api_token"], "Bearer fresh-token")
+        self.assertTrue(headless_auth.token_is_fresh(cached))
+
+    async def test_a_refused_refresh_falls_back_without_raising(self) -> None:
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(_FakeResponse(400, {"error": "invalid_grant"}))
+
+        session_id = await self._load(endpoint)
+
+        self.assertIsNone(session_id, "a refused refresh must fall back, not fake a session")
+        self.assertEqual(self._cached()["refresh_token"], "refresh-1")
+
+    async def test_an_unreachable_token_endpoint_falls_back_without_raising(self) -> None:
+        """A network blip must not take the nightly job down, nor burn the refresh token."""
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(error=httpx.ConnectError("no route to host"))
+
+        session_id = await self._load(endpoint)
+
+        self.assertIsNone(session_id)
+        self.assertTrue(
+            self.cache_file.exists(),
+            "a transient failure must not discard the refresh token",
+        )
+
+    async def test_a_cache_with_no_refresh_token_reaches_no_endpoint(self) -> None:
+        self._write_expired_cache(refresh_token=None)
+        endpoint = _FakeTokenEndpoint(_FakeResponse(200, {"access_token": "unused"}))
+
+        session_id = await self._load(endpoint)
+
+        self.assertIsNone(session_id)
+        self.assertEqual(endpoint.requests, [])
+
+    async def test_reauth_hook_refreshes_before_reaching_for_a_browser(self) -> None:
+        """A 401 mid-run is what the refresh grant is for."""
+        self._write_expired_cache()
+        endpoint = _FakeTokenEndpoint(
+            _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
+        )
+        client = FPLClient()
+        client.set_api_token("stale-token")
+
+        with mock.patch.dict(os.environ, self.env), \
+             mock.patch.object(headless_auth.httpx, "AsyncClient", endpoint), \
+             mock.patch.object(headless_auth, "FPLAutomation", _NoBrowser):
+            reauthenticated = await headless_auth.reauth_hook(client)
+
+        self.assertTrue(reauthenticated)
+        self.assertEqual(client.api_token, "Bearer fresh-token")
+        self.assertEqual(len(endpoint.requests), 1)
 
 
 class InteractiveLoginPersistenceTests(unittest.IsolatedAsyncioTestCase):

@@ -20,8 +20,8 @@ def snap(**overrides):
     return row
 
 
-HISTORY = {"appearances": 10.0, "starts": 10.0, "bonus": 5.0, "minutes": 900.0,
-           "dc_rate": 0.2, "yellow_per_90": 0.2}
+HISTORY = {"appearances": 10.0, "games": 10.0, "starts": 10.0, "bonus": 5.0,
+           "minutes": 900.0, "dc_rate": 0.2, "yellow_per_90": 0.2}
 PRIORS = {"xg90": 0.10, "xa90": 0.08}
 ONE_FIXTURE = [{"difficulty": 3, "home": True}]
 
@@ -39,7 +39,10 @@ class AvailabilityTests(unittest.TestCase):
         self.assertEqual(availability(snap()), 1.0)
 
     def test_start_rate_uses_history_then_falls_back(self):
-        self.assertEqual(start_rate({"appearances": 4.0, "starts": 2.0}), 0.5)
+        # Two starts in four games, against a position that starts half of its games:
+        # the shrink has nothing to pull toward, so the observed rate stands.
+        self.assertEqual(
+            start_rate({"games": 4.0, "starts": 2.0, "start_prior": 0.5}), 0.5)
         self.assertEqual(start_rate({}), projection.BASE_START_PROB)
 
     def test_no_appearances_once_the_season_has_started_is_evidence(self):
@@ -58,7 +61,7 @@ class AvailabilityTests(unittest.TestCase):
         from fpl_agent.engine.scoring import Scoring
         from test_scoring import WEIGHTS
 
-        history = {"appearances": 10.0, "starts": 10.0, "bonus": 0.0,
+        history = {"appearances": 10.0, "games": 10.0, "starts": 10.0, "bonus": 0.0,
                    "minutes": 900.0, "dc_rate": 0.0, "yellow_per_90": 0.0}
         row = {"element_id": 1, "minutes": 900, "status": "a",
                "chance_of_playing_next_round": None, "expected_goals_per_90": 0.5,
@@ -68,7 +71,8 @@ class AvailabilityTests(unittest.TestCase):
 
         without = project_player(row, *args, True)
         left_out = project_player(row, *args, True, lineup_rate=0.15)
-        self.assertAlmostEqual(without["p_start"], 1.0)
+        self.assertAlmostEqual(without["p_start"], start_rate(history, True))
+        self.assertGreater(without["p_start"], 0.8, "ten starts in ten games")
         self.assertAlmostEqual(left_out["p_start"], 0.15)
         self.assertLess(left_out["expected_points"], without["expected_points"])
 
@@ -87,10 +91,39 @@ class AvailabilityTests(unittest.TestCase):
         self.assertEqual(result["p_start"], 0.0)
         self.assertEqual(result["expected_points"], 0.0)
 
-    def test_a_player_with_appearances_is_unaffected_by_the_season_flag(self):
-        history = {"appearances": 2.0, "starts": 2.0}
-        self.assertEqual(start_rate(history, season_started=True), 1.0)
-        self.assertEqual(start_rate(history, season_started=False), 1.0)
+    def test_a_player_with_games_is_unaffected_by_the_season_flag(self):
+        history = {"games": 2.0, "starts": 2.0, "start_prior": 1 / 3}
+        # (2 starts + 3 prior games at 1/3) / (2 + 3) - two out of two is a real record,
+        # but not yet proof of a nailed-on starter.
+        self.assertEqual(start_rate(history, season_started=True), 0.6)
+        self.assertEqual(start_rate(history, season_started=False), 0.6)
+
+    def test_a_benching_counts_against_the_start_rate(self):
+        """One start and one unused-substitute appearance is not a certain starter.
+
+        Regression: the denominator was games *played*, so the benching vanished and the
+        rate came out 1.0. Onyeka (COV) went into GW4 at p_start 1.00 on that record.
+        """
+        history = {"appearances": 1.0, "games": 2.0, "starts": 1.0, "start_prior": 1 / 3}
+        self.assertEqual(start_rate(history, season_started=True), 0.4)
+
+    def test_a_long_record_of_starts_survives_the_shrink(self):
+        """Thirty starts in thirty games is evidence enough to be taken at face value."""
+        history = {"games": 30.0, "starts": 30.0, "start_prior": 0.34}
+        self.assertAlmostEqual(start_rate(history, season_started=True), 0.94)
+
+    def test_a_player_who_has_never_started_is_not_shrunk_upward(self):
+        """The reserve keeper must not be rescued by the prior.
+
+        His position starts 0.29 of its games, so shrinking a 0-for-1 record toward it
+        would report 0.22 - twice UNUSED_START_PROB, and the 0.2.0 bug back in a new
+        coat. Never being picked is evidence, not thin evidence.
+        """
+        history = {"appearances": 0.0, "games": 1.0, "starts": 0.0, "start_prior": 0.29}
+        would_have_been = (0.29 * projection.APPEARANCE_PRIOR) / (1 + projection.APPEARANCE_PRIOR)
+        self.assertGreater(would_have_been, 0.2)
+        self.assertEqual(start_rate(history, season_started=True),
+                         projection.UNUSED_START_PROB)
 
 
 class ShrinkageTests(unittest.TestCase):
@@ -178,7 +211,80 @@ class ProjectPlayerTests(unittest.TestCase):
         self.assertEqual(result["components"]["defensive_contribution"], 0.0)
 
 
-class ProjectGameweekTests(unittest.TestCase):
+class PlayerHistoryTests(unittest.TestCase):
+    """The two denominators, read off real rows.
+
+    element-summary carries a row per team fixture whether the player played or not -
+    614 of the 1236 rows in the live warehouse are at zero minutes - and grouping them
+    away with `WHERE minutes > 0` threw away every benching.
+    """
+
+    def _history(self, squad):
+        """squad: {element_id: [(minutes, starts), ...]}, all midfielders."""
+        conn = storage.connect(":memory:")
+        self.addCleanup(conn.close)
+        storage.upsert_players(conn, {"elements": [
+            {"id": element_id, "web_name": f"P{element_id}", "team": 1, "element_type": 3}
+            for element_id in squad]})
+        storage.record_player_gameweeks(conn, [
+            {"element": element_id, "round": round_number, "minutes": minutes,
+             "starts": starts, "bonus": 0, "defensive_contribution": 0}
+            for element_id, rows in squad.items()
+            for round_number, (minutes, starts) in enumerate(rows, 1)])
+        return projection._player_history(conn)
+
+    def _cohort(self):
+        # Four of these six midfielders started one of their two games and one started
+        # none: 4 starts in 12 games, a positional prior of exactly 1/3, close to the
+        # 0.34 the live warehouse shows for midfielders.
+        return self._history({1: [(90, 1), (0, 0)], 2: [(90, 1), (0, 0)],
+                              3: [(90, 1), (0, 0)], 4: [(90, 1), (0, 0)],
+                              5: [(0, 0), (0, 0)], 6: [(0, 0), (0, 0)]})
+
+    def test_the_benched_game_is_counted_and_the_start_rate_halves(self):
+        """One start, one benching: 0.4, not the 1.0 the played-games denominator gave."""
+        entry = self._cohort()[1]
+        self.assertEqual(entry["games"], 2.0)
+        self.assertEqual(entry["starts"], 1.0)
+        self.assertAlmostEqual(entry["start_prior"], 1 / 3)
+        self.assertAlmostEqual(start_rate(entry, season_started=True), 0.4)
+
+    def test_per_appearance_rates_keep_the_played_games_denominator(self):
+        """Bonus and cards can only be earned on the pitch, so the benching is not one."""
+        entry = self._cohort()[1]
+        self.assertEqual(entry["appearances"], 1.0)
+        self.assertEqual(entry["minutes"], 90.0)
+
+    def test_a_player_who_has_only_been_benched_stays_at_the_unused_rate(self):
+        """He is in `history` now, where he used to be absent; the answer must not move."""
+        entry = self._cohort()[5]
+        self.assertEqual(entry["games"], 2.0)
+        self.assertEqual(entry["starts"], 0.0)
+        self.assertEqual(entry["appearances"], 0.0)
+        self.assertEqual(start_rate(entry, season_started=True),
+                         projection.UNUSED_START_PROB)
+
+    def test_the_prior_is_positional_not_league_wide(self):
+        """Goalkeepers rotate less than forwards; one league number would blur both."""
+        conn = storage.connect(":memory:")
+        self.addCleanup(conn.close)
+        storage.upsert_players(conn, {"elements": [
+            {"id": 1, "web_name": "Keeper", "team": 1, "element_type": 1},
+            {"id": 2, "web_name": "Sub keeper", "team": 1, "element_type": 1},
+            {"id": 3, "web_name": "Forward", "team": 1, "element_type": 4}]})
+        storage.record_player_gameweeks(conn, [
+            {"element": 1, "round": 1, "minutes": 90, "starts": 1},
+            {"element": 1, "round": 2, "minutes": 90, "starts": 1},
+            {"element": 2, "round": 1, "minutes": 0, "starts": 0},
+            {"element": 2, "round": 2, "minutes": 0, "starts": 0},
+            {"element": 3, "round": 1, "minutes": 60, "starts": 1},
+            {"element": 3, "round": 2, "minutes": 20, "starts": 0}])
+        history = projection._player_history(conn)
+        self.assertAlmostEqual(history[1]["start_prior"], 0.5)   # 2 starts / 4 GKP games
+        self.assertAlmostEqual(history[3]["start_prior"], 0.5)   # 1 start / 2 FWD games
+
+
+class SeedMixin:
     def _seed(self):
         conn = storage.connect(":memory:")
         bootstrap = {
@@ -213,6 +319,8 @@ class ProjectGameweekTests(unittest.TestCase):
             "kickoff_time": "2026-09-04T14:00:00Z", "finished": False}])
         return conn
 
+
+class ProjectGameweekTests(SeedMixin, unittest.TestCase):
     def test_projects_and_is_rerunnable(self):
         conn = self._seed()
         self.addCleanup(conn.close)
@@ -242,6 +350,117 @@ class ProjectGameweekTests(unittest.TestCase):
         self.addCleanup(conn.close)
         with self.assertRaises(LookupError):
             projection.project_gameweek(conn, 3)
+
+
+class SettledProjectionTests(SeedMixin, unittest.TestCase):
+    """A graded projection is the record of a belief held before the result was known.
+
+    `INSERT OR REPLACE` deletes the row and reinserts it with a fresh autoincrement id,
+    orphaning the `outcome` that grades it - which the foreign key caught as an opaque
+    IntegrityError. The check says the same thing out loud, and says why.
+    """
+
+    def _settle(self, conn, gameweek=3, model_version=projection.MODEL_VERSION):
+        """Grade whatever was projected, the way settle does."""
+        rows = conn.execute(
+            "SELECT id, element_id FROM projection WHERE gameweek = ? "
+            "AND model_version = ?", (gameweek, model_version)).fetchall()
+        conn.executemany(
+            "INSERT INTO outcome VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [(r["id"], r["element_id"], gameweek, model_version, 5.0, 2.0, 3.0,
+              0.9, 90, 4, "2026-09-04T00:00:00Z") for r in rows])
+        conn.commit()
+        return len(rows)
+
+    def test_re_projecting_a_settled_gameweek_is_refused_by_name(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        self.assertEqual(self._settle(conn), 1)
+
+        with self.assertRaises(projection.SettledProjection) as caught:
+            projection.project_gameweek(conn, 3)
+        message = str(caught.exception)
+        self.assertIn("settled", message)
+        self.assertIn("MODEL_VERSION", message)
+
+    def test_the_graded_projection_survives_the_refusal(self):
+        """The effect, not the exception: the row and its outcome are still intact."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        self._settle(conn)
+        before = conn.execute(
+            "SELECT id, expected_points, created_at FROM projection").fetchall()
+
+        with self.assertRaises(projection.SettledProjection):
+            projection.project_gameweek(conn, 3)
+
+        after = conn.execute(
+            "SELECT id, expected_points, created_at FROM projection").fetchall()
+        self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM outcome o JOIN projection pr "
+                         "ON pr.id = o.projection_id").fetchone()[0], 1,
+            "the outcome must still point at a projection that exists")
+
+    def test_a_new_model_version_may_project_the_same_gameweek(self):
+        """Bumping the version writes new rows and mutates nothing; that is the escape."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3, model_version="0.5.0")
+        self._settle(conn, model_version="0.5.0")
+        self.assertEqual(projection.project_gameweek(conn, 3, model_version="0.6.0"), 1)
+
+    def test_an_ungraded_gameweek_re_projects_freely(self):
+        """The horizon is re-run every deadline; only graded rows are protected."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        projection.project_gameweek(conn, 3)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM projection").fetchone()[0], 1)
+
+
+class StoredHorizonTests(SeedMixin, unittest.TestCase):
+    """Reading a horizon that was projected, and refusing one that was not."""
+
+    def test_the_stored_total_matches_what_was_projected(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        written = projection.project_horizon(conn, 3, weeks=3)
+        read = projection.stored_horizon(conn, 1, 3, weeks=3)
+        self.assertEqual(written, read)
+        self.assertEqual(
+            read[1],
+            conn.execute("SELECT SUM(expected_points) FROM projection WHERE "
+                         "gameweek BETWEEN 3 AND 5 AND model_version = ?",
+                         (projection.MODEL_VERSION,)).fetchone()[0])
+
+    def test_an_unprojected_horizon_names_the_missing_gameweeks(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        with self.assertRaises(projection.HorizonMissing) as caught:
+            projection.stored_horizon(conn, 1, 3, weeks=3)
+        self.assertIn("4, 5", str(caught.exception))
+
+    def test_a_blank_gameweek_is_present_not_missing(self):
+        """No fixture still stores a row per player, so a blank is a zero, not a gap."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_horizon(conn, 3, weeks=3)
+        # gameweeks 4 and 5 have no fixture at all in the fixture table
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM projection WHERE gameweek = 5 "
+                         "AND fixture_count = 0").fetchone()[0], 1)
+        self.assertIn(1, projection.stored_horizon(conn, 1, 3, weeks=3))
+
+    def test_another_model_version_does_not_satisfy_the_horizon(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_horizon(conn, 3, weeks=3, model_version="0.1.0")
+        with self.assertRaises(projection.HorizonMissing):
+            projection.stored_horizon(conn, 1, 3, weeks=3, model_version="0.2.0")
 
 
 if __name__ == "__main__":

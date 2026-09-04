@@ -57,5 +57,4 @@ from .leagues import (  # noqa: F401
 from .injuries import (  # noqa: F401
     check_player_availability,
     get_injury_and_lineup_predictions,
-    get_players_to_avoid,
 )

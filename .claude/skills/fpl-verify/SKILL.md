@@ -13,8 +13,10 @@ Check them the same way each time.
 1. **Fetch the real payload** and look at it, rather than reasoning about what it should
    contain. `/me/` was assumed to carry league membership for weeks; it does not.
 2. **Reconstruct a known-good number.** The scoring rules were confirmed by rebuilding all
-   1236 stored appearances from their components and finding zero mismatches. That is what
-   made the defensive-contribution thresholds derivable at all.
+   1236 stored `player_gameweek` rows from their components and finding zero mismatches.
+   That is what made the defensive-contribution thresholds derivable at all - from the 622
+   of those rows with minutes on them, since a benching carries no signal. Reconstruct the
+   whole corpus; derive from the part that can tell you anything.
 3. **Look at the distribution, not one example.** The `likelihood` field looked like a
    confidence score until every value was bucketed against `projected_percent` and turned
    out to be a derived band of it.

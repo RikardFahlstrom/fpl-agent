@@ -6,11 +6,18 @@ is about to disappear. They are kept apart deliberately - a modest upgrade whose
 closes tonight is a different situation from a big upgrade you can take your time over,
 and one score cannot express both.
 
-Decisions are written to the `decision` table and exported to logs/actions.jsonl, which
-is the version-controlled record. Appending there produces a pure-addition diff.
+The gain is quoted twice, gross and net of the points hit the move would cost. Both are
+needed: a net of -2.8 that is +1.2 gross is a real upgrade you cannot afford this week,
+while +1.2 gross under an active wildcard is simply +1.2. Ranking is on the net, because
+a move that does not survive its own hit is not a recommendation.
 
-    python -m fpl_agent.recommend                 # show recommendations
-    python -m fpl_agent.recommend --record        # and log the top one as a decision
+Decisions are written to the `decision` table and exported to logs/actions.jsonl, which
+is the version-controlled record. Appending there produces a pure-addition diff. The
+file and its directory are created by the first --record run; until one has happened
+there is nothing to commit, which is why neither is in the checkout.
+
+    fpl-agent recommend                 # show recommendations
+    fpl-agent recommend --record        # and log the top one as a decision
 """
 
 import argparse
@@ -24,7 +31,8 @@ from typing import Any, Optional
 
 from .. import config
 from . import pricing, rivals, storage
-from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, project_horizon
+from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
+                         stored_horizon)
 from .scoring import POSITIONS
 
 logger = logging.getLogger("fpl_recommend")
@@ -45,6 +53,9 @@ STARTING_XI = 11
 # happily proposes a large "gain" on a reserve goalkeeper, which returns nothing.
 # A stated assumption, to be fitted once outcomes exist.
 BENCH_VALUE = 0.15
+
+# FPL's standing hit, used only when a snapshot recorded no `transfers.cost`.
+DEFAULT_TRANSFER_COST = 4
 
 
 def ownership_profile(effective_ownership: Optional[float]) -> str:
@@ -85,13 +96,105 @@ def _team_limit(conn: sqlite3.Connection) -> int:
     return int(json.loads(row["rules"]).get("squad_team_limit", DEFAULT_TEAM_LIMIT))
 
 
+def active_transfer_chip(chips_json: Optional[str]) -> Optional[str]:
+    """Name the transfer chip in play, if any.
+
+    `my_state.chips` is FPL's own `my-team` payload, stored verbatim: a list of objects
+    carrying `name` ("wildcard", "freehit", "bboost", "3xc"), `chip_type` ("transfer" or
+    "team") and `status_for_entry`, which is one of "unavailable", "available", "active"
+    or "played". "active" - not "played" - is the state during the gameweek the chip is
+    being used in, so that is the value to match.
+
+    Only a *transfer* chip suspends hits. An active bench boost or triple captain is a
+    team chip: it changes what the squad scores, not what a move costs. Keying on
+    `chip_type` rather than on the two known names keeps that distinction if FPL adds
+    another chip, with the names as a fallback for payloads that omit the type.
+    """
+    if not chips_json:
+        return None
+    try:
+        chips = json.loads(chips_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(chips, list):
+        return None
+    for chip in chips:
+        if not isinstance(chip, dict) or chip.get("status_for_entry") != "active":
+            continue
+        if chip.get("chip_type") == "transfer" or chip.get("name") in ("wildcard", "freehit"):
+            return chip.get("name")
+    return None
+
+
+def transfer_price(free_transfers: Optional[int], transfer_cost: Optional[int],
+                   chip: Optional[str]) -> int:
+    """What the next transfer costs in points, given the state of the squad.
+
+    Every recommendation in the list is priced as *the next transfer you would make*,
+    never as the nth move of a plan. The list is a ranked set of mutually exclusive
+    alternatives - you take one of them - so with one free transfer every option on it
+    is free, and with none every option carries the full hit. Charging option 2 as
+    though option 1 had already been taken would bill a hit nobody is going to pay and
+    understate every alternative below the first. Multi-transfer planning, where the
+    running cost genuinely accumulates, is a different tool and out of scope here.
+
+    `free_transfers` is `limit - made` as the snapshot stored it. Banking is not
+    modelled: this season's rolling allowance is already reflected in `limit`.
+
+    Unknown free transfers are priced as none. A snapshot that failed to record
+    `transfers.limit` is not evidence that a free transfer exists, and assuming one you
+    may not have is exactly how a net -2.8 move gets ranked first.
+    """
+    if chip:
+        return 0
+    if free_transfers and free_transfers > 0:
+        return 0
+    return DEFAULT_TRANSFER_COST if transfer_cost is None else int(transfer_cost)
+
+
+def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The transfer budget the latest snapshot's recommendations are priced against."""
+    snapshot = conn.execute(
+        "SELECT id FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
+    if not snapshot:
+        raise LookupError("no snapshot captured yet")
+    state = _state(conn, snapshot["id"])
+    free = state["free_transfers"] if state else None
+    cost = state["transfer_cost"] if state else None
+    chip = active_transfer_chip(state["chips"] if state else None)
+    return {"free_transfers": free, "transfer_cost": cost, "chip": chip,
+            "hit_cost": transfer_price(free, cost, chip)}
+
+
 def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
               limit: int = 10) -> list[dict[str, Any]]:
-    """Rank transfers by projected gain over the horizon, flagging closing windows."""
+    """Rank transfers by net gain over the horizon, flagging closing windows.
+
+    Net means after the points hit the move would cost. See `transfer_price` for why
+    every option on the list is charged the same hit rather than the first being free.
+
+    Reads the projections `project` stored; it does not run them. Ranking is a read of
+    the warehouse, not a write to it, so `recommend` can be run twice without leaving a
+    second set of rows behind under whatever MODEL_VERSION the code has moved on to.
+    An unprojected horizon is an error, not a cue to project - see `stored_horizon`.
+
+    Candidates include the *doubtful* as well as the fully available. FPL's `d` status
+    always comes with a `chance_of_playing_next_round`, and `projection.availability`
+    already scales the whole projection by exactly that percentage: a 75% doubt is
+    worth 75% of his points before he reaches this list. Filtering him out as well
+    charged the same doubt twice and then rounded it to zero - the same double-count
+    that was taking predicted starters out of the XI in `lineups`. Statuses with no
+    percentage to scale by (`i`, `s`, `u`, `n` - injured, suspended, unavailable, on
+    loan) project to zero anyway and are excluded outright, so the whitelist stays
+    explicit rather than trusting a status code FPL has not invented yet.
+    """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
         raise LookupError("no snapshot captured yet")
+
+    if snapshot["gameweek"] is None:
+        raise LookupError("no target gameweek on the latest snapshot; the season may be over")
 
     squad = _squad(conn, snapshot["id"])
     if not squad:
@@ -100,7 +203,10 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     state = _state(conn, snapshot["id"])
     bank = (state["bank"] if state and state["bank"] is not None else 0)
 
-    totals = project_horizon(conn, snapshot["gameweek"], weeks)
+    context = transfer_context(conn)
+    hit_cost, chip = context["hit_cost"], context["chip"]
+
+    totals = stored_horizon(conn, snapshot["id"], snapshot["gameweek"], weeks)
     outlooks = pricing.price_outlooks(conn, snapshot["id"])
     team_limit = _team_limit(conn)
 
@@ -117,13 +223,16 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     for row in squad:
         club_counts[row["team_id"]] = club_counts.get(row["team_id"], 0) + 1
 
+    # 'a' available, 'd' doubtful. See the docstring for why the doubtful belong here:
+    # their projection has already been cut by FPL's own percentage.
     candidates = conn.execute(
         """SELECT ps.element_id, ps.now_cost, p.web_name, p.element_type, p.team_id,
-                  t.short_name AS team
+                  t.short_name AS team, ps.status,
+                  ps.chance_of_playing_next_round AS chance
            FROM player_snapshot ps
            JOIN player p ON p.element_id = ps.element_id
            JOIN team t ON t.id = p.team_id
-           WHERE ps.snapshot_id = ? AND ps.status = 'a'""",
+           WHERE ps.snapshot_id = ? AND ps.status IN ('a', 'd')""",
         (snapshot["id"],),
     ).fetchall()
 
@@ -159,6 +268,10 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
                 continue
             # What the swap is actually worth, given the slot it lands in.
             gain = raw_gain * slot_value
+            # ...and what is left of it once the move has paid for itself.
+            net = gain - hit_cost
+            if net <= 0:
+                continue
 
             # With rivals captured, absence from every squad is 0% ownership - the
             # strongest differential - rather than an absence of information.
@@ -182,27 +295,50 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
                 "in": {"element_id": cand["element_id"], "name": cand["web_name"],
                        "team": cand["team"], "now_cost": cand["now_cost"],
                        "xp": round(totals.get(cand["element_id"], 0.0), 2),
+                       # A doubt already discounted the xP above; it is carried through
+                       # so the reader is told, not so it can be charged again.
+                       "status": cand["status"], "chance": cand["chance"],
                        "league_eo": round(in_eo, 3) if in_eo is not None else None,
                        "profile": ownership_profile(in_eo)},
                 "xp_delta": round(gain, 2),
                 "raw_xp_delta": round(raw_gain, 2),
+                "net_xp_delta": round(net, 2),
+                "hit_cost": hit_cost,
+                "free_transfers": context["free_transfers"],
+                "chip": chip,
                 "urgency": affordability.urgency,
                 "affordability": affordability.as_dict(),
             })
 
-    # Best gain first; among comparable gains a closing window breaks the tie.
+    # Best net gain first; among comparable gains a closing window breaks the tie.
+    # The hit is the same for every option, so it cannot reorder the list - what it
+    # does is drop the moves that do not clear it, above.
     urgency_rank = {"tonight": 0, "soon": 1, "none": 2, "missed": 3}
     recommendations.sort(
-        key=lambda r: (-r["xp_delta"], urgency_rank.get(r["urgency"], 9)))
+        key=lambda r: (-r["net_xp_delta"], urgency_rank.get(r["urgency"], 9)))
     return recommendations[:limit]
 
 
 def record_decision(conn: sqlite3.Connection, recommendation: dict[str, Any],
                     kind: str = "transfer", status: str = "proposed") -> int:
+    # The `xp_delta` column keeps its meaning - gross gain - so existing rows stay
+    # comparable; the net and the hit ride along in the payload JSON and are spelled
+    # out in the rationale, which is the part a human reads back.
+    # A recommendation with no `hit_cost` key was not priced at all; say nothing rather
+    # than assert a free transfer that was never established.
+    hit = recommendation.get("hit_cost")
+    if recommendation.get("chip"):
+        cost_note = f" (no hit: {recommendation['chip']} active)"
+    elif hit:
+        cost_note = f" (net {recommendation.get('net_xp_delta')} after a {hit}-point hit)"
+    elif hit == 0:
+        cost_note = " (free transfer)"
+    else:
+        cost_note = ""
     rationale = (
         f"{recommendation['in']['name']} over {recommendation['out']['name']}: "
-        f"+{recommendation['xp_delta']} xP over {recommendation['horizon']} gameweeks; "
-        f"{recommendation['affordability']['reason']}"
+        f"+{recommendation['xp_delta']} xP over {recommendation['horizon']} gameweeks"
+        f"{cost_note}; {recommendation['affordability']['reason']}"
     )
     cur = conn.execute(
         """INSERT INTO decision (created_at, gameweek, model_version, kind, payload,
@@ -251,9 +387,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     conn = storage.connect(args.db)
     try:
-        recommendations = recommend(conn, args.weeks, args.top)
+        context = transfer_context(conn)
+        try:
+            recommendations = recommend(conn, args.weeks, args.top)
+        except HorizonMissing as missing:
+            # Not a crash to fix: the run order was wrong. Say which command was skipped.
+            print(f"\nCannot recommend: {missing}", file=sys.stderr)
+            return 1
+
+        if context["chip"]:
+            print(f"\n{context['chip'].upper()} ACTIVE this gameweek: transfers cost "
+                  f"nothing, so no hit is charged below. Bear in mind these are single "
+                  f"like-for-like swaps ranked one at a time - a wildcard rebuilds the "
+                  f"whole squad, which this tool does not plan.")
+        elif context["hit_cost"]:
+            why = ("no free transfers left"
+                   if context["free_transfers"] == 0
+                   else "free transfers not recorded in this snapshot, so assumed none")
+            print(f"\n{why}: every move below is charged a {context['hit_cost']}-point "
+                  f"hit and ranked on the net gain.")
+        else:
+            count = context["free_transfers"]
+            print(f"\n{count} free transfer{'' if count == 1 else 's'}: no hit. Each "
+                  f"option is priced as the one move you make, not as a running plan.")
+
         if not recommendations:
-            print("No transfer improves the squad over the horizon within budget.")
+            tail = (f" that survives a {context['hit_cost']}-point hit"
+                    if context["hit_cost"] else "")
+            print(f"No transfer improves the squad over the horizon within budget{tail}.")
             return 0
 
         print(f"\nTransfer candidates over the next {args.weeks} gameweeks\n")
@@ -269,11 +430,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             if r["out"]["slot"] == "bench":
                 worth += (f", discounted from +{r['raw_xp_delta']} because the bench "
                           f"only scores through substitutions")
+            if r["hit_cost"]:
+                worth += (f"; net +{r['net_xp_delta']} after the "
+                          f"{r['hit_cost']}-point hit")
             print(f"   {worth}" + (f"   [{flag}]" if flag else ""))
             if r["urgency"] in ("tonight", "soon"):
                 print(f"   {r['affordability']['reason']}")
 
             notes = []
+            if r["in"].get("status") == "d":
+                notes.append(f"doubtful: {r['in']['chance']}% chance of playing, "
+                             f"already priced into the xP above")
             if r["in"]["league_eo"] is not None:
                 notes.append(f"in: {r['in']['profile']} "
                              f"({r['in']['league_eo'] * 100:.0f}% EO in your leagues)")

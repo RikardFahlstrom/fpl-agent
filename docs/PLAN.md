@@ -4,6 +4,10 @@ Turning this repo from an MCP server that reads FPL into a decision engine that
 projects points, recommends actions, records what it decided, and measures itself
 against what actually happened.
 
+Section numbers are the original brief's and are kept stable so references to them stay
+valid; §1 (detaching the fork) and §9 (open questions) were finished and removed, which
+is why the numbering has gaps rather than a section having gone missing.
+
 ## 0. The constraint that sets the order of work
 
 `bootstrap-static` is **current-state only**. Prices, ownership, form and price-change
@@ -15,17 +19,6 @@ the moment the gameweek turns.**
 
 Every gameweek without a snapshot is permanently unlearnable. Phase 1 therefore lands
 before any modelling work.
-
-## 1. Repo identity — `fpl-agent`, detached
-
-The login page already brands itself **FPLAgent** (`web.py`: the `FA` seal, "FPLAgent ·
-local connection"). The product name exists; the repo name hasn't caught up.
-`fpl-agent` needs no invention and stops undersells once there is a warehouse and a
-learning loop inside.
-
-Detaching: self-serve fork detachment on GitHub is inconsistent and often needs Support.
-With no stars or issues to preserve, the reliable path is a fresh repo plus a full
-history push. Confirm before relying on either route.
 
 ## 2. Data layer — SQLite, hybrid schema
 
@@ -195,15 +188,21 @@ calibration, committed alongside the decisions it explains.
 ## 6. Claude-way — skills in git
 
 `.claude/skills/`, version-controlled, each a thin wrapper over a Python entry point so
-the logic stays testable outside Claude:
+the logic stays testable outside Claude.
+
+The plan sketched one skill per engine command. What was built is three, split by
+*judgement* rather than by command, because the deterministic sequences belong in the
+`Makefile` and only the interpretation needs a skill:
 
 | Skill | Does |
 |---|---|
-| `/fpl-snapshot` | Capture current state → SQLite. Idempotent per day. |
-| `/fpl-project` | Run projections for the upcoming gameweek. |
-| `/fpl-decide` | Recommend transfers/captain/chip; append to `logs/actions.jsonl`. |
-| `/fpl-settle` | Pull actuals, score projections, draft a learning file. |
-| `/fpl-review` | Calibration trend and what changed between model versions. |
+| `/fpl-deadline` | `make deadline` — snapshot, backfill, project, rivals, recommend, status — then how to read the ranking and when not to act. |
+| `/fpl-settle` | `make settle GW=n`: grade projections, read the calibration slices, decide whether a deviation is a finding or noise. |
+| `/fpl-verify` | Check an assumption against the live API when a result looks wrong. |
+
+Recording is deliberately not in `/fpl-deadline`: `make record` is a separate step,
+because the log is a claim about the move you made, not the one that was ranked first.
+Calibration trend across model versions — the old `/fpl-review` — is not built.
 
 Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
 
@@ -212,8 +211,11 @@ Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
 - Never mutate a settled `projection` row
 - Snapshot before deciding; a decision without a snapshot cannot be graded later
 
-With `FPL_AUTO_LOGIN` and `FPL_READ_ONLY` already in place, a scheduled nightly
-`snapshot` and a deadline-eve `project → decide` follow naturally.
+That list has since grown; `CLAUDE.md` is the authority, not this section.
+
+The scheduled half is built: `deploy/fpl-cron.sh` runs the nightly snapshot and the
+deadline cycle unattended, guarded by `FPL_AUTO_LOGIN` and `FPL_READ_ONLY`. It never
+executes a transfer. See `docs/SCHEDULING.md`.
 
 ## 7. Phasing
 
@@ -222,11 +224,15 @@ With `FPL_AUTO_LOGIN` and `FPL_READ_ONLY` already in place, a scheduled nightly
 | **P0** | Rename/detach, `CLAUDE.md` | — |
 | **P1** | Schema, daily snapshot, backfill actuals | **Before the next deadline** |
 | **P2** | Projection engine, `game_config` parsing | After P1 has data |
-| **P3** | Price/urgency signals, `logs/actions.jsonl` | After P2 |
-| **P4** | Settle, calibration slices, `learnings/` | Built; first real numbers need GW3 to finish |
+| **P3** | Price/urgency signals, `logs/actions.jsonl` | Built; the log stays empty until a decision is recorded |
+| **P4** | Settle, calibration slices, `learnings/` | Built; no gameweek has been settled against real actuals yet |
 | **P5** | Feed learnings back into weights | Needs ≥3 gameweeks of calibration |
 
 P1 is the only phase with a real deadline. Everything after it can take its time.
+
+Unattended running was not a phase in the original plan and is now the point of the
+system: `deploy/fpl-cron.sh`, the `status` command and the exit-code table in
+`docs/SCHEDULING.md` are what a run with nobody watching needs to fail loudly.
 
 Conventions live in `CLAUDE.md`, the runnable sequences in the `Makefile`, the judgement
 in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
@@ -236,37 +242,3 @@ in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
 Single manager, not multi-tenant. Python with stdlib `sqlite3`, no ORM. Projections one
 gameweek ahead initially; multi-gameweek horizon later. `make_transfers` stays manual —
 the engine recommends, a human executes. `FPL_READ_ONLY` stays set for scheduled runs.
-
-## 9. Open questions
-
-- *(resolved)* ~~Does `likelihood` mean the same thing at +5 and −5?~~ See below.
-
-### Decided
-
-- **Price changes follow FPL's documented rule.** From its Price Changes page: *Progress
-  shows how far a player has currently moved towards a price change. Predicted Progress
-  estimates where they will be by the time of the next update. When Predicted Progress
-  exceeds 100%, the player is considered Very Likely to rise or fall.*
-
-  So the signal is `projected_percent` crossing ±100, not `likelihood`. `likelihood`
-  turns out to be a derived ordinal band of the same number (±5 is ≥100%, ±4 is 95–99.4,
-  ±3 is 40–94.7, ±2 is 20–39.7, ±1 is 0.1–19.6), so driving off `projected_percent`
-  follows the documented rule directly rather than a banding that could be re-cut.
-
-  FPL is explicit that predictions are *a guide, not a guarantee*, and that team news and
-  the gameweek deadline matter too — which is why urgency is reported alongside expected
-  points rather than folded into it.
-
-- **Planning horizon: 3 gameweeks.** Transfer value is judged on projected points over
-  the next three gameweeks rather than the next one, so a good fixture run counts and a
-  one-week spike does not dominate.
-- **Rivals are modelled.** Squads of managers in your leagues are public for completed
-  gameweeks, so the engine tracks them and reports effective ownership *within your
-  leagues* rather than globally. A template player everyone owns is a risk to skip, not
-  an edge; a differential is only a differential relative to the people you are actually
-  playing against.
-
-  Implemented in `rivals.py`. Only private leagues (`league_type` `x`) under a rival cap
-  are captured: FPL's own leagues are type `s` and unusably large — "Overall" carries
-  around 9.9 million entries. Effective ownership counts a captain twice, matching how
-  much of the field's score a player actually drives.

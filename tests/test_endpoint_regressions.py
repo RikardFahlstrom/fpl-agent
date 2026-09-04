@@ -3,14 +3,18 @@
 Each test pins one previously-broken endpoint path. All fixtures are local: no test
 here reaches the FPL API.
 """
+import inspect
+import re
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from fpl_agent.mcp import prompts, tools  # noqa: F401  (registers prompts)
+# Importing these registers the prompts and resources on the shared server.
+from fpl_agent.mcp import prompts, resources, tools  # noqa: F401
 from fpl_agent.client import FPLClient
-from fpl_agent.mcp.tools import mcp
+from fpl_agent.mcp.tools import injuries, mcp
 from fpl_agent.models import BootstrapData, FixtureData
 from fpl_agent.reference import ReferenceData, reference
+from fpl_agent.rotowire_scraper import PlayerLineupStatus, RotoWireLineupScraper
 from fpl_agent.sessions import SessionRegistry, sessions
 
 
@@ -321,6 +325,62 @@ class SquadAnalysisTests(_StoreFixture):
         self.assertNotIn("transfers_balance", output)
         self.assertNotIn("Error analyzing squad performance", output)
         self.assertIn("Squad Performance Analysis", output)
+
+
+class InjuryEndpointTests(_StoreFixture):
+    """get_players_to_avoid called scraper.convert_to_ai_format, which never existed.
+
+    Both the tool and the fpl://injuries/avoid resource returned
+    "... has no attribute 'convert_to_ai_format'" for every caller. They are gone;
+    get_injury_and_lineup_predictions already lists OUT and DOUBTFUL with the same
+    reason and confidence, so nothing was lost with them.
+    """
+
+    def _stub_scraper(self, statuses):
+        """Answer the scrape from local data - no test here reaches RotoWire."""
+        async def scrape(_self):
+            return statuses
+
+        original = RotoWireLineupScraper.scrape_premier_league_lineups
+        RotoWireLineupScraper.scrape_premier_league_lineups = scrape
+        self.addCleanup(
+            setattr, RotoWireLineupScraper, "scrape_premier_league_lineups", original
+        )
+
+    async def test_predictions_report_out_and_doubtful_without_an_attribute_error(self):
+        self._stub_scraper([
+            PlayerLineupStatus("Alpha", "TSU", "OUT", "Hamstring", 0.9),
+            PlayerLineupStatus("Bravo", "TSC", "DOUBTFUL", "Knock", 0.6),
+        ])
+        self.activate(_FakeClient())
+
+        output = await self.call_tool("get_injury_and_lineup_predictions")
+
+        self.assertNotIn("no attribute", output)
+        self.assertNotIn("Error fetching", output)
+        # The coverage the deleted get_players_to_avoid claimed to add.
+        self.assertIn("OUT (1 players)", output)
+        self.assertIn("Alpha (TSU) - Hamstring", output)
+        self.assertIn("DOUBTFUL (1 players)", output)
+        self.assertIn("Bravo (TSC) - Knock", output)
+
+    async def test_every_scraper_call_in_the_injuries_module_exists(self):
+        """The check that would have caught the bug: no call to a method that is not there."""
+        source = inspect.getsource(injuries)
+        called = set(re.findall(r"\bscraper\.(\w+)", source))
+
+        self.assertTrue(called, "expected the tools to call the scraper at all")
+        missing = sorted(m for m in called if not hasattr(RotoWireLineupScraper, m))
+        self.assertEqual(missing, [])
+
+    async def test_the_dead_endpoints_are_not_registered(self):
+        tool_names = {tool.name for tool in await mcp.list_tools()}
+        resource_uris = {str(resource.uri) for resource in await mcp.list_resources()}
+
+        self.assertNotIn("get_players_to_avoid", tool_names)
+        self.assertNotIn("fpl://injuries/avoid", resource_uris)
+        self.assertIn("get_injury_and_lineup_predictions", tool_names)
+        self.assertIn("fpl://injuries", resource_uris)
 
 
 class PromptTests(unittest.IsolatedAsyncioTestCase):

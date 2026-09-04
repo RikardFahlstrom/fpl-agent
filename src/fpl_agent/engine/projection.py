@@ -11,8 +11,8 @@ produced it rather than re-derived. That is what makes P4's calibration actionab
 This is v0 and deliberately uncalibrated - the rate constants below are stated
 assumptions, not fitted values. Fitting them is the point of the learning loop.
 
-    python -m fpl_agent.projection              # project the upcoming gameweek
-    python -m fpl_agent.projection --gameweek 5
+    fpl-agent project              # project the upcoming gameweek
+    fpl-agent project --gameweek 5
 """
 
 import argparse
@@ -31,7 +31,7 @@ from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.3.0"
+MODEL_VERSION = "0.5.0"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
@@ -72,9 +72,15 @@ BONUS_PRIOR_APPEARANCES = 3.0
 RATE_PRIOR_MINUTES = 270.0
 # Fallback when a team has no played minutes to estimate from (preseason).
 LEAGUE_CONCEDED_PER_90 = 1.4
-# Appearances of evidence before a per-appearance rate (bonus, defensive contribution)
-# is trusted. One player hitting the threshold in his only appearance is not a 100% rate.
+# Appearances of evidence before a per-appearance rate (bonus, defensive contribution,
+# starting) is trusted. One player hitting the threshold in his only appearance is not a
+# 100% rate, and one start in his club's two games is not a nailed-on starter.
 APPEARANCE_PRIOR = 3.0
+# Fallback start rate when there are no rows to compute one from (preseason). The prior
+# actually used is starts/games for the player's own position, derived from the data in
+# _player_history the way league_yellow_per_90 and league_dc_rate are - a goalkeeper and
+# a centre-back are not drawn from the same distribution.
+LEAGUE_START_PRIOR = 0.35
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -156,13 +162,32 @@ def availability(snap: sqlite3.Row) -> float:
 def start_rate(history: dict[str, float], season_started: bool = False) -> float:
     """How often this player starts, given they are available.
 
-    `season_started` distinguishes the two reasons a player has no appearances: the
+    The denominator is `games` - every fixture of his club's that he was in the squad
+    for, benchings included - not `appearances`, which counts only games he played. On
+    appearances an unused substitute is invisible: one start and one benching read as a
+    certain starter, four times what the record supports. Benchings are already in the
+    warehouse (element-summary carries a row per team fixture; 614 of 1236 rows were at
+    zero minutes when this was written) and were being grouped away.
+
+    Thin records are pulled toward the start rate of the player's position, so two starts
+    out of two is not yet proof of a nailed-on starter. That shrink is skipped in one
+    direction: a fit player who has started nothing once the season is under way keeps
+    UNUSED_START_PROB outright. Shrinking him *up* toward a positional prior of roughly
+    0.3 would quietly restore the 0.2.0 reserve-goalkeeper bug - never being picked is
+    evidence, not thin evidence.
+
+    `season_started` distinguishes the two reasons a player has no games at all: the
     season has not begun, or he has been available and not picked.
     """
-    appearances = history.get("appearances", 0.0)
-    if appearances:
-        return max(0.0, min(1.0, history.get("starts", 0.0) / appearances))
-    return UNUSED_START_PROB if season_started else BASE_START_PROB
+    games = history.get("games", 0.0)
+    if not games:
+        return UNUSED_START_PROB if season_started else BASE_START_PROB
+    starts = history.get("starts", 0.0)
+    if not starts and season_started:
+        return UNUSED_START_PROB
+    prior = history.get("start_prior", LEAGUE_START_PRIOR)
+    rate = (starts + prior * APPEARANCE_PRIOR) / (games + APPEARANCE_PRIOR)
+    return max(0.0, min(1.0, rate))
 
 
 def clean_sheet_probability(expected_conceded: float) -> float:
@@ -237,22 +262,49 @@ def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
 
 
 def _player_history(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
-    """Per-player realised rates, used where the season aggregates do not carry them."""
+    """Per-player realised rates, used where the season aggregates do not carry them.
+
+    Two denominators, and the difference matters. `appearances` counts games actually
+    played, because bonus, cards and defensive contribution can only be earned on the
+    pitch. `games` counts every row, played or not, because being left out is precisely
+    the evidence a start rate needs; see start_rate.
+    """
     history: dict[int, dict[str, float]] = {}
+    position_of: dict[int, str] = {}
+    # Every row, minutes or not. A start implies minutes, so the numerator is the same
+    # either way; it is the denominator that was wrong.
+    games_query = """
+        SELECT pg.element_id, p.element_type, COUNT(*) AS games,
+               SUM(pg.starts) AS starts
+        FROM player_gameweek pg JOIN player p ON p.element_id = pg.element_id
+        GROUP BY pg.element_id
+    """
+    position_totals: dict[str, list[float]] = {}
+    for row in conn.execute(games_query):
+        position = POSITIONS.get(row["element_type"], "MID")
+        position_of[row["element_id"]] = position
+        games = float(row["games"] or 0)
+        starts = float(row["starts"] or 0)
+        history[row["element_id"]] = {
+            "games": games, "starts": starts,
+            "appearances": 0.0, "bonus": 0.0, "minutes": 0.0,
+        }
+        totals = position_totals.setdefault(position, [0.0, 0.0])
+        totals[0] += starts
+        totals[1] += games
+
+    # Played games only: these three are per-appearance rates.
     query = """
-        SELECT pg.element_id, p.element_type, COUNT(*) AS appearances,
-               SUM(pg.starts) AS starts, SUM(pg.bonus) AS bonus,
-               SUM(pg.minutes) AS minutes, pg.raw
+        SELECT pg.element_id, COUNT(*) AS appearances, SUM(pg.bonus) AS bonus,
+               SUM(pg.minutes) AS minutes
         FROM player_gameweek pg JOIN player p ON p.element_id = pg.element_id
         WHERE pg.minutes > 0 GROUP BY pg.element_id
     """
     for row in conn.execute(query):
-        history[row["element_id"]] = {
-            "appearances": float(row["appearances"] or 0),
-            "starts": float(row["starts"] or 0),
-            "bonus": float(row["bonus"] or 0),
-            "minutes": float(row["minutes"] or 0),
-        }
+        entry = history[row["element_id"]]
+        entry["appearances"] = float(row["appearances"] or 0)
+        entry["bonus"] = float(row["bonus"] or 0)
+        entry["minutes"] = float(row["minutes"] or 0)
 
     # Rates that need per-row inspection rather than a SUM.
     detail = """
@@ -281,10 +333,25 @@ def _player_history(conn: sqlite3.Connection) -> dict[int, dict[str, float]]:
     )
     all_flags = [flag for flags in hits.values() for flag in flags]
     league_dc_rate = (sum(all_flags) / len(all_flags)) if all_flags else 0.0
+    # Starts per game by position: goalkeepers rotate far less than forwards, so one
+    # league-wide number would flatter the reserve keeper and punish the rotated striker.
+    league_start_rates = {
+        position: (starts / games) if games else LEAGUE_START_PRIOR
+        for position, (starts, games) in position_totals.items()
+    }
 
     for element_id, entry in history.items():
         minutes = entry.get("minutes", 0.0)
         appearances = entry.get("appearances", 0.0)
+        entry["start_prior"] = league_start_rates.get(
+            position_of.get(element_id, ""), LEAGUE_START_PRIOR)
+        if not appearances:
+            # Bench-only: no time on the pitch, so no per-appearance evidence at all.
+            # He is in `history` solely for the start rate, and holding these at zero
+            # leaves him exactly as he was when he was absent from the dict entirely.
+            entry["yellow_per_90"] = 0.0
+            entry["dc_rate"] = 0.0
+            continue
 
         # A yellow card in a 5-minute cameo is not an 18-per-90 booking rate.
         raw_yellow = (yellows.get(element_id, 0.0) / minutes * 90) if minutes else 0.0
@@ -313,16 +380,53 @@ def _fixtures_by_team(conn: sqlite3.Connection, gameweek: int) -> dict[int, list
     return by_team
 
 
+class SettledProjection(RuntimeError):
+    """Raised when re-projecting would overwrite a projection that has been graded."""
+
+
+def graded_projections(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
+                       model_version: str) -> int:
+    """How many of these projections have already been graded against actuals.
+
+    The rows a re-projection would replace, not every outcome for the gameweek: a
+    *new* snapshot projecting a played gameweek writes new rows and mutates nothing,
+    so it is not this rule's business.
+    """
+    return conn.execute(
+        """SELECT COUNT(*) FROM outcome o JOIN projection pr ON pr.id = o.projection_id
+           WHERE pr.snapshot_id = ? AND pr.gameweek = ? AND pr.model_version = ?""",
+        (snapshot_id, gameweek, model_version),
+    ).fetchone()[0]
+
+
 def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
                      model_version: str = MODEL_VERSION) -> int:
-    """Project every player for a gameweek from the most recent snapshot."""
+    """Project every player for a gameweek from the most recent snapshot.
+
+    Refuses to overwrite a projection that settle has already graded. `INSERT OR
+    REPLACE` deletes the old row and inserts a new one with a new autoincrement id,
+    so the `outcome` row grading it would be orphaned - which the foreign key already
+    caught, as an opaque IntegrityError. The refusal is the same one, said out loud:
+    a graded projection is the record of what the model believed *at decision time*,
+    and rewriting it under today's code turns the learning loop into a tautology.
+    """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
-        raise LookupError("no snapshot captured yet; run python -m fpl_agent.snapshot")
+        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
     gameweek = gameweek or snapshot["gameweek"]
     if gameweek is None:
         raise LookupError("no target gameweek; the season may be over")
+
+    graded = graded_projections(conn, snapshot["id"], gameweek, model_version)
+    if graded:
+        raise SettledProjection(
+            f"gameweek {gameweek} has been settled: {graded} of snapshot "
+            f"{snapshot['id']}'s projections under model {model_version} are already "
+            f"graded against actuals. Re-projecting would rewrite what the model "
+            f"believed before the gameweek was played, and the calibration would then "
+            f"be scoring today's code against a result it can see. Bump MODEL_VERSION "
+            f"to project the same gameweek again, or take a new snapshot")
 
     scoring = Scoring.from_db(conn)
     history = _player_history(conn)
@@ -375,6 +479,54 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     return len(rows)
 
 
+class HorizonMissing(LookupError):
+    """Raised when a caller asks for a horizon that was never projected."""
+
+
+def stored_horizon(conn: sqlite3.Connection, snapshot_id: int, start_gameweek: int,
+                   weeks: int = HORIZON_GAMEWEEKS,
+                   model_version: str = MODEL_VERSION) -> dict[int, float]:
+    """Per-player totals over the horizon, read from projections already stored.
+
+    Reading rather than projecting is the point. A consumer that projects on the way
+    past writes rows nobody asked for, under whatever MODEL_VERSION the code is on
+    today, so `projection` stops being the record of what was believed at decision
+    time and "projections for gameweek N under model X" stops being a countable fact.
+    `make deadline` runs `project` before `recommend` for exactly this reason.
+
+    Every gameweek in the range must be present. A missing one is not a blank - a
+    blank gameweek still stores a row per player, with `fixture_count` 0 - it is a
+    horizon that was never run, and silently totalling two weeks of a three-week
+    horizon would understate every player by a week.
+    """
+    projected = {
+        row["gameweek"] for row in conn.execute(
+            """SELECT DISTINCT gameweek FROM projection
+               WHERE snapshot_id = ? AND model_version = ?
+                 AND gameweek BETWEEN ? AND ?""",
+            (snapshot_id, model_version, start_gameweek, start_gameweek + weeks - 1),
+        )
+    }
+    missing = [gw for gw in range(start_gameweek, start_gameweek + weeks)
+               if gw not in projected]
+    if missing:
+        raise HorizonMissing(
+            f"no projections stored for gameweek{'s' if len(missing) > 1 else ''} "
+            f"{', '.join(str(gw) for gw in missing)} on snapshot {snapshot_id} under "
+            f"model {model_version}; run `fpl-agent project --horizon {weeks}` "
+            f"(or `make deadline`, which projects before it recommends) first")
+
+    totals: dict[int, float] = {}
+    for row in conn.execute(
+        """SELECT element_id, SUM(expected_points) AS total FROM projection
+           WHERE model_version = ? AND gameweek BETWEEN ? AND ?
+             AND snapshot_id = ? GROUP BY element_id""",
+        (model_version, start_gameweek, start_gameweek + weeks - 1, snapshot_id),
+    ):
+        totals[row["element_id"]] = row["total"]
+    return totals
+
+
 def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = None,
                     weeks: int = HORIZON_GAMEWEEKS,
                     model_version: str = MODEL_VERSION) -> dict[int, float]:
@@ -382,11 +534,13 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
 
     Blanks contribute nothing and doubles contribute twice, which is the point of
     summing over fixtures rather than gameweeks.
+
+    This writes. Callers that only need the numbers read `stored_horizon` instead.
     """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
-        raise LookupError("no snapshot captured yet; run python -m fpl_agent.snapshot")
+        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
     start = start_gameweek or snapshot["gameweek"]
     if start is None:
         raise LookupError("no target gameweek; the season may be over")
@@ -394,16 +548,8 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
     for gameweek in range(start, start + weeks):
         project_gameweek(conn, gameweek, model_version)
 
-    totals: dict[int, float] = {}
-    for row in conn.execute(
-        """SELECT element_id, SUM(expected_points) AS total FROM projection
-           WHERE model_version = ? AND gameweek BETWEEN ? AND ?
-             AND snapshot_id = ? GROUP BY element_id""",
-        (model_version, start, start + weeks - 1, snapshot["id"]),
-    ):
-        totals[row["element_id"]] = row["total"]
     logger.info("horizon: gameweeks %s-%s", start, start + weeks - 1)
-    return totals
+    return stored_horizon(conn, snapshot["id"], start, weeks, model_version)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

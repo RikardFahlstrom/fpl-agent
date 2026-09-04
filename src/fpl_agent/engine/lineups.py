@@ -17,12 +17,23 @@ falls back to historical start rates for the rest.
 import logging
 import sqlite3
 import unicodedata
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Optional
+from typing import Iterable, Optional
 
-from ..rotowire_scraper import LineupPlayer, MatchLineup
+from ..rotowire_scraper import INJURY_STATUS, LineupPlayer, MatchLineup
 
 logger = logging.getLogger("fpl_lineups")
+
+# RotoWire shorthand meaning the player cannot be picked at all. Derived from the
+# scraper's own table rather than restated beside it, so a code added there cannot
+# quietly stop being zeroed here - plus the codes that table misses. The page writes a
+# suspension as both SUSP and SUS and only SUSP is mapped, so a suspended player named
+# in the injury list was scoring the 0.15 meant for someone merely left out. FPL's own
+# `s` flag catches most of them, and "most" is the kind of almost-right this project
+# keeps being bitten by: a suspended player cannot play, so he belongs at 0 for exactly
+# the reason OUT does.
+UNAVAILABLE = {code for code, status in INJURY_STATUS.items() if status == "OUT"} | {"SUS"}
 
 # Characters NFKD does not decompose, which appear in Premier League squads.
 TRANSLITERATE = str.maketrans({"Đ": "D", "đ": "d", "Ø": "O", "ø": "o",
@@ -91,37 +102,130 @@ def resolve_element_id(index: dict[str, list[dict]], name: str,
     return best_id if best_score >= TEAM_MATCH_THRESHOLD else None
 
 
+def fixture_events(fixtures: Iterable[dict],
+                   bootstrap: dict) -> dict[frozenset[str], int]:
+    """Which unfinished gameweek each pair of clubs meets in, by club short name.
+
+    The RotoWire page carries no gameweek label, so the only way to know which round a
+    scraped match belongs to is to ask the fixture list which event holds that pair.
+
+    Keyed on the *unordered* pair: RotoWire's home/away is a page ordering and FPL's is
+    the real one, and two clubs meet at most once in any event either way, so nothing is
+    lost by not insisting the two agree. Finished fixtures are excluded and the earliest
+    surviving event wins, which is what keeps the unordered key honest across a season -
+    LIV-MCI sits in two events, and the reverse leg only becomes the answer once the
+    first has been played. That rule is also the double-gameweek rule.
+    """
+    teams = {t["id"]: t["short_name"] for t in bootstrap.get("teams") or []}
+    events: dict[frozenset[str], int] = {}
+    for fixture in fixtures:
+        event = fixture.get("event")
+        if event is None or fixture.get("finished"):
+            continue
+        home, away = teams.get(fixture.get("team_h")), teams.get(fixture.get("team_a"))
+        if not home or not away:
+            continue
+        pair = frozenset((home, away))
+        if pair not in events or event < events[pair]:
+            events[pair] = event
+    return events
+
+
+@dataclass
+class LineupCapture:
+    """What a lineup capture actually filed, and under which gameweeks.
+
+    `gameweeks` is a list, not the one that was asked for, because filing is decided per
+    fixture and a page caught mid-changeover can legitimately carry two rounds. The
+    caller reports what landed rather than what it requested - a summary line that names
+    the target gameweek regardless is how a misfiling stays invisible.
+    """
+    rows: int
+    unresolved: list[str] = field(default_factory=list)
+    gameweeks: list[int] = field(default_factory=list)
+    unplaceable: list[str] = field(default_factory=list)
+
+
 def record_lineups(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
-                   matches: list[MatchLineup], bootstrap: dict) -> tuple[int, list[str]]:
-    """Store resolved lineups. Returns (rows written, names that could not be resolved)."""
+                   matches: list[MatchLineup], bootstrap: dict,
+                   fixture_events: Optional[dict[frozenset[str], int]] = None
+                   ) -> LineupCapture:
+    """Store resolved lineups, each match under the gameweek its fixture is actually in.
+
+    `gameweek` is the snapshot's target, and it is only a *guess* at where a scraped
+    match belongs. RotoWire shows the next round to be played; FPL flips `is_next` the
+    instant a deadline passes. So every snapshot taken between the gameweek N deadline
+    and that round's last kickoff - a Saturday night, any Friday-to-Monday round, and
+    precisely when the hourly `deadline` cron fires - filed gameweek N lineups under
+    N + 1. `lineup_start_rates` takes the latest snapshot for a gameweek, so a later
+    correct scrape usually overwrote it, but only if one happened before `project` ran.
+
+    Pass `fixture_events` (from `fixture_events()`) and each match is filed under the
+    event that actually holds its pair of clubs; the target is used only for a pair no
+    unfinished fixture claims, and that fallback is named in a warning rather than taken
+    silently. Omitting the map keeps the old behaviour, which is what makes this
+    testable without a fixture table.
+
+    A doubtful starter is published twice - once in the XI, once in the injury list
+    beneath it - and the two entries disagree about `is_starter`. Neither wins outright:
+    the row keeps the injury flag *and* the XI's `is_starter`, because they are answers
+    to different questions and dropping either loses real information. Taking the injury
+    entry whole, as this did, recorded a named starter as benched and injured at once.
+    """
     index = squad_index(bootstrap)
-    rows = []
     unresolved: list[str] = []
-    seen: set[tuple[int, int]] = set()
+    unplaceable: list[str] = []
+    merged: dict[tuple[int, int], list] = {}
 
     for match in matches:
-        # The injury list is written first so a doubtful starter keeps its flag.
+        event = gameweek
+        if fixture_events is not None:
+            found = fixture_events.get(frozenset((match.home_team, match.away_team)))
+            if found is None:
+                unplaceable.append(f"{match.home_team}-{match.away_team}")
+            else:
+                event = found
+
+        # The injury list is read first so a doubtful starter keeps its flag.
         for player in match.injuries + match.players:
             element_id = resolve_element_id(index, player.name, player.team)
             if element_id is None:
                 unresolved.append(f"{player.name} ({player.team})")
                 continue
-            key = (gameweek, element_id)
-            if key in seen:
+            key = (event, element_id)
+            row = merged.get(key)
+            if row is None:
+                merged[key] = [snapshot_id, event, element_id, player.team,
+                               player.name, player.position,
+                               1 if player.is_starter else 0, player.injury,
+                               1 if match.confirmed else 0]
                 continue
-            seen.add(key)
-            rows.append((snapshot_id, gameweek, element_id, player.team, player.name,
-                         player.position, 1 if player.is_starter else 0,
-                         player.injury, 1 if match.confirmed else 0))
+            # Same player, second entry: the XI decides selection, the injury list the flag.
+            if player.is_starter:
+                row[5] = player.position    # the XI carries the position he will play
+                row[6] = 1
+            row[7] = row[7] or player.injury
 
+    rows = [tuple(row) for row in merged.values()]
     conn.executemany(
         "INSERT OR REPLACE INTO predicted_lineup VALUES (?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
     if unresolved:
         logger.warning("could not resolve %s lineup entries: %s",
                        len(unresolved), ", ".join(unresolved[:8]))
-    logger.info("stored %s lineup entries for gameweek %s", len(rows), gameweek)
-    return len(rows), unresolved
+    if unplaceable:
+        logger.warning(
+            "no unfinished fixture holds %s, so %s filed under the snapshot's target "
+            "gameweek %s, which may be the wrong round: %s",
+            "these pairs" if len(unplaceable) > 1 else "this pair",
+            "they were" if len(unplaceable) > 1 else "it was",
+            gameweek, ", ".join(unplaceable))
+    gameweeks = sorted({row[1] for row in rows})
+    for event in gameweeks:
+        logger.info("stored %s lineup entries for gameweek %s",
+                    sum(1 for row in rows if row[1] == event), event)
+    return LineupCapture(rows=len(rows), unresolved=unresolved,
+                         gameweeks=gameweeks, unplaceable=unplaceable)
 
 
 def lineup_start_rates(conn: sqlite3.Connection, gameweek: int,
@@ -132,6 +236,16 @@ def lineup_start_rates(conn: sqlite3.Connection, gameweek: int,
     Covers every player at a club with a published lineup, not only those named in it:
     a player his manager left out is the rotation case FPL's own flag never reports, and
     silence about him is the signal.
+
+    Three cases, and a doubt is only ever counted once. Unavailable is zero - OUT, and a
+    suspension under either of the two codes RotoWire writes it as, because a banned
+    player is no more selectable than an injured one. Named in the XI is
+    the starter rate *whatever* the injury flag says: a QUES starter is a player RotoWire
+    expects to play through a knock, and his fitness is already priced by FPL's
+    `chance_of_playing_next_round`, which `project_player` multiplies through this rate.
+    Demoting him here too charged the same doubt twice - 75% fit times a 0.15 rate meant
+    for players nobody named, reading as benched *and* injured. Doubtful and not named is
+    the omitted rate, like any other player left out.
     """
     row = conn.execute(
         "SELECT MAX(snapshot_id) AS id FROM predicted_lineup WHERE gameweek = ?",
@@ -148,13 +262,13 @@ def lineup_start_rates(conn: sqlite3.Connection, gameweek: int,
         (snapshot_id, gameweek),
     ):
         teams_with_lineups.add(entry["team"])
-        if entry["injury"] == "OUT":
+        if entry["injury"] in UNAVAILABLE:
             listed[entry["element_id"]] = 0.0
         elif entry["is_starter"]:
             listed[entry["element_id"]] = (
                 confirmed_starter if entry["confirmed"] else starter)
         else:
-            # In the injury list but not ruled out: doubtful.
+            # Listed but not named in the XI: doubtful, or simply left out.
             listed[entry["element_id"]] = omitted
 
     # Everyone else at a club with a published lineup was left out of it.
