@@ -5,15 +5,25 @@
 ; Every setting here is an alternative to the matching environment variable, and the
 ; environment always wins - so a scheduled run can override the file without editing it.
 ; The password is stored in plaintext, so keep the file owner-readable only.
+;
+; For an unattended server, see docs/SCHEDULING.md.
 
 [auth]
 ; Restore a cached session at startup, else log in with the credentials below.
 auto_login = true
 email =
 password =
-; Refuse make_transfers. Recommended for anything unattended.
+; Refuse make_transfers. Recommended for anything unattended: the cached token is a
+; bearer credential that can execute transfers on your account.
 read_only = true
+; Where the session and its refresh token are cached. Put this somewhere persistent
+; on a server. The file rotates on every refresh, so restoring an old copy of it
+; restores a dead token - back up the location, not the content.
 ; token_cache = ~/.config/fpl-mcp/session.json
+; The OAuth endpoint and client id the refresh grant uses. Set only if the login
+; breaks because the account service changed them; the defaults are in headless_auth.
+; token_endpoint = https://account.premierleague.com/as/token
+; client_id =
 
 [rivals]
 ; League ids to measure ownership against, comma-separated.

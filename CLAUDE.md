@@ -46,11 +46,17 @@ Each lives in the docstring of the code it constrains:
 | `league_type` `x` is a private league, `s` is global and unusable ("Overall" has ~9.9M entries) | `engine/rivals.py` |
 | Per-90 rates from tiny samples must be shrunk toward a prior | `engine/projection.shrink` |
 | The sell-on fee returns only half of any profit, so budget grows slower than the market | `engine/pricing.py` |
+| The account service rotates the refresh token on every exchange, so two concurrent refreshes leave one caller holding a dead credential | `headless_auth.refresh_access_token` |
+| Each recommendation is priced as the *next* transfer you would make, not as the nth move of a plan | `engine/recommend.transfer_price` |
 
 ## Workflow
 
 `make deadline` before a deadline, `make settle GW=n` after the gameweek. The skills
 `/fpl-deadline` and `/fpl-settle` wrap those with what to check and when not to act.
+
+Unattended, those same commands run from `deploy/fpl-cron.sh`, which decides *whether*
+there is anything to do rather than encoding the FPL calendar in a crontab. It never
+executes transfers. See `docs/SCHEDULING.md`.
 
 ## What is committed
 

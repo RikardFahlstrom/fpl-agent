@@ -31,6 +31,8 @@ MAPPING: dict[tuple[str, str], str] = {
     ("auth", "password"): "FPL_PASSWORD",
     ("auth", "read_only"): "FPL_READ_ONLY",
     ("auth", "token_cache"): "FPL_TOKEN_CACHE",
+    ("auth", "token_endpoint"): "FPL_TOKEN_ENDPOINT",
+    ("auth", "client_id"): "FPL_OAUTH_CLIENT_ID",
     ("rivals", "leagues"): "FPL_RIVAL_LEAGUES",
     ("server", "transport"): "FPL_MCP_TRANSPORT",
     ("server", "host"): "FPL_MCP_HOST",
