@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import storage
+from . import settle, storage
 from .projection import MODEL_VERSION
 from .snapshot import SQUAD_SIZE
 
@@ -84,20 +84,10 @@ class Check:
         return self.level == FAIL
 
 
-def connect_readonly(path: Path | str) -> sqlite3.Connection:
-    """Open the warehouse read-only.
-
-    `storage.connect` would create the file and run the schema, which turns "there is no
-    database" into "there is an empty database that looks healthy" - the reporting-success
-    -for-something-that-did-not-happen shape this whole module exists to catch. Read-only
-    also means `status` can never be the thing that corrupts what it is checking.
-    """
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(path)
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Lives in `storage` now, next to the read-write `connect` it is the counterpart to, so
+# that `settle` can open a warehouse read-only without importing this module - which
+# imports `settle`. Re-exported because callers and tests reach for it by this name.
+connect_readonly = storage.connect_readonly
 
 
 def missing_tables(conn: sqlite3.Connection) -> list[str]:
@@ -337,17 +327,12 @@ def check_grading(conn: sqlite3.Connection, finished: list[int]) -> Check:
                      f"gameweek(s) {_gameweeks(finished)} finished and graded under "
                      f"model {MODEL_VERSION}")
 
-    # A gameweek can only be graded against a projection made *before* it was played, from
-    # a snapshot targeting it. Gameweeks that finished before this warehouse existed have
-    # none and never will: the prices, lineups and ownership they would need are gone, and
-    # `bootstrap-static` has no history endpoint. Telling someone to settle those is advice
-    # that cannot be taken, and a warning nobody can act on is how a reader learns to skim
-    # the whole block.
-    projectable = {r[0] for r in conn.execute(
-        """SELECT DISTINCT p.gameweek FROM projection p
-             JOIN snapshot s ON s.id = p.snapshot_id AND s.gameweek = p.gameweek""")}
-    settleable = [gw for gw in ungraded if gw in projectable]
-    unreachable = [gw for gw in ungraded if gw not in projectable]
+    # Which of those settle would actually accept is settle's question, not this module's.
+    # Asking it here in slightly different SQL is how the scheduler and the engine came to
+    # disagree once already; there is one definition and this is a caller of it.
+    settleable = [gw for gw in settle.settleable_gameweeks(conn, MODEL_VERSION)
+                  if gw in ungraded]
+    unreachable = [gw for gw in ungraded if gw not in settleable]
 
     if not settleable:
         return Check("grading", OK,

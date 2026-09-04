@@ -1,6 +1,8 @@
 """Settling and calibration. Offline: actuals and projections are constructed locally."""
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -103,6 +105,84 @@ class SettleTests(unittest.TestCase):
             "INSERT OR REPLACE INTO fixture VALUES (401,4,3,4,3,3,NULL,NULL,NULL,0,'{}')")
         self.conn.commit()
         self.assertFalse(settle.gameweek_is_finished(self.conn, 4))
+
+    def _settleable_fixture(self, gameweek, finished=True):
+        """A gameweek that is finished and has a projection from a snapshot targeting it."""
+        snapshot_id = self._snapshot(gameweek=gameweek)
+        self._player(gameweek)
+        self._projection(snapshot_id, gameweek, gameweek, expected=5.0)
+        self._fixtures(gameweek, finished=finished)
+        return snapshot_id
+
+    def test_a_round_still_being_played_is_not_offered(self):
+        """The bug that would have cost the season's first calibration.
+
+        `deploy/fpl-cron.sh` asked for the highest gameweek with *any* finished fixture,
+        so on the Saturday of gameweek 4 it offered a round still in progress, `settle`
+        refused it, and an ungraded gameweek 3 was stepped over - the next morning it
+        picked 4 again, and 3 would never have been graded at all.
+        """
+        self._settleable_fixture(3, finished=True)
+        self._settleable_fixture(4, finished=True)
+        # One gameweek-4 fixture still to kick off.
+        self.conn.execute(
+            "INSERT OR REPLACE INTO fixture VALUES (401,4,3,4,3,3,NULL,NULL,NULL,0,'{}')")
+        self.conn.commit()
+
+        self.assertEqual(settle.settleable_gameweeks(self.conn), [3])
+
+    def test_every_pending_gameweek_is_offered_oldest_first(self):
+        """A week the box was down must catch up, not be skipped."""
+        self._settleable_fixture(3)
+        self._settleable_fixture(4)
+        self.assertEqual(settle.settleable_gameweeks(self.conn), [3, 4])
+
+    def test_a_gameweek_without_a_projection_targeting_it_is_never_offered(self):
+        """Rounds played before the warehouse existed can never be graded, so offering
+        them would mail a refusal every morning for the rest of the season."""
+        self._fixtures(1, finished=True)
+        snapshot_id = self._snapshot(gameweek=3)
+        self._player(1)
+        # Projected *for* gameweek 1 but from a snapshot targeting 3: made after the fact.
+        self._projection(snapshot_id, 1, 1, expected=5.0)
+
+        self.assertEqual(settle.settleable_gameweeks(self.conn), [])
+
+    def test_a_graded_gameweek_is_not_offered_again(self):
+        self._settleable_fixture(3)
+        self.assertEqual(settle.settleable_gameweeks(self.conn), [3])
+        projection_id = self.conn.execute(
+            "SELECT id FROM projection WHERE gameweek = 3").fetchone()["id"]
+        self.conn.execute(
+            "INSERT INTO outcome VALUES (?,3,3,?,5.0,4.0,1.0,1.0,55,3,'t')",
+            (projection_id, MODEL_VERSION))
+        self.conn.commit()
+
+        self.assertEqual(settle.settleable_gameweeks(self.conn), [])
+
+    def test_the_list_flag_prints_them_one_per_line(self):
+        """What `deploy/fpl-cron.sh` consumes, so `for gw in $(...)` must be safe."""
+        self._settleable_fixture(3)
+        self._settleable_fixture(4)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fpl.db"
+            disk = storage.connect(path)
+            self.conn.backup(disk)
+            disk.close()
+            out = StringIO()
+            with redirect_stdout(out):
+                code = settle.main(["--db", str(path), "--list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue().split(), ["3", "4"])
+
+    def test_the_list_flag_refuses_a_warehouse_that_is_not_there(self):
+        """Never "nothing to settle" for a database that does not exist, and never
+        create one to find out."""
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope.db"
+            code = settle.main(["--db", str(missing), "--list"])
+            self.assertNotEqual(code, 0)
+            self.assertFalse(missing.exists(), "--list created the warehouse")
 
     def test_grades_against_actuals(self):
         snapshot_id = self._snapshot(gameweek=2)

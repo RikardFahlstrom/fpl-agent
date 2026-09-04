@@ -295,6 +295,24 @@ def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(path: Path | str) -> sqlite3.Connection:
+    """Open the warehouse read-only, refusing to create one.
+
+    The counterpart to `connect`, and the one every reporting command should use.
+    `connect` creates the file and runs the schema, which turns "there is no database"
+    into "there is an empty database that looks healthy" - a report of success for
+    something that did not happen, which is the failure this project keeps meeting.
+    Read-only also means a command that only reads can never be what corrupts the thing
+    it is reading.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def target_gameweek(bootstrap: dict) -> Optional[int]:
     """The gameweek decisions are being made for: the next one, else the current one."""
     events = bootstrap.get("events") or []

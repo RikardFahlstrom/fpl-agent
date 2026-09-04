@@ -89,18 +89,16 @@ require_sqlite() {
 # The highest finished gameweek that has never been graded. Absence from
 # `outcome` is the test rather than a marker file: the warehouse is the only
 # state worth trusting, and a marker file can disagree with it.
-# A gameweek is only settleable if a projection was made *before* it was played, from a
-# snapshot targeting it. Without that second condition this offers up every gameweek that
-# finished before the warehouse existed - `settle` refuses them with exit 1, correctly,
-# and cron then mails a failure every morning for the rest of the season. An alert that
-# fires daily and can never be acted on is worse than no alert.
-next_gameweek_to_settle() {
-    ask "SELECT MAX(event) FROM fixture
-          WHERE finished = 1
-            AND event NOT IN (SELECT DISTINCT gameweek FROM outcome)
-            AND event IN (SELECT DISTINCT p.gameweek FROM projection p
-                            JOIN snapshot s ON s.id = p.snapshot_id
-                                           AND s.gameweek = p.gameweek);"
+# Every gameweek that can be graded and has not been, oldest first, one per line.
+#
+# The engine answers this, not a query written here. This script used to ask its own SQL
+# and got it wrong in two ways at once: it took the highest gameweek with *any* finished
+# fixture, so on the Saturday of gameweek 4 it offered a round still being played, failed
+# on it, and stepped over an ungraded gameweek 3 that would then never have been graded
+# at all. The rule lives in `settle.settleable_gameweeks`, `settle --list` prints it, and
+# `status` asks the same function - one definition, three readers, no drift.
+gameweeks_to_settle() {
+    "$AGENT" settle --list --db "$DB"
 }
 
 # FPL's deadline is 90 minutes before the first kickoff of the gameweek. Derived
@@ -117,7 +115,7 @@ hours_to_deadline() {
 }
 
 job_daily() {
-    local status=0 rc gw
+    local status=0 rc gw pending
     run snapshot --force || { rc=$?; status=$rc
         echo "snapshot exited $rc; see the exit-code table in docs/SCHEDULING.md" >&2; }
     run snapshot --backfill-only || { rc=$?; status=$rc
@@ -125,17 +123,21 @@ job_daily() {
 
     # A failed query is not "nothing to settle". Say so and give up the settle,
     # rather than reporting a clean run that never asked the question.
-    if ! gw="$(next_gameweek_to_settle)"; then
+    if ! pending="$(gameweeks_to_settle)"; then
         echo "cannot tell whether a gameweek needs grading; not settling" >&2
         return "${status:-0}"
     fi
-    if [ -n "$gw" ]; then
+    if [ -z "$pending" ]; then
+        echo "no finished gameweek is waiting to be graded"
+        return "$status"
+    fi
+    # All of them, in order. A week the box was down, or a midweek round that finished
+    # while an earlier one was still ungraded, must catch up rather than be skipped.
+    for gw in $pending; do
         echo "gameweek $gw has finished and has never been graded; settling it"
         run settle --gameweek "$gw" --learn || { rc=$?; status=$rc
-            echo "settle exited $rc" >&2; }
-    else
-        echo "no finished gameweek is waiting to be graded"
-    fi
+            echo "settle exited $rc for gameweek $gw" >&2; }
+    done
     return "$status"
 }
 
