@@ -447,7 +447,7 @@ class SummaryLineTests(unittest.TestCase):
 
     def _result(self, **overrides):
         fields = dict(snapshot_id=412, gameweek=4, players=651, fixtures=380,
-                      squad_rows=15, lineup_rows=220, lineup_gameweek=4)
+                      squad_rows=15, lineup_rows=220, lineup_gameweeks=[4])
         fields.update(overrides)
         return snapshot.CaptureResult(**fields)
 
@@ -458,13 +458,19 @@ class SummaryLineTests(unittest.TestCase):
             "snapshot 412 for gameweek 4: 651 players, 380 fixtures, 15 of 15 squad "
             "rows, 220 lineup rows filed under gameweek 4")
 
-    def test_lineups_filed_under_another_gameweek_are_reported_not_corrected(self):
-        line = snapshot.summarise(self._result(lineup_gameweek=5), squad_expected=True)
-        self.assertIn("220 lineup rows filed under gameweek 5", line)
+    def test_lineups_filed_under_another_gameweek_say_so(self):
+        """The snapshot targets 4 and the fixtures put the scrape in 3; the line shows 3."""
+        line = snapshot.summarise(self._result(lineup_gameweeks=[3]), squad_expected=True)
+        self.assertIn("220 lineup rows filed under gameweek 3", line)
+
+    def test_a_scrape_straddling_a_deadline_names_both_rounds(self):
+        line = snapshot.summarise(self._result(lineup_gameweeks=[3, 4]),
+                                  squad_expected=True)
+        self.assertIn("220 lineup rows filed under gameweeks 3, 4", line)
 
     def test_no_lineups_at_all_still_reports_the_zero(self):
         line = snapshot.summarise(
-            self._result(lineup_rows=0, lineup_gameweek=None), squad_expected=True)
+            self._result(lineup_rows=0, lineup_gameweeks=[]), squad_expected=True)
         self.assertIn("0 lineup rows filed under no gameweek", line)
 
 
