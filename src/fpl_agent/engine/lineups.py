@@ -93,27 +93,40 @@ def resolve_element_id(index: dict[str, list[dict]], name: str,
 
 def record_lineups(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
                    matches: list[MatchLineup], bootstrap: dict) -> tuple[int, list[str]]:
-    """Store resolved lineups. Returns (rows written, names that could not be resolved)."""
+    """Store resolved lineups. Returns (rows written, names that could not be resolved).
+
+    A doubtful starter is published twice - once in the XI, once in the injury list
+    beneath it - and the two entries disagree about `is_starter`. Neither wins outright:
+    the row keeps the injury flag *and* the XI's `is_starter`, because they are answers
+    to different questions and dropping either loses real information. Taking the injury
+    entry whole, as this did, recorded a named starter as benched and injured at once.
+    """
     index = squad_index(bootstrap)
-    rows = []
     unresolved: list[str] = []
-    seen: set[tuple[int, int]] = set()
+    merged: dict[tuple[int, int], list] = {}
 
     for match in matches:
-        # The injury list is written first so a doubtful starter keeps its flag.
+        # The injury list is read first so a doubtful starter keeps its flag.
         for player in match.injuries + match.players:
             element_id = resolve_element_id(index, player.name, player.team)
             if element_id is None:
                 unresolved.append(f"{player.name} ({player.team})")
                 continue
             key = (gameweek, element_id)
-            if key in seen:
+            row = merged.get(key)
+            if row is None:
+                merged[key] = [snapshot_id, gameweek, element_id, player.team,
+                               player.name, player.position,
+                               1 if player.is_starter else 0, player.injury,
+                               1 if match.confirmed else 0]
                 continue
-            seen.add(key)
-            rows.append((snapshot_id, gameweek, element_id, player.team, player.name,
-                         player.position, 1 if player.is_starter else 0,
-                         player.injury, 1 if match.confirmed else 0))
+            # Same player, second entry: the XI decides selection, the injury list the flag.
+            if player.is_starter:
+                row[5] = player.position    # the XI carries the position he will play
+                row[6] = 1
+            row[7] = row[7] or player.injury
 
+    rows = [tuple(row) for row in merged.values()]
     conn.executemany(
         "INSERT OR REPLACE INTO predicted_lineup VALUES (?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
@@ -132,6 +145,14 @@ def lineup_start_rates(conn: sqlite3.Connection, gameweek: int,
     Covers every player at a club with a published lineup, not only those named in it:
     a player his manager left out is the rotation case FPL's own flag never reports, and
     silence about him is the signal.
+
+    Three cases, and a doubt is only ever counted once. OUT is zero. Named in the XI is
+    the starter rate *whatever* the injury flag says: a QUES starter is a player RotoWire
+    expects to play through a knock, and his fitness is already priced by FPL's
+    `chance_of_playing_next_round`, which `project_player` multiplies through this rate.
+    Demoting him here too charged the same doubt twice - 75% fit times a 0.15 rate meant
+    for players nobody named, reading as benched *and* injured. Doubtful and not named is
+    the omitted rate, like any other player left out.
     """
     row = conn.execute(
         "SELECT MAX(snapshot_id) AS id FROM predicted_lineup WHERE gameweek = ?",
@@ -154,7 +175,7 @@ def lineup_start_rates(conn: sqlite3.Connection, gameweek: int,
             listed[entry["element_id"]] = (
                 confirmed_starter if entry["confirmed"] else starter)
         else:
-            # In the injury list but not ruled out: doubtful.
+            # Listed but not named in the XI: doubtful, or simply left out.
             listed[entry["element_id"]] = omitted
 
     # Everyone else at a club with a published lineup was left out of it.
