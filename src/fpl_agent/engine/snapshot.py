@@ -35,6 +35,7 @@ from typing import Optional
 
 from .. import config
 from . import lineups, storage
+from .actuals import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
 from ..client import FPLClient
 from ..headless_auth import authenticated_client, cache_path, env_flag
 from ..rotowire_scraper import RotoWireLineupScraper
@@ -42,41 +43,10 @@ from ..sessions import sessions
 
 logger = logging.getLogger("fpl_snapshot")
 
-# element-summary is one request per player; this bounds concurrency so a backfill of
-# ~650 players does not open 650 sockets against the FPL API at once.
-BACKFILL_CONCURRENCY = 8
-
-# Above this share of failed element-summary calls the warehouse is half-fetched and must
-# not be graded against. A handful of players failing is ordinary FPL API flakiness; a
-# twentieth of the league missing means the rows settle would read as zeros are simply
-# absent, and no run should continue as if they were.
-MAX_BACKFILL_FAILURE_RATE = 0.05
-
 # An FPL squad is exactly 15 players: 11 on the pitch and 4 on the bench. `my-team/`
 # answers with all fifteen or it has not answered, so any other count means the squad
 # half of the snapshot is incomplete rather than merely small.
 SQUAD_SIZE = 15
-
-
-@dataclass
-class BackfillResult:
-    """What a backfill actually fetched, as distinct from what it attempted.
-
-    The FPL API refuses element-summary requests intermittently. The original backfill
-    caught every per-player failure, logged a warning and returned normally, so a run in
-    which all 652 calls failed was indistinguishable from a clean one. Settle then saw a
-    finished gameweek, turned every absent player_gameweek row into a zero via COALESCE,
-    and reported a confident bias of about +1.5 against actuals that were never fetched -
-    which `--learn` writes to a learning file as fact. The caller cannot refuse that
-    without being told how much of the league is missing.
-    """
-    rows: int
-    attempted: int
-    failed: int
-
-    @property
-    def failure_rate(self) -> float:
-        return self.failed / self.attempted if self.attempted else 0.0
 
 
 @dataclass
@@ -236,54 +206,6 @@ def summarise(result: CaptureResult, *, squad_expected: bool) -> str:
     return (f"snapshot {result.snapshot_id} for gameweek {result.gameweek}: "
             f"{result.players} players, {result.fixtures} fixtures, {squad}, "
             f"{result.lineup_rows} lineup rows {filed}")
-
-
-async def backfill_actuals(conn, client: FPLClient, element_ids: list[int]) -> BackfillResult:
-    """Pull per-gameweek actuals for the given players into player_gameweek.
-
-    Safe to re-run: rows are keyed on (element_id, round) and replaced, so a settled
-    gameweek converges rather than duplicating.
-
-    Returns what was fetched *and* what was lost. Rows that did arrive are kept - the
-    partial warehouse is still better than nothing and the next run converges on it -
-    but the caller is told the failure count so it can refuse to grade against it.
-    """
-    semaphore = asyncio.Semaphore(BACKFILL_CONCURRENCY)
-    total = 0
-
-    async def fetch(element_id: int) -> Optional[list[dict]]:
-        """None means the request failed; [] means the player genuinely has no history.
-
-        Collapsing those two was the bug. A player who has not appeared yet and a player
-        the API refused to answer for look identical once both become an empty list, so a
-        total outage reads as a league that has played no football - and every one of
-        those absences later becomes a zero the calibration believes.
-        """
-        async with semaphore:
-            try:
-                summary = await client.get_element_summary(element_id)
-                return summary.get("history") or []
-            except Exception as e:
-                logger.warning("element-summary %s failed: %s", element_id, e)
-                return None
-
-    results = await asyncio.gather(*(fetch(eid) for eid in element_ids))
-    failed = 0
-    for history in results:
-        if history is None:
-            failed += 1
-        elif history:
-            total += storage.record_player_gameweeks(conn, history)
-
-    conn.commit()
-    if failed:
-        logger.warning(
-            "backfilled %s player-gameweek rows; %s of %s players failed to fetch",
-            total, failed, len(element_ids))
-    else:
-        logger.info("backfilled %s player-gameweek rows from %s players",
-                    total, len(element_ids))
-    return BackfillResult(rows=total, attempted=len(element_ids), failed=failed)
 
 
 async def _run(args) -> int:

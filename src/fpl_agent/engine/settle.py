@@ -44,7 +44,7 @@ from . import storage
 from ..client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
-from .snapshot import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
+from .actuals import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
 from ..reference import reference
 
 logger = logging.getLogger("fpl_settle")

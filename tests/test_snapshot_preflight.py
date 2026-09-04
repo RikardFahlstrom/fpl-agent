@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from fpl_agent import headless_auth
-from fpl_agent.engine import snapshot, storage
+from fpl_agent.engine import actuals, snapshot, storage
 
 
 class ReadinessTests(unittest.TestCase):
@@ -194,7 +194,7 @@ class BackfillFailureTests(unittest.IsolatedAsyncioTestCase):
         self._players(ids)
         client = StubClient(failing={3, 7, 11})
 
-        result = await snapshot.backfill_actuals(self.conn, client, ids)
+        result = await actuals.backfill_actuals(self.conn, client, ids)
 
         self.assertEqual(result.failed, 3)
         self.assertEqual(result.attempted, 20)
@@ -214,7 +214,7 @@ class BackfillFailureTests(unittest.IsolatedAsyncioTestCase):
         self._players(ids)
         client = StubClient(empty={2})
 
-        result = await snapshot.backfill_actuals(self.conn, client, ids)
+        result = await actuals.backfill_actuals(self.conn, client, ids)
 
         self.assertEqual(result.failed, 0)
         self.assertEqual(result.failure_rate, 0.0)
@@ -224,12 +224,12 @@ class BackfillFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_clean_backfill_reports_no_failures(self):
         ids = [1, 2, 3]
         self._players(ids)
-        result = await snapshot.backfill_actuals(self.conn, StubClient(), ids)
+        result = await actuals.backfill_actuals(self.conn, StubClient(), ids)
         self.assertEqual((result.rows, result.attempted, result.failed), (3, 3, 0))
 
     def test_the_failure_rate_of_an_empty_backfill_is_zero(self):
         """No players attempted is not a 100% failure; it must not trip the threshold."""
-        result = snapshot.BackfillResult(rows=0, attempted=0, failed=0)
+        result = actuals.BackfillResult(rows=0, attempted=0, failed=0)
         self.assertEqual(result.failure_rate, 0.0)
 
 
