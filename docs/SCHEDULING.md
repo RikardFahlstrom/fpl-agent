@@ -26,6 +26,11 @@ gameweek that is gradable and ungraded, oldest first, and grades each one — so
 `make settle GW=n` is something you run by hand only if you want to, not something the
 season depends on you remembering.
 
+It does not decide that for itself. `fpl-agent settle --list` prints the answer and the
+script consumes it, so the rule lives in exactly one place — `settle.settleable_gameweeks`
+— which `settle`, `status` and the scheduler all ask. Three statements of one rule is how
+the scheduler and the engine came to disagree in the first place.
+
 A gameweek qualifies on three counts, and each was a bug before it was a condition:
 
 | Condition | What goes wrong without it |

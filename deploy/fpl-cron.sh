@@ -91,32 +91,14 @@ require_sqlite() {
 # state worth trusting, and a marker file can disagree with it.
 # Every gameweek that can be graded and has not been, oldest first, one per line.
 #
-# Three conditions, and each one was a bug before it was a condition:
-#
-#   every fixture played - not merely one. `settle.gameweek_is_finished` requires the
-#       whole round, so a gameweek with only its Saturday lunchtime kickoff behind it
-#       is refused with exit 1 and mailed to you as a failure.
-#   never graded - absence from `outcome`, which is state rather than a marker file.
-#   actually projectable - a projection made before the round, from a snapshot targeting
-#       it. Gameweeks that finished before this warehouse existed have none and never
-#       will, so offering them up mails a failure every morning for the rest of the
-#       season.
-#
-# Oldest first, and all of them, because MAX skips. On the Saturday of gameweek 4 an
-# ungraded gameweek 3 must still be what gets settled; with MAX it was passed over for a
-# gameweek 4 that had not finished, and would never have been graded at all.
+# The engine answers this, not a query written here. This script used to ask its own SQL
+# and got it wrong in two ways at once: it took the highest gameweek with *any* finished
+# fixture, so on the Saturday of gameweek 4 it offered a round still being played, failed
+# on it, and stepped over an ungraded gameweek 3 that would then never have been graded
+# at all. The rule lives in `settle.settleable_gameweeks`, `settle --list` prints it, and
+# `status` asks the same function - one definition, three readers, no drift.
 gameweeks_to_settle() {
-    ask "SELECT event FROM fixture
-          WHERE event IN (SELECT event FROM fixture
-                           GROUP BY event
-                          HAVING COUNT(*) > 0
-                             AND SUM(COALESCE(finished, 0)) = COUNT(*))
-            AND event NOT IN (SELECT DISTINCT gameweek FROM outcome)
-            AND event IN (SELECT DISTINCT p.gameweek FROM projection p
-                            JOIN snapshot s ON s.id = p.snapshot_id
-                                           AND s.gameweek = p.gameweek)
-          GROUP BY event
-          ORDER BY event;"
+    "$AGENT" settle --list --db "$DB"
 }
 
 # FPL's deadline is 90 minutes before the first kickoff of the gameweek. Derived

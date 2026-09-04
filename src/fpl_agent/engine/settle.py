@@ -79,6 +79,39 @@ class ActualsMissing(RuntimeError):
     """Raised when a finished gameweek's actuals were never fetched."""
 
 
+def settleable_gameweeks(conn: sqlite3.Connection,
+                         model_version: str = MODEL_VERSION) -> list[int]:
+    """Every gameweek this command would actually grade, oldest first.
+
+    The one definition of "ready to settle", so that the scheduler, `status` and settle
+    itself cannot drift apart. They already did once: `deploy/fpl-cron.sh` asked its own
+    SQL for the highest gameweek with *any* finished fixture, which on the Saturday of
+    gameweek 4 meant offering a round still being played, failing on it, and stepping
+    over an ungraded gameweek 3 that then never got graded at all. Three statements of
+    one rule is two too many; this is the rule, and the others ask it.
+
+    Three conditions, each of which is a refusal elsewhere in this file if broken:
+
+    - every fixture in the round played (`gameweek_is_finished`)
+    - no `outcome` rows under this model version - grading twice is not idempotent
+      bookkeeping, it is a second opinion recorded as a first
+    - a projection made from a snapshot *targeting* that gameweek, under this model
+      version. Rounds played before the warehouse existed have none and never can: the
+      prices, lineups and ownership are gone and `bootstrap-static` has no history.
+      Version matters too - after a `MODEL_VERSION` bump an old gameweek cannot be
+      re-projected (see `projection.SettledProjection`), so it is not settleable under
+      the new version either, and offering it would be advice that cannot be taken.
+    """
+    graded = {row[0] for row in conn.execute(
+        "SELECT DISTINCT gameweek FROM outcome WHERE model_version = ?", (model_version,))}
+    projected = {row[0] for row in conn.execute(
+        """SELECT DISTINCT p.gameweek FROM projection p
+             JOIN snapshot s ON s.id = p.snapshot_id AND s.gameweek = p.gameweek
+            WHERE p.model_version = ?""", (model_version,))}
+    candidates = sorted(projected - graded)
+    return [gw for gw in candidates if gameweek_is_finished(conn, gw)]
+
+
 def gameweek_is_finished(conn: sqlite3.Connection, gameweek: int) -> bool:
     """Whether every fixture in the gameweek has been played.
 
@@ -364,7 +397,12 @@ async def _run(args) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Grade projections against actuals.")
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
-    parser.add_argument("--gameweek", type=int, required=True)
+    parser.add_argument("--gameweek", type=int)
+    parser.add_argument(
+        "--list", action="store_true",
+        help="print the gameweeks that are ready to grade, oldest first, and exit; "
+             "this is what deploy/fpl-cron.sh consumes so the schedule and the engine "
+             "cannot disagree about what is settleable")
     parser.add_argument("--model-version", default=MODEL_VERSION)
     parser.add_argument("--learn", action="store_true", help="draft a learning file")
     parser.add_argument("--learnings", type=Path, default=LEARNINGS_DIR)
@@ -375,6 +413,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+
+    if args.list:
+        # Read-only, no network, and quiet: a scheduler consumes this every morning and
+        # an empty list is the ordinary answer, not a fault. Nothing is printed to stdout
+        # but the gameweeks themselves, so `for gw in $(...)` is safe.
+        if not args.db.exists():
+            # 2 is "could not read what I was asked about", shared with snapshot and
+            # status; see the table in docs/SCHEDULING.md. Never 0 with an empty list,
+            # which the scheduler would read as "nothing to settle".
+            print(f"no warehouse at {args.db}", file=sys.stderr)
+            return 2
+        conn = storage.connect_readonly(args.db)
+        try:
+            for gameweek in settleable_gameweeks(conn, args.model_version):
+                print(gameweek)
+        finally:
+            conn.close()
+        return 0
+
+    if args.gameweek is None:
+        parser.error("--gameweek is required unless --list is given")
+
     return asyncio.run(_run(args))
 
 
