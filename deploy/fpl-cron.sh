@@ -89,10 +89,18 @@ require_sqlite() {
 # The highest finished gameweek that has never been graded. Absence from
 # `outcome` is the test rather than a marker file: the warehouse is the only
 # state worth trusting, and a marker file can disagree with it.
+# A gameweek is only settleable if a projection was made *before* it was played, from a
+# snapshot targeting it. Without that second condition this offers up every gameweek that
+# finished before the warehouse existed - `settle` refuses them with exit 1, correctly,
+# and cron then mails a failure every morning for the rest of the season. An alert that
+# fires daily and can never be acted on is worse than no alert.
 next_gameweek_to_settle() {
     ask "SELECT MAX(event) FROM fixture
           WHERE finished = 1
-            AND event NOT IN (SELECT DISTINCT gameweek FROM outcome);"
+            AND event NOT IN (SELECT DISTINCT gameweek FROM outcome)
+            AND event IN (SELECT DISTINCT p.gameweek FROM projection p
+                            JOIN snapshot s ON s.id = p.snapshot_id
+                                           AND s.gameweek = p.gameweek);"
 }
 
 # FPL's deadline is 90 minutes before the first kickoff of the gameweek. Derived
@@ -185,6 +193,16 @@ case "$JOB" in
     *)        echo "usage: $0 [--dry-run] {daily|deadline}" >&2; exit 64 ;;
 esac
 JOB_STATUS=$?
+
+# Write the brief before notifying. `notify` only ever sends the handful of lines worth
+# interrupting someone for; the brief is the rest of the reasoning, and `logs/` is
+# tracked precisely so that record survives. Failing to write it is not worth failing a
+# run over - the snapshot is the irrecoverable asset - so its exit code is reported and
+# then dropped.
+#
+# It rewrites a tracked file, so a server's checkout will show `logs/gwNN.md` modified.
+# `git pull` there will refuse until those changes are committed or discarded.
+run brief || echo "brief exited $?; the push below still reflects the same evaluation" >&2
 
 # The job's own exit code wins. A failed push must never be what makes a `daily` run
 # look like it lost the snapshot it actually captured: the snapshot is the irrecoverable
