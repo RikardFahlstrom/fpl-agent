@@ -4,6 +4,10 @@ Turning this repo from an MCP server that reads FPL into a decision engine that
 projects points, recommends actions, records what it decided, and measures itself
 against what actually happened.
 
+Section numbers are the original brief's and are kept stable so references to them stay
+valid; §1 (detaching the fork) and §9 (open questions) were finished and removed, which
+is why the numbering has gaps rather than a section having gone missing.
+
 ## 0. The constraint that sets the order of work
 
 `bootstrap-static` is **current-state only**. Prices, ownership, form and price-change
@@ -184,15 +188,21 @@ calibration, committed alongside the decisions it explains.
 ## 6. Claude-way — skills in git
 
 `.claude/skills/`, version-controlled, each a thin wrapper over a Python entry point so
-the logic stays testable outside Claude:
+the logic stays testable outside Claude.
+
+The plan sketched one skill per engine command. What was built is three, split by
+*judgement* rather than by command, because the deterministic sequences belong in the
+`Makefile` and only the interpretation needs a skill:
 
 | Skill | Does |
 |---|---|
-| `/fpl-snapshot` | Capture current state → SQLite. Idempotent per day. |
-| `/fpl-project` | Run projections for the upcoming gameweek. |
-| `/fpl-decide` | Recommend transfers/captain/chip; append to `logs/actions.jsonl`. |
-| `/fpl-settle` | Pull actuals, score projections, draft a learning file. |
-| `/fpl-review` | Calibration trend and what changed between model versions. |
+| `/fpl-deadline` | `make deadline` — snapshot, backfill, project, rivals, recommend, status — then how to read the ranking and when not to act. |
+| `/fpl-settle` | `make settle GW=n`: grade projections, read the calibration slices, decide whether a deviation is a finding or noise. |
+| `/fpl-verify` | Check an assumption against the live API when a result looks wrong. |
+
+Recording is deliberately not in `/fpl-deadline`: `make record` is a separate step,
+because the log is a claim about the move you made, not the one that was ranked first.
+Calibration trend across model versions — the old `/fpl-review` — is not built.
 
 Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
 
@@ -201,8 +211,11 @@ Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
 - Never mutate a settled `projection` row
 - Snapshot before deciding; a decision without a snapshot cannot be graded later
 
-With `FPL_AUTO_LOGIN` and `FPL_READ_ONLY` already in place, a scheduled nightly
-`snapshot` and a deadline-eve `project → decide` follow naturally.
+That list has since grown; `CLAUDE.md` is the authority, not this section.
+
+The scheduled half is built: `deploy/fpl-cron.sh` runs the nightly snapshot and the
+deadline cycle unattended, guarded by `FPL_AUTO_LOGIN` and `FPL_READ_ONLY`. It never
+executes a transfer. See `docs/SCHEDULING.md`.
 
 ## 7. Phasing
 
@@ -211,11 +224,15 @@ With `FPL_AUTO_LOGIN` and `FPL_READ_ONLY` already in place, a scheduled nightly
 | **P0** | Rename/detach, `CLAUDE.md` | — |
 | **P1** | Schema, daily snapshot, backfill actuals | **Before the next deadline** |
 | **P2** | Projection engine, `game_config` parsing | After P1 has data |
-| **P3** | Price/urgency signals, `logs/actions.jsonl` | After P2 |
-| **P4** | Settle, calibration slices, `learnings/` | Built; first real numbers need GW3 to finish |
+| **P3** | Price/urgency signals, `logs/actions.jsonl` | Built; the log stays empty until a decision is recorded |
+| **P4** | Settle, calibration slices, `learnings/` | Built; no gameweek has been settled against real actuals yet |
 | **P5** | Feed learnings back into weights | Needs ≥3 gameweeks of calibration |
 
 P1 is the only phase with a real deadline. Everything after it can take its time.
+
+Unattended running was not a phase in the original plan and is now the point of the
+system: `deploy/fpl-cron.sh`, the `status` command and the exit-code table in
+`docs/SCHEDULING.md` are what a run with nobody watching needs to fail loudly.
 
 Conventions live in `CLAUDE.md`, the runnable sequences in the `Makefile`, the judgement
 in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
