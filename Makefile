@@ -2,7 +2,7 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: snapshot project rivals recommend deadline settle test
+.PHONY: snapshot project rivals recommend deadline settle status test
 
 snapshot:            ## capture market + squad (refuses if auth is not configured)
 	$(AGENT) snapshot --force
@@ -19,9 +19,14 @@ rivals:              ## capture rival squads for the last finished gameweek
 recommend:           ## rank transfers
 	$(AGENT) recommend
 
+status:              ## check the warehouse agrees with itself (read-only; exits 7 if not)
+	$(AGENT) status
+
 # The order matters: actuals feed the projection's rates, and rivals must exist before
-# ownership can be judged.
-deadline: snapshot backfill project rivals recommend
+# ownership can be judged. `status` runs last and is the point of the whole sequence:
+# every step above reports its own success, and this one checks the state they claim to
+# have left behind. It exits 7 on an inconsistency, so the target fails where cron sees it.
+deadline: snapshot backfill project rivals recommend status
 
 settle:              ## grade a finished gameweek and draft a learning: make settle GW=3
 	$(AGENT) settle --gameweek $(GW) --learn

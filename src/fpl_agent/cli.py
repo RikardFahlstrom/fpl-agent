@@ -16,6 +16,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "rivals": ("fpl_agent.engine.rivals", "Capture rival squads from your leagues"),
     "recommend": ("fpl_agent.engine.recommend", "Rank transfers"),
     "settle": ("fpl_agent.engine.settle", "Grade projections against a finished gameweek"),
+    "status": ("fpl_agent.engine.status", "Report whether the warehouse is trustworthy"),
     "serve": ("fpl_agent.main", "Run the MCP server"),
 }
 
