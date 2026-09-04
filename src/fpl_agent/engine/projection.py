@@ -479,6 +479,54 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     return len(rows)
 
 
+class HorizonMissing(LookupError):
+    """Raised when a caller asks for a horizon that was never projected."""
+
+
+def stored_horizon(conn: sqlite3.Connection, snapshot_id: int, start_gameweek: int,
+                   weeks: int = HORIZON_GAMEWEEKS,
+                   model_version: str = MODEL_VERSION) -> dict[int, float]:
+    """Per-player totals over the horizon, read from projections already stored.
+
+    Reading rather than projecting is the point. A consumer that projects on the way
+    past writes rows nobody asked for, under whatever MODEL_VERSION the code is on
+    today, so `projection` stops being the record of what was believed at decision
+    time and "projections for gameweek N under model X" stops being a countable fact.
+    `make deadline` runs `project` before `recommend` for exactly this reason.
+
+    Every gameweek in the range must be present. A missing one is not a blank - a
+    blank gameweek still stores a row per player, with `fixture_count` 0 - it is a
+    horizon that was never run, and silently totalling two weeks of a three-week
+    horizon would understate every player by a week.
+    """
+    projected = {
+        row["gameweek"] for row in conn.execute(
+            """SELECT DISTINCT gameweek FROM projection
+               WHERE snapshot_id = ? AND model_version = ?
+                 AND gameweek BETWEEN ? AND ?""",
+            (snapshot_id, model_version, start_gameweek, start_gameweek + weeks - 1),
+        )
+    }
+    missing = [gw for gw in range(start_gameweek, start_gameweek + weeks)
+               if gw not in projected]
+    if missing:
+        raise HorizonMissing(
+            f"no projections stored for gameweek{'s' if len(missing) > 1 else ''} "
+            f"{', '.join(str(gw) for gw in missing)} on snapshot {snapshot_id} under "
+            f"model {model_version}; run `fpl-agent project --horizon {weeks}` "
+            f"(or `make deadline`, which projects before it recommends) first")
+
+    totals: dict[int, float] = {}
+    for row in conn.execute(
+        """SELECT element_id, SUM(expected_points) AS total FROM projection
+           WHERE model_version = ? AND gameweek BETWEEN ? AND ?
+             AND snapshot_id = ? GROUP BY element_id""",
+        (model_version, start_gameweek, start_gameweek + weeks - 1, snapshot_id),
+    ):
+        totals[row["element_id"]] = row["total"]
+    return totals
+
+
 def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = None,
                     weeks: int = HORIZON_GAMEWEEKS,
                     model_version: str = MODEL_VERSION) -> dict[int, float]:
@@ -486,6 +534,8 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
 
     Blanks contribute nothing and doubles contribute twice, which is the point of
     summing over fixtures rather than gameweeks.
+
+    This writes. Callers that only need the numbers read `stored_horizon` instead.
     """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
@@ -498,16 +548,8 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
     for gameweek in range(start, start + weeks):
         project_gameweek(conn, gameweek, model_version)
 
-    totals: dict[int, float] = {}
-    for row in conn.execute(
-        """SELECT element_id, SUM(expected_points) AS total FROM projection
-           WHERE model_version = ? AND gameweek BETWEEN ? AND ?
-             AND snapshot_id = ? GROUP BY element_id""",
-        (model_version, start, start + weeks - 1, snapshot["id"]),
-    ):
-        totals[row["element_id"]] = row["total"]
     logger.info("horizon: gameweeks %s-%s", start, start + weeks - 1)
-    return totals
+    return stored_horizon(conn, snapshot["id"], start, weeks, model_version)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

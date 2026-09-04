@@ -4,17 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fpl_agent.engine import recommend, storage
+from fpl_agent.engine import projection, recommend, storage
 from test_scoring import WEIGHTS
 
 
 def element(element_id, team, element_type, cost, xg=0.5, likelihood=0, percent=0.0,
-            projected=None):
+            projected=None, status="a", chance=None):
     return {
         "id": element_id, "web_name": f"P{element_id}", "first_name": "F",
         "second_name": f"S{element_id}", "team": team, "element_type": element_type,
         "now_cost": cost, "form": "5.0", "points_per_game": "5.0", "total_points": 40,
-        "minutes": 900, "status": "a", "chance_of_playing_next_round": None,
+        "minutes": 900, "status": status, "chance_of_playing_next_round": chance,
         "selected_by_percent": "10.0", "expected_goals_per_90": str(xg),
         "expected_assists_per_90": "0.2", "expected_goals_conceded_per_90": "1.1",
         "starts_per_90": "1.0", "penalties_order": None, "news": "",
@@ -40,7 +40,13 @@ def chip(name, status, chip_type="transfer"):
 
 class SeedMixin:
     def _seed(self, bank=10, squad_ids=(1,), elements=None,
-              limit=1, made=0, cost=4, chips=()):
+              limit=1, made=0, cost=4, chips=(), project=True):
+        """A snapshot, and by default the horizon `project` would have written for it.
+
+        `recommend` reads projections rather than running them, so the fixture has to
+        do what `make deadline` does: project, then recommend. Pass project=False to
+        exercise the horizon that was never run.
+        """
         conn = storage.connect(":memory:")
         self.addCleanup(conn.close)
         elements = elements or [
@@ -76,6 +82,8 @@ class SeedMixin:
             "transfers": {"bank": bank, "value": 1000, "limit": limit, "made": made,
                           "cost": cost},
             "chips": list(chips)})
+        if project:
+            projection.project_horizon(conn, 3, weeks=3)
         return conn
 
 
@@ -201,6 +209,56 @@ class RecommendTests(SeedMixin, unittest.TestCase):
         conn = self._seed(squad_ids=())
         with self.assertRaises(LookupError):
             recommend.recommend(conn, weeks=3)
+
+
+class StoredHorizonTests(SeedMixin, unittest.TestCase):
+    """Recommending is a read. It must not write projections on the way past."""
+
+    def test_an_unprojected_horizon_is_an_error_not_a_projection_run(self):
+        conn = self._seed(project=False)
+        with self.assertRaises(projection.HorizonMissing) as caught:
+            recommend.recommend(conn, weeks=3)
+        message = str(caught.exception)
+        self.assertIn("3, 4, 5", message)
+        self.assertIn("project", message)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM projection").fetchone()[0], 0,
+            "a failed recommend must not have written rows either")
+
+    def test_recommending_writes_no_projection_rows(self):
+        """Regression: `recommend` re-projected, so running it twice moved the warehouse.
+
+        Rows appearing under whatever MODEL_VERSION the code is on today are rows
+        nobody asked for, and they make "projections for gameweek N" uncountable.
+        """
+        conn = self._seed()
+        before = conn.execute(
+            "SELECT id, expected_points, created_at FROM projection ORDER BY id"
+        ).fetchall()
+        recommend.recommend(conn, weeks=3, limit=50)
+        recommend.recommend(conn, weeks=3, limit=50)
+        after = conn.execute(
+            "SELECT id, expected_points, created_at FROM projection ORDER BY id"
+        ).fetchall()
+        self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+
+    def test_a_partly_projected_horizon_is_refused_rather_than_totalled_short(self):
+        """Two weeks of a three-week horizon understates every player by a week."""
+        conn = self._seed()
+        conn.execute("DELETE FROM projection WHERE gameweek = 5")
+        conn.commit()
+        with self.assertRaises(projection.HorizonMissing) as caught:
+            recommend.recommend(conn, weeks=3)
+        self.assertIn("gameweek 5", str(caught.exception))
+
+    def test_a_shorter_horizon_reads_the_weeks_it_asked_for(self):
+        conn = self._seed()
+        results = recommend.recommend(conn, weeks=1, limit=50)
+        self.assertTrue(results)
+        self.assertEqual(results[0]["horizon"], 1)
+        three = recommend.recommend(conn, weeks=3, limit=50)
+        self.assertLess(results[0]["in"]["xp"], three[0]["in"]["xp"])
+
 
 
 class TransferCostTests(SeedMixin, unittest.TestCase):

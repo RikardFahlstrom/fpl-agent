@@ -421,5 +421,47 @@ class SettledProjectionTests(SeedMixin, unittest.TestCase):
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM projection").fetchone()[0], 1)
 
 
+class StoredHorizonTests(SeedMixin, unittest.TestCase):
+    """Reading a horizon that was projected, and refusing one that was not."""
+
+    def test_the_stored_total_matches_what_was_projected(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        written = projection.project_horizon(conn, 3, weeks=3)
+        read = projection.stored_horizon(conn, 1, 3, weeks=3)
+        self.assertEqual(written, read)
+        self.assertEqual(
+            read[1],
+            conn.execute("SELECT SUM(expected_points) FROM projection WHERE "
+                         "gameweek BETWEEN 3 AND 5 AND model_version = ?",
+                         (projection.MODEL_VERSION,)).fetchone()[0])
+
+    def test_an_unprojected_horizon_names_the_missing_gameweeks(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_gameweek(conn, 3)
+        with self.assertRaises(projection.HorizonMissing) as caught:
+            projection.stored_horizon(conn, 1, 3, weeks=3)
+        self.assertIn("4, 5", str(caught.exception))
+
+    def test_a_blank_gameweek_is_present_not_missing(self):
+        """No fixture still stores a row per player, so a blank is a zero, not a gap."""
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_horizon(conn, 3, weeks=3)
+        # gameweeks 4 and 5 have no fixture at all in the fixture table
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM projection WHERE gameweek = 5 "
+                         "AND fixture_count = 0").fetchone()[0], 1)
+        self.assertIn(1, projection.stored_horizon(conn, 1, 3, weeks=3))
+
+    def test_another_model_version_does_not_satisfy_the_horizon(self):
+        conn = self._seed()
+        self.addCleanup(conn.close)
+        projection.project_horizon(conn, 3, weeks=3, model_version="0.1.0")
+        with self.assertRaises(projection.HorizonMissing):
+            projection.stored_horizon(conn, 1, 3, weeks=3, model_version="0.2.0")
+
+
 if __name__ == "__main__":
     unittest.main()

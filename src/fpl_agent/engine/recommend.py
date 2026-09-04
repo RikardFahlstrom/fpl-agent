@@ -29,7 +29,8 @@ from typing import Any, Optional
 
 from .. import config
 from . import pricing, rivals, storage
-from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, project_horizon
+from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
+                         stored_horizon)
 from .scoring import POSITIONS
 
 logger = logging.getLogger("fpl_recommend")
@@ -169,11 +170,20 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
 
     Net means after the points hit the move would cost. See `transfer_price` for why
     every option on the list is charged the same hit rather than the first being free.
+
+    Reads the projections `project` stored; it does not run them. Ranking is a read of
+    the warehouse, not a write to it, so `recommend` can be run twice without leaving a
+    second set of rows behind under whatever MODEL_VERSION the code has moved on to.
+    An unprojected horizon is an error, not a cue to project - see `stored_horizon`.
+
     """
     snapshot = conn.execute(
         "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
     if not snapshot:
         raise LookupError("no snapshot captured yet")
+
+    if snapshot["gameweek"] is None:
+        raise LookupError("no target gameweek on the latest snapshot; the season may be over")
 
     squad = _squad(conn, snapshot["id"])
     if not squad:
@@ -185,7 +195,7 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     context = transfer_context(conn)
     hit_cost, chip = context["hit_cost"], context["chip"]
 
-    totals = project_horizon(conn, snapshot["gameweek"], weeks)
+    totals = stored_horizon(conn, snapshot["id"], snapshot["gameweek"], weeks)
     outlooks = pricing.price_outlooks(conn, snapshot["id"])
     team_limit = _team_limit(conn)
 
@@ -361,7 +371,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     conn = storage.connect(args.db)
     try:
         context = transfer_context(conn)
-        recommendations = recommend(conn, args.weeks, args.top)
+        try:
+            recommendations = recommend(conn, args.weeks, args.top)
+        except HorizonMissing as missing:
+            # Not a crash to fix: the run order was wrong. Say which command was skipped.
+            print(f"\nCannot recommend: {missing}", file=sys.stderr)
+            return 1
 
         if context["chip"]:
             print(f"\n{context['chip'].upper()} ACTIVE this gameweek: transfers cost "
