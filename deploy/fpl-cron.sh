@@ -89,18 +89,34 @@ require_sqlite() {
 # The highest finished gameweek that has never been graded. Absence from
 # `outcome` is the test rather than a marker file: the warehouse is the only
 # state worth trusting, and a marker file can disagree with it.
-# A gameweek is only settleable if a projection was made *before* it was played, from a
-# snapshot targeting it. Without that second condition this offers up every gameweek that
-# finished before the warehouse existed - `settle` refuses them with exit 1, correctly,
-# and cron then mails a failure every morning for the rest of the season. An alert that
-# fires daily and can never be acted on is worse than no alert.
-next_gameweek_to_settle() {
-    ask "SELECT MAX(event) FROM fixture
-          WHERE finished = 1
+# Every gameweek that can be graded and has not been, oldest first, one per line.
+#
+# Three conditions, and each one was a bug before it was a condition:
+#
+#   every fixture played - not merely one. `settle.gameweek_is_finished` requires the
+#       whole round, so a gameweek with only its Saturday lunchtime kickoff behind it
+#       is refused with exit 1 and mailed to you as a failure.
+#   never graded - absence from `outcome`, which is state rather than a marker file.
+#   actually projectable - a projection made before the round, from a snapshot targeting
+#       it. Gameweeks that finished before this warehouse existed have none and never
+#       will, so offering them up mails a failure every morning for the rest of the
+#       season.
+#
+# Oldest first, and all of them, because MAX skips. On the Saturday of gameweek 4 an
+# ungraded gameweek 3 must still be what gets settled; with MAX it was passed over for a
+# gameweek 4 that had not finished, and would never have been graded at all.
+gameweeks_to_settle() {
+    ask "SELECT event FROM fixture
+          WHERE event IN (SELECT event FROM fixture
+                           GROUP BY event
+                          HAVING COUNT(*) > 0
+                             AND SUM(COALESCE(finished, 0)) = COUNT(*))
             AND event NOT IN (SELECT DISTINCT gameweek FROM outcome)
             AND event IN (SELECT DISTINCT p.gameweek FROM projection p
                             JOIN snapshot s ON s.id = p.snapshot_id
-                                           AND s.gameweek = p.gameweek);"
+                                           AND s.gameweek = p.gameweek)
+          GROUP BY event
+          ORDER BY event;"
 }
 
 # FPL's deadline is 90 minutes before the first kickoff of the gameweek. Derived
@@ -117,7 +133,7 @@ hours_to_deadline() {
 }
 
 job_daily() {
-    local status=0 rc gw
+    local status=0 rc gw pending
     run snapshot --force || { rc=$?; status=$rc
         echo "snapshot exited $rc; see the exit-code table in docs/SCHEDULING.md" >&2; }
     run snapshot --backfill-only || { rc=$?; status=$rc
@@ -125,17 +141,21 @@ job_daily() {
 
     # A failed query is not "nothing to settle". Say so and give up the settle,
     # rather than reporting a clean run that never asked the question.
-    if ! gw="$(next_gameweek_to_settle)"; then
+    if ! pending="$(gameweeks_to_settle)"; then
         echo "cannot tell whether a gameweek needs grading; not settling" >&2
         return "${status:-0}"
     fi
-    if [ -n "$gw" ]; then
+    if [ -z "$pending" ]; then
+        echo "no finished gameweek is waiting to be graded"
+        return "$status"
+    fi
+    # All of them, in order. A week the box was down, or a midweek round that finished
+    # while an earlier one was still ungraded, must catch up rather than be skipped.
+    for gw in $pending; do
         echo "gameweek $gw has finished and has never been graded; settling it"
         run settle --gameweek "$gw" --learn || { rc=$?; status=$rc
-            echo "settle exited $rc" >&2; }
-    else
-        echo "no finished gameweek is waiting to be graded"
-    fi
+            echo "settle exited $rc for gameweek $gw" >&2; }
+    done
     return "$status"
 }
 

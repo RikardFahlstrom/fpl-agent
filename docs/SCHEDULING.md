@@ -21,16 +21,23 @@ attempting it every morning costs one process and answers correctly.
 | `daily` | once, 02:30 | Prices resolve around 01:30 UK. A missed day is price and ownership movement that no endpoint can return - this is the irrecoverable one. |
 | `deadline` | hourly | Cheap when idle: it reads one row and exits. Inside 26 hours of a deadline it re-snapshots and re-projects, because predicted lineups firm up on matchday and a projection built 24 hours out is a different answer from one built 3 hours out. |
 
-`daily` also attempts to settle: it asks the warehouse for the highest finished
-gameweek that has never been graded **and can be** - one with a projection made before
-it was played, from a snapshot targeting it - and if there is one, grades it and drafts
-a learning. Absence from the `outcome` table is the test, not a marker file: the
-warehouse is the only state worth trusting.
+`daily` also settles, on its own, with nobody logged in. It asks the warehouse for every
+gameweek that is gradable and ungraded, oldest first, and grades each one — so
+`make settle GW=n` is something you run by hand only if you want to, not something the
+season depends on you remembering.
 
-Both conditions matter. Gameweeks that finished before this warehouse existed have no
-such projection and never will, so offering them up would make `settle` refuse with
-exit 1 every morning for the rest of the season. An alert that fires daily and can never
-be acted on is worse than no alert at all.
+A gameweek qualifies on three counts, and each was a bug before it was a condition:
+
+| Condition | What goes wrong without it |
+| --- | --- |
+| **every** fixture played | One Saturday lunchtime kickoff makes the round look finished. `settle` refuses it, correctly, and you get a mailed failure mid-gameweek. |
+| never graded | Absence from `outcome` — state, not a marker file, which can disagree with it. |
+| actually projectable | A projection made before the round, from a snapshot targeting it. Gameweeks that finished before this warehouse existed have none and never will, so they would refuse every morning for the rest of the season. |
+
+Oldest first, and all of them, because taking the highest skips. On the Saturday of
+gameweek 4 an ungraded gameweek 3 must still be what gets settled — taking the maximum
+passed it over for a gameweek 4 that had not finished, and gameweek 3 would never have
+been graded at all. A week the box was down catches up the same way.
 
 Both jobs end by writing `logs/gwNN.md` and then notifying. The push carries only the few
 lines worth interrupting someone for; the brief is the rest of the reasoning, and `logs/`
