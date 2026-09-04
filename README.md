@@ -10,9 +10,22 @@ Claude.
 ```bash
 git clone git@github.com:RikardFahlstrom/fpl-agent.git
 cd fpl-agent
-uv sync
-uv run playwright install chromium   # only for credential login
+uv sync                                    # creates .venv, which the Makefile expects
+uv run playwright install chromium         # only for the first credential login
 ```
+
+On a Linux box, two system packages first. `sqlite3` is the CLI, which is a separate
+package from python's `sqlite3` module — `deploy/fpl-cron.sh` uses the command to ask the
+warehouse what needs doing, and without it the scheduled jobs refuse to run rather than
+guessing. `flock` comes from `util-linux` and serialises those jobs.
+
+```bash
+sudo apt install sqlite3 util-linux
+uv run playwright install-deps chromium    # needs root; Chromium's shared libraries
+```
+
+`install-deps` is the step most often missed on a fresh server: without it Chromium fails
+to start with a loader error rather than anything that names the cause.
 
 ## Configure
 
@@ -30,6 +43,9 @@ read_only = true          ; refuse make_transfers; analyse and report only
 
 [rivals]
 leagues = 920863          ; measure ownership against these leagues only
+
+[notify]
+ntfy_topic =              ; a long random string; see "Run it on a server"
 ```
 
 Every setting is also an environment variable (`FPL_AUTO_LOGIN`, `FPL_EMAIL`, …) and
@@ -40,8 +56,10 @@ credentials are no longer needed.
 ## Run
 
 ```bash
-make deadline        # snapshot, backfill, project, capture rivals, recommend
+make deadline        # snapshot, backfill, project, capture rivals, recommend, status
 make settle GW=3     # after a gameweek: grade projections, draft a learning
+make brief           # write logs/gwNN.md: what changed and what needs you
+make status          # read-only: does the warehouse agree with itself?
 make test
 ```
 
@@ -58,6 +76,68 @@ setup: cron calls `deploy/fpl-cron.sh`, which decides whether there is anything 
 Snapshotting **refuses to run** if it cannot capture your squad, because selling prices,
 bank and free transfers exist in no public endpoint. Pass `--allow-partial` to take the
 market alone.
+
+## Run it on a server
+
+The intended deployment: cron, no human present, and **no automated transfers**. The agent
+captures, projects and recommends; you read the brief and make the move. `read_only = true`
+is what enforces that, and it is the reason a bearer token can sit on a remote host at all.
+
+After Install and Configure above, on the server itself:
+
+**1. Pick an ntfy topic and treat it as a password.** ntfy has no accounts, so the topic
+*is* the address and the credential — anyone who guesses it reads your squad and your
+moves. Not `fpl`, not your name.
+
+```bash
+python3 -c "import secrets; print('fpl-' + secrets.token_urlsafe(24))"
+```
+
+Put it in `fpl-agent.ini` under `[notify] ntfy_topic`, then subscribe to that exact string
+in the ntfy phone app. Set `token_cache` to an absolute path on a persistent disk while
+you are there.
+
+**2. Log in once.** This is the only step that needs a browser. A server has no `DISPLAY`,
+so Chromium runs headless automatically:
+
+```bash
+.venv/bin/fpl-agent snapshot --force        # look for "Captured API token"
+```
+
+After this the cached refresh token renews the session and Chromium is only a fallback.
+**Do not copy the token cache from another machine**: the account service rotates the
+refresh token on every exchange, so two hosts sharing one would fight and both lose.
+
+**3. Check before scheduling anything.**
+
+```bash
+.venv/bin/fpl-agent status                  # exit 0, and read the token line
+.venv/bin/fpl-agent notify --dry-run        # what would reach your phone, and why not
+./deploy/fpl-cron.sh --dry-run daily
+./deploy/fpl-cron.sh --dry-run deadline
+```
+
+The dry runs cost ten seconds and are what catches a missing `sqlite3` before it becomes a
+week of jobs quietly doing nothing.
+
+**4. Schedule it.** Cron fires dumbly and often; the guards decide whether there is work.
+
+```cron
+CRON_TZ=UTC
+MAILTO=you@example.com
+
+30 2 * * *  /srv/fpl-agent/deploy/fpl-cron.sh daily
+7  * * * *  /srv/fpl-agent/deploy/fpl-cron.sh deadline
+```
+
+Use UTC: the API speaks it, and British Summer Time moves the UK clock twice a season.
+Every job runs under `flock`, because the refresh token rotates and two concurrent jobs
+would leave one holding a dead credential.
+
+Anything non-zero gets mailed to you, and each exit code names one failure —
+`4` the squad was not captured, `7` the warehouse disagrees with itself, `8` a
+notification failed. The full table, the trigger set and the reasoning are in
+[docs/SCHEDULING.md](docs/SCHEDULING.md).
 
 ## Use from Claude
 
@@ -103,7 +183,8 @@ version on the same gameweeks rather than silently replacing it.
 
 ```
 src/fpl_agent/
-  engine/            capture, projection, pricing, rivals, recommend, settle
+  engine/            capture, actuals, projection, pricing, rivals, recommend,
+                     settle, status, brief, notify
   mcp/               server: tools/, resources, prompts, web
   (root)             auth, client, config, models, state, rotowire_scraper
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify
