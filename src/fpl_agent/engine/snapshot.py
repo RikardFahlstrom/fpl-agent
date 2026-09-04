@@ -13,6 +13,10 @@ half-blind unless explicitly told to.
     python -m fpl_agent.snapshot --allow-partial  # market only, knowingly without a squad
     python -m fpl_agent.snapshot --backfill       # also pull per-gameweek actuals
     python -m fpl_agent.snapshot --backfill-only  # actuals only, no new snapshot
+
+Exit codes, for whoever is reading a scheduled run that failed: 2 auth is not configured,
+3 it is configured but no session was established, 4 a session was established and the
+squad still was not captured, 5 too much of the backfill failed to be graded against.
 """
 
 import argparse
@@ -43,6 +47,11 @@ BACKFILL_CONCURRENCY = 8
 # absent, and no run should continue as if they were.
 MAX_BACKFILL_FAILURE_RATE = 0.05
 
+# An FPL squad is exactly 15 players: 11 on the pitch and 4 on the bench. `my-team/`
+# answers with all fifteen or it has not answered, so any other count means the squad
+# half of the snapshot is incomplete rather than merely small.
+SQUAD_SIZE = 15
+
 
 @dataclass
 class BackfillResult:
@@ -63,6 +72,28 @@ class BackfillResult:
     @property
     def failure_rate(self) -> float:
         return self.failed / self.attempted if self.attempted else 0.0
+
+
+@dataclass
+class CaptureResult:
+    """What a snapshot actually put in the warehouse, read back out of it.
+
+    Counted with queries against the snapshot id rather than taken from the return values
+    of the writers: `capture` swallows a failing `my-team/` so the market half survives,
+    which means the only honest answer to "was the squad captured" is to go and look. A
+    403 on `my-team/` (FPL returns one during maintenance) used to leave a warning in the
+    log, no `my_squad` rows, and exit 0 - and `recommend` then failed with "no squad
+    captured" hours later at the deadline.
+    """
+    snapshot_id: int
+    gameweek: Optional[int]
+    players: int
+    fixtures: int
+    squad_rows: int
+    lineup_rows: int
+    # The gameweek the lineups were filed under, which is not always the one a reader
+    # expects. Reported, not corrected: the filing rule is a separate question.
+    lineup_gameweek: Optional[int]
 
 
 @dataclass
@@ -116,22 +147,17 @@ def report_readiness(readiness: Readiness) -> None:
     logger.warning("  to capture the market anyway, re-run with --allow-partial")
 
 
-async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
-    """Capture one point-in-time snapshot. Returns the snapshot id."""
+async def capture(conn, client: FPLClient, *, kind: str = "manual") -> CaptureResult:
+    """Capture one point-in-time snapshot. Returns what landed in the warehouse."""
     bootstrap = await client.get_bootstrap_data()
     fixtures = await client.get_fixtures()
 
     snapshot_id = storage.create_snapshot(conn, bootstrap, kind=kind)
     storage.upsert_teams(conn, bootstrap)
     storage.upsert_players(conn, bootstrap)
-    players = storage.record_player_snapshot(conn, snapshot_id, bootstrap)
+    storage.record_player_snapshot(conn, snapshot_id, bootstrap)
     storage.record_game_config(conn, bootstrap)
     fixture_count = storage.upsert_fixtures(conn, fixtures)
-
-    logger.info(
-        "snapshot %s: %s players, %s fixtures, gameweek %s",
-        snapshot_id, players, fixture_count, storage.target_gameweek(bootstrap),
-    )
 
     # The authenticated squad is optional: an unauthenticated run still captures the
     # market, which is the part that cannot be recovered later.
@@ -142,6 +168,8 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
             picks = storage.record_my_team(conn, snapshot_id, entry_id, my_team)
             logger.info("captured own squad: %s picks", picks)
         except Exception as e:
+            # Kept a warning on purpose: the market half is the irrecoverable one and
+            # must still be committed. The caller decides what a missing squad costs.
             logger.warning("could not capture own squad: %s", e)
     else:
         logger.info("no authenticated session; market captured without own squad")
@@ -149,20 +177,48 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> int:
     # Predicted lineups, for the gameweek being captured. Minutes dominate scoring and
     # FPL's own flag only reports injuries, never rotation.
     gameweek = storage.target_gameweek(bootstrap)
+    lineup_gameweek = None
     if gameweek is not None:
         try:
             matches = await RotoWireLineupScraper().scrape_match_lineups()
             if matches:
+                lineup_gameweek = gameweek
                 stored, unresolved = lineups.record_lineups(
                     conn, snapshot_id, gameweek, matches, bootstrap)
                 logger.info("captured %s lineup entries (%s unresolved)",
                             stored, len(unresolved))
         except Exception as e:
-            # A third-party page being down must not cost the market snapshot.
+            # A third-party page being down must not cost the market snapshot. It stays a
+            # warning, but the summary reports the zero rows rather than staying silent.
             logger.warning("could not capture lineups: %s", e)
 
     conn.commit()
-    return snapshot_id
+
+    def count(table: str) -> int:
+        return conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE snapshot_id = ?", (snapshot_id,)
+        ).fetchone()[0]
+
+    return CaptureResult(
+        snapshot_id=snapshot_id,
+        gameweek=gameweek,
+        players=count("player_snapshot"),
+        fixtures=fixture_count,
+        squad_rows=count("my_squad"),
+        lineup_rows=count("predicted_lineup"),
+        lineup_gameweek=lineup_gameweek,
+    )
+
+
+def summarise(result: CaptureResult, *, squad_expected: bool) -> str:
+    """One line for whoever reads the nightly job's log at 03:00 with no other context."""
+    squad = (f"{result.squad_rows} of {SQUAD_SIZE} squad rows" if squad_expected
+             else f"{result.squad_rows} squad rows (no session; market only)")
+    filed = (f"filed under gameweek {result.lineup_gameweek}"
+             if result.lineup_gameweek is not None else "filed under no gameweek")
+    return (f"snapshot {result.snapshot_id} for gameweek {result.gameweek}: "
+            f"{result.players} players, {result.fixtures} fixtures, {squad}, "
+            f"{result.lineup_rows} lineup rows {filed}")
 
 
 async def backfill_actuals(conn, client: FPLClient, element_ids: list[int]) -> BackfillResult:
@@ -236,7 +292,24 @@ async def _run(args) -> int:
             if storage.snapshot_taken_today(conn) and not args.force:
                 logger.info("a snapshot already exists for today; use --force to add another")
             else:
-                await capture(conn, client, kind=args.kind)
+                result = await capture(conn, client, kind=args.kind)
+                # The preflight above promised the squad exactly when auth was configured
+                # *and* a session was established; gate on the same pair, so what is
+                # checked here cannot disagree with what was promised there.
+                squad_expected = readiness.complete and authenticated
+                logger.info("%s", summarise(result, squad_expected=squad_expected))
+                if (squad_expected and result.squad_rows != SQUAD_SIZE
+                        and not args.allow_partial):
+                    logger.error(
+                        "squad missing from snapshot %s: %s of %s my_squad rows were "
+                        "recorded although a session was established. Selling prices, "
+                        "bank and free transfers for this moment exist in no public "
+                        "endpoint, so they are gone; `recommend` will fail with \"no "
+                        "squad captured\" at the deadline. The market half has been "
+                        "kept - re-run once my-team/ answers, or use --allow-partial "
+                        "for a deliberate market-only run.",
+                        result.snapshot_id, result.squad_rows, SQUAD_SIZE)
+                    exit_code = 4
 
         if args.backfill or args.backfill_only:
             element_ids = [r["element_id"] for r in
@@ -279,8 +352,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="also pull per-gameweek actuals for every known player")
     parser.add_argument("--backfill-only", action="store_true",
                         help="pull actuals without taking a new snapshot")
-    parser.add_argument("--allow-partial", action="store_true",
-                        help="capture the market even though the squad cannot be captured")
+    parser.add_argument(
+        "--allow-partial", action="store_true",
+        help="record the market alone and exit 0 without a squad; use it for a "
+             "deliberate market-only run, e.g. before the account exists or while "
+             "my-team/ is down and the price data still matters")
     parser.add_argument("--kind", default="manual", help="label for this snapshot")
     args = parser.parse_args(argv)
 
