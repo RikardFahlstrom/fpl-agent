@@ -408,6 +408,37 @@ class GradingTests(StatusTestCase):
         self.assertIn("make settle GW=2", grading.detail)
         self.assertClean()
 
+    def test_a_gameweek_that_predates_the_warehouse_is_not_a_standing_warning(self):
+        """The real warehouse's first snapshot targeted gameweek 3, so 1 and 2 can never
+        be graded - no projection was ever made from a snapshot targeting them, and the
+        prices, lineups and ownership one would need are gone. Telling someone to settle
+        them is advice that cannot be taken, and an unactionable warning teaches the
+        reader to skim every other line in the block.
+        """
+        self.conn.execute("DELETE FROM outcome")
+        self.conn.execute("DELETE FROM projection WHERE gameweek IN (1, 2)")
+        self.conn.commit()
+
+        grading = self.by_label()["grading"]
+
+        self.assertEqual(grading.level, status.OK)
+        self.assertIn("can never be graded", grading.detail)
+        self.assertNotIn("make settle", grading.detail)
+        self.assertClean()
+
+    def test_a_settleable_gameweek_still_warns_and_names_the_unreachable_ones(self):
+        """One of each: gameweek 1 is beyond reach, gameweek 2 is waiting to be settled."""
+        self.conn.execute("DELETE FROM outcome")
+        self.conn.execute("DELETE FROM projection WHERE gameweek = 1")
+        self.conn.commit()
+
+        grading = self.by_label()["grading"]
+
+        self.assertEqual(grading.level, status.WARN)
+        self.assertIn("make settle GW=2", grading.detail)
+        self.assertIn("can never be graded", grading.detail)
+        self.assertClean()
+
     def test_nothing_finished_means_an_empty_outcome_table_is_right(self):
         self.conn.execute("UPDATE fixture SET finished = 0")
         self.conn.execute("DELETE FROM outcome")

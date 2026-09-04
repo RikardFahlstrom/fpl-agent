@@ -336,9 +336,31 @@ def check_grading(conn: sqlite3.Connection, finished: list[int]) -> Check:
         return Check("grading", OK,
                      f"gameweek(s) {_gameweeks(finished)} finished and graded under "
                      f"model {MODEL_VERSION}")
-    return Check("grading", WARN,
-                 f"gameweek(s) {_gameweeks(ungraded)} have finished but carry no outcome "
-                 f"rows under model {MODEL_VERSION} - run `make settle GW={ungraded[-1]}`")
+
+    # A gameweek can only be graded against a projection made *before* it was played, from
+    # a snapshot targeting it. Gameweeks that finished before this warehouse existed have
+    # none and never will: the prices, lineups and ownership they would need are gone, and
+    # `bootstrap-static` has no history endpoint. Telling someone to settle those is advice
+    # that cannot be taken, and a warning nobody can act on is how a reader learns to skim
+    # the whole block.
+    projectable = {r[0] for r in conn.execute(
+        """SELECT DISTINCT p.gameweek FROM projection p
+             JOIN snapshot s ON s.id = p.snapshot_id AND s.gameweek = p.gameweek""")}
+    settleable = [gw for gw in ungraded if gw in projectable]
+    unreachable = [gw for gw in ungraded if gw not in projectable]
+
+    if not settleable:
+        return Check("grading", OK,
+                     f"gameweek(s) {_gameweeks(unreachable)} finished before this "
+                     f"warehouse had a snapshot targeting them, so they can never be "
+                     f"graded - nothing to do, and nothing lost that is recoverable")
+
+    detail = (f"gameweek(s) {_gameweeks(settleable)} have finished but carry no outcome "
+              f"rows under model {MODEL_VERSION} - run `make settle GW={settleable[-1]}`")
+    if unreachable:
+        detail += (f" (gameweek(s) {_gameweeks(unreachable)} predate the warehouse and "
+                   f"can never be graded)")
+    return Check("grading", WARN, detail)
 
 
 def check_rivals(conn: sqlite3.Connection, finished: list[int]) -> Check:
