@@ -102,6 +102,42 @@ continues without it rather than silently running unserialised.
 For the same reason: **do not copy the token cache between machines.** Two hosts
 refreshing the same token fight, and both lose.
 
+## Updating the checkout
+
+Nothing updates the code for you. If you want that scheduled, it is one line, and it
+takes the same lock as the jobs:
+
+```cron
+25 2 * * *  cd /srv/fpl-agent && flock -n /tmp/fpl-agent.lock -c 'git checkout -- "logs/gw*.md" 2>/dev/null; git pull -q --ff-only && uv sync >/dev/null'
+```
+
+Five minutes ahead of `daily`, so a run starts on the code the pull just landed rather
+than halfway through swapping it.
+
+The lock path is `${FPL_LOCK:-/tmp/fpl-agent.lock}`. If you set `FPL_LOCK` for the jobs,
+set it here too — a deploy holding a different lock file is not serialised against
+anything, and looks exactly like one that is.
+
+| Part | Why it is there |
+| --- | --- |
+| the same `flock` | A pull rewrites `.py` files. Doing that under a run that is mid-snapshot changes the code an already-imported process is executing, while it holds a rotating token. `-n` gives up rather than queueing. |
+| `git checkout -- "logs/gw*.md"` | `brief` rewrites a tracked file every run, so the server's tree is dirty by 02:31 and `--ff-only` refuses it. Scoped to the briefs on purpose: `logs/actions.jsonl` is written only by `recommend --record`, which no scheduled job runs, and discarding it would destroy the decision trail. |
+| `--ff-only` | Fails loudly rather than writing a merge commit, or stopping in a conflict, on a host nobody is looking at. |
+| `uv sync` | A pull that moves `uv.lock` leaves `.venv` stale. Without this the pull reports success and the *next* run is what discovers the breakage. |
+| quiet on success | `MAILTO` is set. "Already up to date." arriving every morning is how you learn to ignore the mail that eventually matters. |
+
+**The brief is not surviving on a server either way.** `logs/` is tracked so the record
+survives, but nothing on the server commits it, and `brief` overwrites it on the next run
+regardless — so discarding it before a pull loses nothing that was being kept. If you want
+that record, the server has to commit and push it, which is a different decision with a
+write credential attached.
+
+**This makes `MODEL_VERSION` load-bearing.** The server starts projecting with new code
+the morning after a push, unattended. The bump is the only thing keeping what the model
+believed last week distinguishable from what it believes now — the invariant stops being
+hygiene and becomes the thing the deployment rests on. Pulling by hand is the honest
+alternative; pushes here are deliberate and rare.
+
 ## Notifications
 
 Both jobs end in `fpl-agent notify`. It asks `brief.evaluate` what is worth interrupting

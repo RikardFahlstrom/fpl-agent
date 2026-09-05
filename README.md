@@ -14,6 +14,10 @@ uv sync                                    # creates .venv, which the Makefile e
 uv run playwright install chromium         # only for the first credential login
 ```
 
+On a server, clone over HTTPS instead — `https://github.com/RikardFahlstrom/fpl-agent.git`.
+A scheduled `git pull` cannot answer a passphrase prompt, so SSH there means a key with no
+passphrase or an agent that has to survive reboots. The server only ever reads this repo.
+
 On a Linux box, two system packages first. `sqlite3` is the CLI, which is a separate
 package from python's `sqlite3` module — `deploy/fpl-cron.sh` uses the command to ask the
 warehouse what needs doing, and without it the scheduled jobs refuse to run rather than
@@ -133,6 +137,28 @@ MAILTO=you@example.com
 Use UTC: the API speaks it, and British Summer Time moves the UK clock twice a season.
 Every job runs under `flock`, because the refresh token rotates and two concurrent jobs
 would leave one holding a dead credential.
+
+**5. Keep the checkout current, if you want that automatic.**
+
+```cron
+25 2 * * *  cd /srv/fpl-agent && flock -n /tmp/fpl-agent.lock -c 'git checkout -- "logs/gw*.md" 2>/dev/null; git pull -q --ff-only && uv sync >/dev/null'
+```
+
+Four things in that line are load-bearing. It takes **the same lock** as the jobs, so a
+pull cannot rewrite `.py` files under a run that is mid-snapshot; `-n` means it gives up
+rather than queueing, and tomorrow's run gets it. It discards the **brief** first, because
+`brief` rewrites the tracked `logs/gwNN.md` every run and `--ff-only` refuses a dirty tree
+— that discards nothing a server was keeping, since nothing commits it there, but see
+[docs/SCHEDULING.md](docs/SCHEDULING.md) if you want that record to survive. **`--ff-only`**
+fails loudly instead of quietly merging on a host nobody is watching. And **`uv sync`**
+follows, because a pull that moves `uv.lock` otherwise leaves `.venv` stale and the next
+run is the thing that discovers it. Quiet on success, or `MAILTO` gets "Already up to
+date." every morning until you stop reading it.
+
+This makes `MODEL_VERSION` load-bearing rather than a nicety: the server starts projecting
+with new code the morning after you push, and the bump is the only thing that keeps what
+the model used to believe distinguishable from what it believes now. If that is not a
+trade you want, pull by hand — pushes to this repo are deliberate and infrequent.
 
 Anything non-zero gets mailed to you, and each exit code names one failure —
 `4` the squad was not captured, `7` the warehouse disagrees with itself, `8` a
