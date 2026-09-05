@@ -13,6 +13,7 @@ who cannot play - so it is asserted directly, from inside the POST, rather than 
 from the happy path.
 """
 
+import datetime as dt
 import http.server
 import os
 import socket
@@ -31,6 +32,20 @@ from fpl_agent.engine.brief import Trigger
 from test_brief import GAMEWEEK, Warehouse
 
 TARGET = notify.Target(server="http://127.0.0.1:1", topic="a-long-random-topic")
+
+
+def kickoff_in(hours):
+    """A kickoff `hours` from now, in the ISO form the `fixture` table stores.
+
+    `Warehouse`'s own default is a pinned date, which is right for `test_brief` - it
+    freezes the clock with `NOW` and asserts on literal deadline strings. It is wrong
+    here, because these tests run the CLI, and `notify.main` calls `brief.evaluate`
+    without a `now` to inject. So the deadline is placed relative to the real clock
+    instead: pinned, it sat at 2026-09-05T07:30 UTC, and every test below that needs a
+    trigger to fire passed before that instant and failed after it.
+    """
+    when = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def trigger(name="move_worth_making", fingerprint="move_worth_making:gw3:1->2",
@@ -392,7 +407,11 @@ class CommandTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.db = Path(self.tmp.name) / "fpl.db"
         conn = storage.connect(self.db)
-        Warehouse(conn).healthy()
+        # The deadline is derived as 90 minutes before the first kickoff, so a kickoff
+        # 13.5 hours out puts it 12 hours away: unpassed, and inside the 24-hour window
+        # `deadline_with_move` watches. Both deadline triggers need that to fire at all.
+        Warehouse(conn).healthy().fixtures(kickoff=kickoff_in(13.5))
+        conn.commit()
         conn.close()
         patch = mock.patch.dict(
             os.environ,
