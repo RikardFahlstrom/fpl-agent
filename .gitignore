@@ -20,3 +20,8 @@ session.json
 # template, so a differently-named copy cannot be committed by accident.
 *.ini
 !*.ini.example
+
+# Scratch checkouts made by subagents. Derived and disposable, like data/fpl.db:
+# each is a full copy of the tree on its own branch, and the work that matters is
+# merged back before the worktree is dropped. The rest of .claude/ is committed.
+.claude/worktrees/
