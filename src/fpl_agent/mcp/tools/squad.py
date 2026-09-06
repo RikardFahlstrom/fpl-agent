@@ -83,7 +83,7 @@ async def get_my_info(client) -> str:
         classic_leagues = leagues.get('classic', [])
         
         output = [
-            f"**Your FPL Account**",
+            "**Your FPL Account**",
             f"Name: {player_info.get('first_name')} {player_info.get('last_name')}",
             f"Region: {player_info.get('region_name')} ({player_info.get('region_iso_code_short')})",
             ""
@@ -140,7 +140,7 @@ async def get_my_squad(client) -> str:
         )
         
         output = [
-            f"**My Team**",
+            "**My Team**",
             f"Squad Value: {squad_value_text} | Bank: {bank_text}",
             f"Free Transfers: {free_transfers_text} | Transfer Cost: {transfer_cost_text}",
             ""
@@ -311,14 +311,14 @@ async def get_my_performance(client) -> str:
             overall_league = next((l for l in classic_leagues if l['name'] == 'Overall'), None)
             if overall_league:
                 output.extend([
-                    f"\n**Overall League:**",
+                    "\n**Overall League:**",
                     f"├─ Rank: {overall_league['entry_rank']:,} / {overall_league['rank_count']:,}",
                     f"├─ Percentile: Top {overall_league['entry_percentile_rank']}%",
                 ])
             
             other_leagues = [l for l in classic_leagues if l['name'] != 'Overall' and l['league_type'] == 'x']
             if other_leagues:
-                output.append(f"\n**Private Leagues (Top 5):**")
+                output.append("\n**Private Leagues (Top 5):**")
                 sorted_leagues = sorted(other_leagues, key=lambda x: x['entry_rank'])[:5]
                 
                 for league in sorted_leagues:

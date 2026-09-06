@@ -21,9 +21,8 @@ Two things to know when consuming this:
 """
 
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 from bs4 import BeautifulSoup

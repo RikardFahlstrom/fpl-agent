@@ -130,9 +130,9 @@ async def check_login_status(request_id: str) -> str:
     if client and client.user_info:
         user_entry = client.user_info.get('player', {}).get('entry')
         return (
-            f"✅ Authentication Successful!\n"
-            f"Your session is now active. You can now use all FPL tools without providing a session ID.\n"
-            f"Your FPL entry has been loaded automatically."
+            "✅ Authentication Successful!\n"
+            "Your session is now active. You can now use all FPL tools without providing a session ID.\n"
+            "Your FPL entry has been loaded automatically."
         )
     
     return "✅ Authentication Successful! Your session is now active."

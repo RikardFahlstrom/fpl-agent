@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Iterable, Optional
 
-from ..rotowire_scraper import INJURY_STATUS, LineupPlayer, MatchLineup
+from ..rotowire_scraper import INJURY_STATUS, MatchLineup
 
 logger = logging.getLogger("fpl_lineups")
 

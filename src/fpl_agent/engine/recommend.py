@@ -33,7 +33,6 @@ from .. import config
 from . import pricing, rivals, storage
 from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
                          stored_horizon)
-from .scoring import POSITIONS
 
 logger = logging.getLogger("fpl_recommend")
 

@@ -19,7 +19,7 @@ the weights; only the 622 played rows separate the threshold.
 
 import json
 import sqlite3
-from typing import Any, Optional
+from typing import Any
 
 POSITIONS = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 

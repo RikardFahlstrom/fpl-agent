@@ -3,7 +3,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 from playwright.async_api import async_playwright
 
