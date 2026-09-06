@@ -121,25 +121,46 @@ hours_to_deadline() {
     "$AGENT" status --hours-to-deadline --db "$DB"
 }
 
-# Capture, then grade whatever the capture made gradeable. Shared by `daily` and
-# `auto` so the sequence is stated once; both halves are separately guarded, so a
-# caller composing them cannot get the order wrong.
-_capture_and_settle() {
-    local status=0 rc gw pending
+# A capture is not finished until it has been projected.
+#
+# These were two steps, gated separately: every job snapshotted, and only a job
+# inside the deadline window projected. That leaves the ordinary state of the
+# warehouse - captured on a Tuesday, deadline five days out - holding a snapshot
+# with no projections, which is exactly what `status` calls an inconsistency and
+# exits 7 for. The nightly job produced it every night and the brief pushed
+# `status_failed` about it every morning.
+#
+# Projecting is cheap, deterministic, and reads only what the snapshot just
+# stored, so there is no reason to defer it. The deadline window still gates
+# `rivals` and `recommend` below, which is where the cost and the decisions are.
+_capture() {
+    local backfill="$1" status=0 rc
     run snapshot --force || { rc=$?; status=$rc
         echo "snapshot exited $rc; see the exit-code table in docs/SCHEDULING.md" >&2; }
-    run snapshot --backfill-only || { rc=$?; status=$rc
-        echo "backfill exited $rc" >&2; }
+    # Actuals feed the projection's per-90 rates, so they must land before it runs.
+    # The hourly job skips this: it is refreshing a market, not learning a result.
+    if [ "$backfill" = with-backfill ]; then
+        run snapshot --backfill-only || { rc=$?; status=$rc
+            echo "backfill exited $rc" >&2; }
+    fi
+    run project --horizon 3 || { rc=$?; status=$rc; echo "project exited $rc" >&2; }
+    return "$status"
+}
 
+# Grade every gameweek that has finished and never been graded. The rule is not
+# stated here: `settle --list` answers it, so the scheduler and the engine cannot
+# come to disagree about what is gradeable.
+_settle_pending() {
+    local status=0 rc gw pending
     # A failed query is not "nothing to settle". Say so and give up the settle,
     # rather than reporting a clean run that never asked the question.
     if ! pending="$(gameweeks_to_settle)"; then
         echo "cannot tell whether a gameweek needs grading; not settling" >&2
-        return "${status:-0}"
+        return 0
     fi
     if [ -z "$pending" ]; then
         echo "no finished gameweek is waiting to be graded"
-        return "$status"
+        return 0
     fi
     # All of them, in order. A week the box was down, or a midweek round that finished
     # while an earlier one was still ungraded, must catch up rather than be skipped.
@@ -151,64 +172,70 @@ _capture_and_settle() {
     return "$status"
 }
 
+# Ownership and the transfer ranking - the decision half, and the expensive one.
+_rank() {
+    local status=0 rc
+    run rivals    || { rc=$?; status=$rc; echo "rivals exited $rc" >&2; }
+    run recommend || { rc=$?; status=$rc; echo "recommend exited $rc" >&2; }
+    return "$status"
+}
+
+# Whether a deadline is close enough to be worth ranking for, with the hours left
+# in DEADLINE_HOURS. Returns 0 near, 1 not near, 2 the warehouse could not be read -
+# the third distinguished from the second because a season that has ended and a
+# database that will not open used to look identical.
+DEADLINE_HOURS=""
+_deadline_is_near() {
+    if ! DEADLINE_HOURS="$(hours_to_deadline)"; then
+        echo "cannot tell when the next deadline is; not ranking" >&2
+        return 2
+    fi
+    if [ -z "$DEADLINE_HOURS" ]; then
+        echo "no unfinished fixtures; nothing to rank"
+        return 1
+    fi
+    if [ "$DEADLINE_HOURS" -lt 0 ] || [ "$DEADLINE_HOURS" -gt 26 ]; then
+        echo "next deadline is ${DEADLINE_HOURS}h away; too far out to rank yet"
+        return 1
+    fi
+    return 0
+}
+
 job_daily() {
-    _capture_and_settle
+    local status=0 rc
+    _capture with-backfill || rc=$?
+    [ "${rc:-0}" -ne 0 ] && status=$rc
+    _settle_pending || { rc=$?; [ "$status" -eq 0 ] && status=$rc; }
+    return "$status"
 }
 
 # Predicted lineups are the perishable input: RotoWire firms them up on matchday,
 # so a projection built 24 hours out and one built 3 hours out are different
-# answers. Re-snapshot each time rather than projecting over stale lineups.
-# The projecting half of `deadline`, shared with `auto`. $1 is `capture` when the
-# market must be refreshed first - what the hourly cron job needs - or `no-capture`
-# when the caller has already snapshotted this run. That argument is the whole
-# reason `auto` costs one snapshot rather than two.
-_project_if_deadline_near() {
-    local capture="$1" hours status=0 rc
-    # Distinguish "the warehouse says there is no next fixture" from "the
-    # warehouse could not be read". The first is a quiet, correct no-op at the
-    # end of a season; the second used to look exactly like it.
-    if ! hours="$(hours_to_deadline)"; then
-        echo "cannot tell when the next deadline is; not projecting" >&2
-        return 2
-    fi
-    if [ -z "$hours" ]; then
-        echo "no unfinished fixtures; nothing to project"
-        return 0
-    fi
-    if [ "$hours" -lt 0 ] || [ "$hours" -gt 26 ]; then
-        echo "next deadline is ${hours}h away; too far out to be worth projecting"
-        return 0
-    fi
-    if [ "$capture" = capture ]; then
-        echo "next deadline is ${hours}h away; refreshing and projecting"
-        run snapshot --force || { rc=$?; status=$rc; echo "snapshot exited $rc" >&2; }
-    else
-        echo "next deadline is ${hours}h away; projecting on the capture above"
-    fi
-    run project --horizon 3 || { rc=$?; status=$rc; echo "project exited $rc" >&2; }
-    run rivals            || { rc=$?; status=$rc; echo "rivals exited $rc" >&2; }
-    run recommend         || { rc=$?; status=$rc; echo "recommend exited $rc" >&2; }
+# answers. Re-capture each time rather than ranking over stale lineups.
+job_deadline() {
+    local status=0 rc
+    _deadline_is_near; rc=$?
+    [ "$rc" -eq 2 ] && return 2
+    [ "$rc" -ne 0 ] && return 0
+    echo "next deadline is ${DEADLINE_HOURS}h away; refreshing and ranking"
+    _capture no-backfill || status=$?
+    _rank || { rc=$?; [ "$status" -eq 0 ] && status=$rc; }
     return "$status"
 }
 
-job_deadline() {
-    _project_if_deadline_near capture
-}
-
-# Both halves, one capture. The order is not a preference: settling grades what the
-# backfill just fetched, and projecting wants the market that same capture stored.
+# Everything the two cron jobs do, in one pass and on one capture. For a person at
+# a terminal, who wants "do whatever is due" without first working out whether
+# today is a settling day or a deadline day.
 job_auto() {
     local status=0 rc
-    _capture_and_settle || rc=$?
+    _capture with-backfill || rc=$?
+    # The first failure wins. A lost snapshot is the irrecoverable one and must not
+    # be reported as whatever a later step did.
     [ "${rc:-0}" -ne 0 ] && status=$rc
-    rc=0
-    _project_if_deadline_near no-capture || rc=$?
-    # The first failure wins. A lost snapshot is the irrecoverable one, and must not
-    # be reported as whatever the projection did afterwards.
-    if [ "$rc" -ne 0 ] && [ "$status" -eq 0 ]; then
-        status=$rc
-    elif [ "$rc" -ne 0 ]; then
-        echo "projecting also exited $rc, masked by the capture's $status" >&2
+    _settle_pending || { rc=$?; [ "$status" -eq 0 ] && status=$rc; }
+    if _deadline_is_near; then
+        echo "ranking against it on the capture above"
+        _rank || { rc=$?; [ "$status" -eq 0 ] && status=$rc; }
     fi
     return "$status"
 }

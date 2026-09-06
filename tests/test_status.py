@@ -610,8 +610,29 @@ class NextActionTests(StatusTestCase):
 
     def test_the_line_is_appended_to_the_report(self):
         self._kickoff(3, 24 * 7)
-        report = status.render(self.gather(), "db", status.next_action(self.conn))
+        checks = self.gather()
+        report = status.render(checks, "db", status.next_action(self.conn, checks))
         self.assertIn("next:", report.splitlines()[-1])
+
+    def test_a_failing_check_outranks_anything_due(self):
+        # The bug this guards: "nothing due" printed three lines under "Exiting 7",
+        # a summary contradicting the report above it.
+        self._kickoff(3, 24 * 7)
+        self.conn.execute("DELETE FROM projection WHERE gameweek = 3")
+        self.conn.commit()
+        checks = self.gather()
+        self.assertTrue([c for c in checks if c.failed], "expected a failing check")
+        line = status.next_action(self.conn, checks)
+        self.assertIn("projections", line)
+        self.assertNotIn("nothing due", line)
+
+    def test_a_failure_outranks_a_gradeable_gameweek_too(self):
+        self.conn.execute("UPDATE fixture SET finished = 1 WHERE event = 3")
+        self.conn.execute("DELETE FROM projection WHERE gameweek = 3")
+        self.conn.commit()
+        checks = self.gather()
+        line = status.next_action(self.conn, checks)
+        self.assertNotIn("ready to grade", line)
 
 
 class HoursToDeadlineTests(StatusTestCase):
