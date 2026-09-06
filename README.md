@@ -79,15 +79,25 @@ credentials are no longer needed.
 ## Run
 
 ```bash
+make now             # do whatever is due today; DRY=--dry-run to see it decide first
+make status          # read-only: does the warehouse agree with itself, and what is next?
 make deadline        # snapshot, backfill, project, capture rivals, recommend, status
 make settle GW=3     # after a gameweek: grade projections, draft a learning
 make brief           # write logs/gwNN.md: what changed and what needs you
-make status          # read-only: does the warehouse agree with itself?
 make test
 ```
 
+**Start with `make now`.** It asks the warehouse what is due and runs only the steps that
+answer — capture, settle any gameweek that has finished and never been graded, project and
+rank if a deadline is close. It is safe to run on a day when the answer is nothing, which
+is most days, and `make now DRY=--dry-run` shows the decision without acting on it. The
+targets below it are the individual steps, for when you want one.
+
 `make deadline` runs the steps in order because the order matters: actuals feed the
-projection's rates, and rivals must exist before ownership means anything. Individual steps are `fpl-agent snapshot`, `fpl-agent project`, `fpl-agent rivals`,
+projection's rates, and rivals must exist before ownership means anything. `settle` reads
+`finished` from the warehouse rather than the API, so a gameweek cannot be graded until a
+snapshot has refreshed its fixtures — which is one of the things `make now` gets right for
+you. Individual steps are `fpl-agent snapshot`, `fpl-agent project`, `fpl-agent rivals`,
 `fpl-agent recommend`, `fpl-agent settle` and `fpl-agent status` — run `fpl-agent` for
 the list. `make record` logs the move you actually made; nothing records for you.
 

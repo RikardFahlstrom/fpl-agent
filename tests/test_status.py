@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -570,6 +571,85 @@ class TokenTests(unittest.TestCase):
             self.assertNotIn(refresh, report)
             for fragment in (secret[:6], refresh[:6]):
                 self.assertNotIn(fragment, report)
+
+
+class NextActionTests(StatusTestCase):
+    """The closing line: what to run, for a reader who does not know the pipeline.
+
+    Wrong here is worse than absent - it would send someone to a command that does
+    nothing, or leave a finished gameweek sitting ungraded while the report says all is
+    well. `status` passing is not the same as there being nothing to do.
+    """
+
+    def _kickoff(self, gameweek, hours_from_now):
+        when = (datetime.now(timezone.utc) + timedelta(hours=hours_from_now)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.conn.execute("UPDATE fixture SET kickoff_time = ? WHERE event = ?",
+                          (when, gameweek))
+        self.conn.commit()
+
+    def test_nothing_due_when_nothing_grades_and_no_deadline_is_close(self):
+        self._kickoff(3, 24 * 7)
+        self.assertIn("nothing due", status.next_action(self.conn))
+
+    def test_a_close_deadline_is_named_with_its_hours_and_the_command(self):
+        self._kickoff(3, 10)
+        line = status.next_action(self.conn)
+        self.assertIn("deadline in", line)
+        self.assertIn("make now", line)
+
+    def test_a_gradeable_gameweek_is_named_ahead_of_any_deadline(self):
+        # Grading is the one that expires: the deadline comes round again, but a
+        # gameweek left ungraded is a projection never scored against its result.
+        self._kickoff(3, 10)
+        self.conn.execute("UPDATE fixture SET finished = 1 WHERE event = 3")
+        self.conn.commit()
+        line = status.next_action(self.conn)
+        self.assertIn("gameweek 3", line)
+        self.assertIn("ready to grade", line)
+
+    def test_the_line_is_appended_to_the_report(self):
+        self._kickoff(3, 24 * 7)
+        report = status.render(self.gather(), "db", status.next_action(self.conn))
+        self.assertIn("next:", report.splitlines()[-1])
+
+
+class HoursToDeadlineTests(StatusTestCase):
+    """The rule `deploy/fpl-cron.sh` consumes. It stops projecting at the same distance
+    this reports, so a wrong number here is a scheduler that projects at the wrong time."""
+
+    def _kickoff(self, gameweek, hours_from_now):
+        when = (datetime.now(timezone.utc) + timedelta(hours=hours_from_now)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.conn.execute("UPDATE fixture SET kickoff_time = ? WHERE event = ?",
+                          (when, gameweek))
+        self.conn.commit()
+
+    def test_none_when_every_fixture_has_been_played(self):
+        self.conn.execute("UPDATE fixture SET finished = 1")
+        self.conn.commit()
+        self.assertIsNone(status.hours_to_deadline(self.conn))
+
+    def test_the_deadline_sits_ninety_minutes_before_the_first_kickoff(self):
+        self._kickoff(3, 10)
+        # 10h to kickoff, less the 90-minute deadline offset, truncated toward zero.
+        self.assertEqual(status.hours_to_deadline(self.conn), 8)
+
+    def test_a_passed_deadline_reports_negative_rather_than_nothing(self):
+        # A round played but not yet confirmed finished by FPL sits here for hours.
+        self._kickoff(3, -5)
+        self.assertLess(status.hours_to_deadline(self.conn), 0)
+
+    def test_the_flag_prints_only_the_number(self):
+        self._kickoff(3, 10)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fpl.db"
+            self._dump_to(path)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = status.main(["--db", str(path), "--hours-to-deadline"])
+        self.assertEqual(code, 0)
+        self.assertEqual(buffer.getvalue().strip(), "8")
 
 
 if __name__ == "__main__":

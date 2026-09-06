@@ -20,6 +20,13 @@ attempting it every morning costs one process and answers correctly.
 | --- | --- | --- |
 | `daily` | once, 02:30 | Prices resolve around 01:30 UK. A missed day is price and ownership movement that no endpoint can return - this is the irrecoverable one. |
 | `deadline` | hourly | Cheap when idle: it reads one row and exits. Inside 26 hours of a deadline it re-snapshots and re-projects, because predicted lineups firm up on matchday and a projection built 24 hours out is a different answer from one built 3 hours out. |
+| `auto` | never, by cron | Both of the above in one pass, for a person at a terminal. `make now` runs it. Not for the crontab: the two halves want different clocks, and running them together hourly would snapshot far more than the market changes. |
+
+`auto` exists because the split that is right for cron is wrong for a human. Somebody
+about to make a transfer wants "do whatever is due" without first working out whether
+today is a settling day or a deadline day. It captures once and then asks both questions,
+so it costs one snapshot rather than the two that running `daily` and `deadline` back to
+back would. `deploy/fpl-cron.sh --dry-run auto` shows the decision without acting on it.
 
 `daily` also settles, on its own, with nobody logged in. It asks the warehouse for every
 gameweek that is gradable and ungraded, oldest first, and grades each one — so
@@ -30,6 +37,13 @@ It does not decide that for itself. `fpl-agent settle --list` prints the answer 
 script consumes it, so the rule lives in exactly one place — `settle.settleable_gameweeks`
 — which `settle`, `status` and the scheduler all ask. Three statements of one rule is how
 the scheduler and the engine came to disagree in the first place.
+
+"When is the next deadline" is now asked the same way. It was the script's own SQL until
+it became `status.hours_to_deadline`, reached through `fpl-agent status
+--hours-to-deadline`, because a scheduler and an engine that disagree about when to
+project will disagree quietly and on a matchday. The 26-hour cutoff is
+`status.PROJECT_WITHIN_HOURS`, and `status` reports its `next:` line against the same
+number the scheduler acts on.
 
 A gameweek qualifies on three counts, and each was a bug before it was a condition:
 

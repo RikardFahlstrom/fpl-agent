@@ -457,7 +457,59 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
     return checks
 
 
-def render(checks: list[Check], db: Path | str) -> str:
+def hours_to_deadline(conn: sqlite3.Connection) -> Optional[int]:
+    """Hours until the next deadline, or None when no fixture is unplayed.
+
+    The deadline is derived, not fetched: 90 minutes before the first kickoff of the
+    earliest round that still has an unplayed fixture. `bootstrap-static` carries an
+    authoritative `deadline_time` and the warehouse does not store it yet.
+
+    This is the one statement of that rule. `deploy/fpl-cron.sh` used to hold its own
+    copy in SQL and now asks for this one through `status --hours-to-deadline`, the same
+    way it asks `settle --list` what is gradeable - because a scheduler and an engine
+    that disagree about when the deadline is will disagree quietly.
+
+    Negative is a real answer, not an error: a round whose deadline has passed but whose
+    fixtures are not all marked finished sits there until FPL confirms them.
+    """
+    row = conn.execute(
+        """SELECT CAST((julianday(MIN(kickoff_time)) - 90.0/1440 - julianday('now'))
+                       * 24 AS INTEGER)
+             FROM fixture
+            WHERE finished = 0
+              AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0)"""
+    ).fetchone()
+    return None if row is None or row[0] is None else int(row[0])
+
+
+# Beyond this, a deadline is too far out to be worth projecting for. Shared with
+# `deploy/fpl-cron.sh`, which stops projecting at the same distance.
+PROJECT_WITHIN_HOURS = 26
+
+
+def next_action(conn: sqlite3.Connection) -> str:
+    """The one line that says what to run, so the reader need not know the pipeline.
+
+    `status` already names a remedy per failing line. This answers the other question -
+    the one asked when nothing is wrong - because knowing the warehouse is healthy does
+    not tell you whether a gameweek is sitting there ungraded.
+    """
+    try:
+        pending = settle.settleable_gameweeks(conn)
+    except sqlite3.Error:
+        return "next: could not tell - the warehouse would not answer"
+    if pending:
+        which = ", ".join(str(gw) for gw in pending)
+        ready = "gameweek" if len(pending) == 1 else "gameweeks"
+        return f"next: {ready} {which} ready to grade - run `make now`"
+
+    hours = hours_to_deadline(conn)
+    if hours is not None and 0 <= hours <= PROJECT_WITHIN_HOURS:
+        return f"next: deadline in {hours}h - run `make now`"
+    return "next: nothing due - `make now` is safe to run anyway and will say the same"
+
+
+def render(checks: list[Check], db: Path | str, next_line: Optional[str] = None) -> str:
     """One fact per line, aligned, each line carrying its own verdict.
 
     The reader is a person at 03:00 with a cron mail and no other context, so a line says
@@ -476,6 +528,8 @@ def render(checks: list[Check], db: Path | str) -> str:
         warned = [c for c in checks if c.level == WARN]
         lines.append("the warehouse agrees with itself" +
                      (f"; {len(warned)} thing(s) worth a look above" if warned else ""))
+    if next_line:
+        lines.append(next_line)
     return "\n".join(lines)
 
 
@@ -486,6 +540,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--no-token", action="store_true",
                         help="skip the token cache check (the cache is only ever read, "
                              "never exchanged)")
+    parser.add_argument("--hours-to-deadline", action="store_true",
+                        help="print the hours until the next deadline and exit; this is "
+                             "what deploy/fpl-cron.sh consumes so the schedule and the "
+                             "engine cannot disagree about when to project")
     args = parser.parse_args(argv)
 
     config.load()
@@ -500,12 +558,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     except sqlite3.Error as e:
         print(f"could not open {args.db} read-only: {e}", file=sys.stderr)
         return EXIT_UNREADABLE
+    if args.hours_to_deadline:
+        # Quiet and machine-readable, like `settle --list`: the scheduler substitutes
+        # this into a shell variable, so nothing but the number reaches stdout, and an
+        # empty answer (no unplayed fixture) prints nothing rather than a word.
+        try:
+            hours = hours_to_deadline(conn)
+        finally:
+            conn.close()
+        if hours is not None:
+            print(hours)
+        return 0
+
     try:
         checks = gather(conn, include_token=not args.no_token)
+        upcoming = next_action(conn)
     finally:
         conn.close()
 
-    print(render(checks, args.db))
+    print(render(checks, args.db, upcoming))
     return EXIT_INCONSISTENT if any(c.failed for c in checks) else EXIT_OK
 
 
