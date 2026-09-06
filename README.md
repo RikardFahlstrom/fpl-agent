@@ -209,14 +209,15 @@ version on the same gameweeks rather than silently replacing it.
 
 ```
 src/fpl_agent/
-  engine/            capture, actuals, projection, pricing, rivals, recommend,
-                     settle, status, brief, notify
+  engine/            snapshot, actuals, lineups, projection, scoring, pricing,
+                     rivals, recommend, settle, status, brief, notify, storage
   mcp/               server: tools/, resources, prompts, web
-  (root)             auth, client, config, models, state, rotowire_scraper
+  (root)             auth, headless_auth, sessions, client, config, models,
+                     reference, rotowire_scraper, cli, main
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify,
                      /claude-md-review
 deploy/              fpl-cron.sh, the unattended entry point
-docs/                PLAN.md, SCHEDULING.md
+docs/                PLAN.md, SCHEDULING.md, FACTS.md
 learnings/           what the model learned, as markdown with frontmatter
 logs/actions.jsonl   decisions taken, append-only
 ```
