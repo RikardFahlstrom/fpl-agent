@@ -1,6 +1,5 @@
 """Tests for the SQLite warehouse. All local: nothing here touches the FPL API."""
 import json
-import sqlite3
 import unittest
 
 from fpl_agent.engine import storage

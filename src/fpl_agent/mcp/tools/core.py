@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from ...headless_auth import env_flag
 from ...sessions import sessions
 from ...reference import reference
+from ...models import ElementData
 
 # Define the server
 mcp = FastMCP(
@@ -166,7 +167,7 @@ def _with_client(*, fixtures: bool = False):
     return decorate
 
 
-def _format_player_details(player: 'ElementData') -> str:
+def _format_player_details(player: ElementData) -> str:
     """Helper function to format detailed player information"""
     price = player.now_cost / 10
     news_indicator = " ⚠️" if player.news else ""

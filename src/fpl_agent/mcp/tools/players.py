@@ -261,7 +261,7 @@ async def get_player_summary(client, player_name: str) -> str:
             
             output.extend([
                 "",
-                f"**Recent Averages:**",
+                "**Recent Averages:**",
                 f"├─ Points per game: {avg_points:.1f}",
                 f"├─ Minutes per game: {avg_minutes:.0f}",
                 ""

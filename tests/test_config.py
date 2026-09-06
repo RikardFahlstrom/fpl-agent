@@ -1,6 +1,5 @@
 """The local ini file. It can hold a password, so masking and precedence are tested."""
 import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path

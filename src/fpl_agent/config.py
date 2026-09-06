@@ -17,7 +17,6 @@ import logging
 import os
 import stat
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("fpl_config")
 
