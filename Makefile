@@ -2,7 +2,7 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: snapshot backfill project rivals recommend record deadline settle status brief notify test
+.PHONY: snapshot backfill project rivals recommend record deadline settle status brief notify lint test
 
 # --force is deliberate. Bare `snapshot` skips when one already exists for today, which
 # is a guard for a hand-run repeat; every scheduled caller wants the opposite. Prices
@@ -53,6 +53,15 @@ brief:               ## write the gameweek brief: make brief
 # already sent, without sending or recording either. Exits 8 if a send failed.
 notify:              ## push the fired triggers to ntfy: make notify
 	$(AGENT) notify $(DRY_RUN)
+
+# Pyflakes rules only: unused imports, unused locals, undefined names. Deliberately not
+# the style rules - `Optional[x]` -> `x | None` and friends would rewrite hundreds of lines
+# of working code to satisfy a preference, and none of the bugs this project has actually
+# had were visible to a linter. This catches the one thing that is: a name that is not
+# there. `make lint FIX=--fix` applies the safe fixes. uvx keeps ruff out of uv.lock, so
+# nothing new reaches the server on its next `uv sync`.
+lint:                ## report unused imports and undefined names: make lint FIX=--fix
+	uvx ruff check --select F $(FIX) src tests
 
 test:                ## run the suite (tests/ is not a package, so -t tests)
 	PYTHONPATH=src:tests .venv/bin/python -m unittest discover -s tests -t tests -p 'test_*.py'
