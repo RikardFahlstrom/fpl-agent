@@ -5,7 +5,23 @@ points for every player, ranks transfers against your own league's ownership, an
 its own projections once a gameweek finishes. An MCP server exposes the same data to
 Claude.
 
+**No AI subscription is required to run it.** The engine is plain Python and calls no
+language model: `make deadline`, `make settle` and the unattended cron jobs need no Claude
+subscription, no API key and no AI tool of any kind. Claude is one optional interface onto
+the results, and the section below on [using it from Claude Code](#use-from-claude-code) is
+the only part that needs one.
+
 ## Install
+
+Prerequisites: **Python 3.10 or newer**, `git`, `make`, and [uv](https://docs.astral.sh/uv/),
+which owns the virtualenv and the lockfile:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh    # installs uv to ~/.local/bin
+```
+
+Debian 11 and Ubuntu 20.04 ship Python 3.9, which `uv sync` refuses. `uv python install 3.12`
+fetches a newer interpreter without touching the system one.
 
 ```bash
 git clone git@github.com:RikardFahlstrom/fpl-agent.git
@@ -17,6 +33,8 @@ uv run playwright install chromium         # only for the first credential login
 On a server, clone over HTTPS instead — `https://github.com/RikardFahlstrom/fpl-agent.git`.
 A scheduled `git pull` cannot answer a passphrase prompt, so SSH there means a key with no
 passphrase or an agent that has to survive reboots. The server only ever reads this repo.
+The crontab examples below assume it is checked out at `/srv/fpl-agent`; anywhere the
+service user can write is fine, as long as the paths match.
 
 On a Linux box, two system packages first. `sqlite3` is the CLI, which is a separate
 package from python's `sqlite3` module — `deploy/fpl-cron.sh` uses the command to ask the
@@ -47,6 +65,7 @@ read_only = true          ; refuse make_transfers; analyse and report only
 
 [rivals]
 leagues = 920863          ; measure ownership against these leagues only
+                          ; leave empty to use every private league you are in
 
 [notify]
 ntfy_topic =              ; a long random string; see "Run it on a server"
@@ -129,6 +148,7 @@ week of jobs quietly doing nothing.
 ```cron
 CRON_TZ=UTC
 MAILTO=you@example.com
+PATH=/usr/local/bin:/usr/bin:/bin:/home/YOU/.local/bin
 
 30 2 * * *  /srv/fpl-agent/deploy/fpl-cron.sh daily
 7  * * * *  /srv/fpl-agent/deploy/fpl-cron.sh deadline
@@ -136,7 +156,9 @@ MAILTO=you@example.com
 
 Use UTC: the API speaks it, and British Summer Time moves the UK clock twice a season.
 Every job runs under `flock`, because the refresh token rotates and two concurrent jobs
-would leave one holding a dead credential.
+would leave one holding a dead credential. The jobs themselves need nothing on `PATH` —
+`fpl-cron.sh` cds into the checkout and calls `.venv/bin/fpl-agent` by relative path — but
+step 5 does, which is why the line is there.
 
 **5. Keep the checkout current, if you want that automatic.**
 
@@ -155,6 +177,13 @@ follows, because a pull that moves `uv.lock` otherwise leaves `.venv` stale and 
 run is the thing that discovers it. Quiet on success, or `MAILTO` gets "Already up to
 date." every morning until you stop reading it.
 
+That `uv` has to be findable, and by default it is not. Cron runs with a minimal `PATH`,
+usually `/usr/bin:/bin`, while uv installs to `~/.local/bin` — so without the `PATH` line
+above, `git pull` succeeds and `uv sync` does not. The checkout moves to new code while
+`.venv` stays on the old lockfile, which is precisely the breakage the `uv sync` was added
+to prevent, and the next run is what discovers it. An absolute path to `uv` in the line
+works just as well.
+
 This makes `MODEL_VERSION` load-bearing rather than a nicety: the server starts projecting
 with new code the morning after you push, and the bump is the only thing that keeps what
 the model used to believe distinguishable from what it believes now. If that is not a
@@ -165,26 +194,28 @@ Anything non-zero gets mailed to you, and each exit code names one failure —
 notification failed. The full table, the trigger set and the reasoning are in
 [docs/SCHEDULING.md](docs/SCHEDULING.md).
 
-## Use from Claude
+## Use from Claude Code
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows:
-`%APPDATA%\Claude\claude_desktop_config.json`), replacing the path:
+Optional, and the only part of this project that needs a Claude subscription. Register the
+MCP server once, replacing the path:
 
-```json
-{
-  "mcpServers": {
-    "fpl": {
-      "command": "uv",
-      "args": ["--directory", "/ABSOLUTE/PATH/TO/fpl-agent",
-               "run", "python", "-m", "fpl_agent.main"],
-      "env": { "PYTHONPATH": "/ABSOLUTE/PATH/TO/fpl-agent/src" }
-    }
-  }
-}
+```bash
+claude mcp add fpl --scope user \
+  -e PYTHONPATH=/ABSOLUTE/PATH/TO/fpl-agent/src \
+  -- uv --directory /ABSOLUTE/PATH/TO/fpl-agent run python -m fpl_agent.main
 ```
 
-Use `--directory` rather than `cwd`: Claude Desktop does not reliably apply `cwd` before
-`uv` resolves the project. Restart Claude fully, then check Settings → Connectors.
+`--scope user` makes it available in every session; `--scope project` writes `.mcp.json`
+into the checkout instead, and the default `local` is this machine and this project only.
+Confirm with `/mcp` inside Claude Code.
+
+`--directory` is doing two jobs and neither is optional: it is where `uv` resolves the
+project from, and it is what puts `fpl-agent.ini` within reach, since the config is looked
+up relative to the process's working directory.
+
+The checkout also carries three skills — `/fpl-deadline`, `/fpl-settle` and `/fpl-verify` —
+which Claude Code loads from `.claude/skills/` in a session started here. They wrap the same
+`make` targets with what to check and when not to act.
 
 The server exposes 32 tools, 17 resources (`fpl://…`) and 7 prompts. Ask in names, not
 ids: *"compare Salah and Haaland"*, *"who should I transfer out?"* Most of them are a
