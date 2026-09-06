@@ -31,9 +31,9 @@ PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests   # on
 make lint                                # unused imports and undefined names; FIX=--fix
 ```
 
-**`make now` is the one to reach for.** It asks the warehouse what is due — capture,
-settle anything finished and ungraded, project if a deadline is within 26h — and is safe
-on a day when the answer is nothing. `status` ends on a `next:` line saying the same
+**`make now` is the one to reach for.** It asks the warehouse what is due — capture and
+project, settle anything finished and ungraded, rank transfers if a deadline is within 26h
+— and is safe on a day when the answer is nothing. `status` ends on a `next:` line saying the same
 without doing it.
 
 Every other target is a step, and the order matters: actuals feed the projection's rates,

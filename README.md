@@ -88,8 +88,8 @@ make test
 ```
 
 **Start with `make now`.** It asks the warehouse what is due and runs only the steps that
-answer — capture, settle any gameweek that has finished and never been graded, project and
-rank if a deadline is close. It is safe to run on a day when the answer is nothing, which
+answer — capture and project, settle any gameweek that has finished and never been graded,
+and rank transfers if a deadline is close. It is safe to run on a day when the answer is nothing, which
 is most days, and `make now DRY=--dry-run` shows the decision without acting on it. The
 targets below it are the individual steps, for when you want one.
 

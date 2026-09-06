@@ -482,18 +482,31 @@ def hours_to_deadline(conn: sqlite3.Connection) -> Optional[int]:
     return None if row is None or row[0] is None else int(row[0])
 
 
-# Beyond this, a deadline is too far out to be worth projecting for. Shared with
-# `deploy/fpl-cron.sh`, which stops projecting at the same distance.
-PROJECT_WITHIN_HOURS = 26
+# Beyond this, a deadline is too far out to rank a transfer against. Shared with
+# `deploy/fpl-cron.sh`, which stops ranking at the same distance. It does not gate
+# projecting: a capture is projected whenever it happens, because a snapshot with no
+# projection is a warehouse `status` calls inconsistent.
+RANK_WITHIN_HOURS = 26
 
 
-def next_action(conn: sqlite3.Connection) -> str:
+def next_action(conn: sqlite3.Connection,
+                checks: Optional[list[Check]] = None) -> str:
     """The one line that says what to run, so the reader need not know the pipeline.
 
     `status` already names a remedy per failing line. This answers the other question -
     the one asked when nothing is wrong - because knowing the warehouse is healthy does
     not tell you whether a gameweek is sitting there ungraded.
+
+    A failure outranks anything due. Written without that, this printed "nothing due"
+    three lines under "1 inconsistency(ies): projections. Exiting 7." - a summary line
+    contradicting the report it summarises, which is worse than no summary at all.
     """
+    failed = [c for c in (checks or []) if c.failed]
+    if failed:
+        which = ", ".join(c.label for c in failed)
+        return (f"next: {which} above must be fixed first - "
+                f"that line names the command")
+
     try:
         pending = settle.settleable_gameweeks(conn)
     except sqlite3.Error:
@@ -504,7 +517,7 @@ def next_action(conn: sqlite3.Connection) -> str:
         return f"next: {ready} {which} ready to grade - run `make now`"
 
     hours = hours_to_deadline(conn)
-    if hours is not None and 0 <= hours <= PROJECT_WITHIN_HOURS:
+    if hours is not None and 0 <= hours <= RANK_WITHIN_HOURS:
         return f"next: deadline in {hours}h - run `make now`"
     return "next: nothing due - `make now` is safe to run anyway and will say the same"
 
@@ -572,7 +585,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         checks = gather(conn, include_token=not args.no_token)
-        upcoming = next_action(conn)
+        upcoming = next_action(conn, checks)
     finally:
         conn.close()
 

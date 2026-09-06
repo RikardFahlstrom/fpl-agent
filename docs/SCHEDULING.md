@@ -19,7 +19,7 @@ attempting it every morning costs one process and answers correctly.
 | Job | Cadence (UTC) | Why that cadence |
 | --- | --- | --- |
 | `daily` | once, 02:30 | Prices resolve around 01:30 UK. A missed day is price and ownership movement that no endpoint can return - this is the irrecoverable one. |
-| `deadline` | hourly | Cheap when idle: it reads one row and exits. Inside 26 hours of a deadline it re-snapshots and re-projects, because predicted lineups firm up on matchday and a projection built 24 hours out is a different answer from one built 3 hours out. |
+| `deadline` | hourly | Cheap when idle: it reads one row and exits. Inside 26 hours of a deadline it re-captures and re-ranks, because predicted lineups firm up on matchday and a projection built 24 hours out is a different answer from one built 3 hours out. |
 | `auto` | never, by cron | Both of the above in one pass, for a person at a terminal. `make now` runs it. Not for the crontab: the two halves want different clocks, and running them together hourly would snapshot far more than the market changes. |
 
 `auto` exists because the split that is right for cron is wrong for a human. Somebody
@@ -42,8 +42,15 @@ the scheduler and the engine came to disagree in the first place.
 it became `status.hours_to_deadline`, reached through `fpl-agent status
 --hours-to-deadline`, because a scheduler and an engine that disagree about when to
 project will disagree quietly and on a matchday. The 26-hour cutoff is
-`status.PROJECT_WITHIN_HOURS`, and `status` reports its `next:` line against the same
+`status.RANK_WITHIN_HOURS`, and `status` reports its `next:` line against the same
 number the scheduler acts on.
+
+That cutoff gates *ranking*, not projecting. Every capture is projected, in every job,
+because the alternative is what the warehouse used to hold between Tuesday and Friday: a
+snapshot with no projections, which `status` calls an inconsistency and exits 7 for, and
+which the brief pushed `status_failed` about every morning. Projecting is cheap and reads
+only what the capture just stored; `rivals` and `recommend` are the expensive half and the
+half that is actually deadline-shaped.
 
 A gameweek qualifies on three counts, and each was a bug before it was a condition:
 
