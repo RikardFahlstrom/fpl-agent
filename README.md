@@ -213,9 +213,9 @@ Confirm with `/mcp` inside Claude Code.
 project from, and it is what puts `fpl-agent.ini` within reach, since the config is looked
 up relative to the process's working directory.
 
-The checkout also carries three skills — `/fpl-deadline`, `/fpl-settle` and `/fpl-verify` —
-which Claude Code loads from `.claude/skills/` in a session started here. They wrap the same
-`make` targets with what to check and when not to act.
+Claude Code also loads the skills in `.claude/skills/` in a session started here. The
+`/fpl-*` ones — `/fpl-deadline`, `/fpl-settle`, `/fpl-verify` — wrap the same `make` targets
+with what to check and when not to act; `ls .claude/skills/` is the current list.
 
 The server exposes 32 tools, 17 resources (`fpl://…`) and 7 prompts. Ask in names, not
 ids: *"compare Salah and Haaland"*, *"who should I transfer out?"* Most of them are a
