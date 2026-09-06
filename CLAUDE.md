@@ -5,8 +5,9 @@ projections and learning loop are the substance. `docs/PLAN.md` holds the roadma
 
 ## Stack
 
-Python 3.10+, `uv` for the virtualenv and lockfile, SQLite at `data/fpl.db`. No framework,
-no linter, no CI. `MODEL_VERSION` is at `engine/projection.py:34`.
+Python 3.10+, `uv` for the virtualenv and lockfile, SQLite at `data/fpl.db`. No framework
+and no CI; linting is `make lint` on demand, not enforced. `MODEL_VERSION` is at
+`engine/projection.py:34`.
 
 ## Map
 
@@ -17,6 +18,7 @@ no linter, no CI. `MODEL_VERSION` is at `engine/projection.py:34`.
 | `src/fpl_agent/` | auth, headless_auth, sessions, client, config, models, reference, rotowire_scraper, cli, main |
 | `tests/` | one `test_<module>.py` per engine module; not a package, hence `-t tests` |
 | `deploy/fpl-cron.sh` | the unattended entry point |
+| `.claude/hooks/` | tests gate `git commit`; `fpl-agent status` gates the end of a turn |
 
 ## Commands
 
@@ -25,6 +27,7 @@ uv sync                                  # creates .venv, which the Makefile exp
 make test                                # 478 tests, ~11s
 PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests   # one class
 make status                              # read-only; exits 7 if the warehouse disagrees
+make lint                                # unused imports and undefined names; FIX=--fix
 ```
 
 `make deadline` before a deadline, `make settle GW=n` after the gameweek; the `Makefile`
