@@ -213,7 +213,8 @@ src/fpl_agent/
                      settle, status, brief, notify
   mcp/               server: tools/, resources, prompts, web
   (root)             auth, client, config, models, state, rotowire_scraper
-.claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify
+.claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify,
+                     /claude-md-review
 deploy/              fpl-cron.sh, the unattended entry point
 docs/                PLAN.md, SCHEDULING.md
 learnings/           what the model learned, as markdown with frontmatter
