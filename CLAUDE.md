@@ -3,6 +3,38 @@
 An FPL decision engine. The MCP server is one interface onto it; the warehouse,
 projections and learning loop are the substance. `docs/PLAN.md` holds the roadmap.
 
+## Stack
+
+Python 3.10+, `uv` for the virtualenv and lockfile, SQLite at `data/fpl.db`. No framework,
+no linter, no CI. `MODEL_VERSION` is at `engine/projection.py:34`.
+
+## Map
+
+| Path | What is there |
+| --- | --- |
+| `src/fpl_agent/engine/` | snapshot, actuals, lineups, projection, scoring, pricing, rivals, recommend, settle, status, brief, notify, storage |
+| `src/fpl_agent/mcp/` | the MCP server: tools, resources, prompts |
+| `src/fpl_agent/` | auth, headless_auth, sessions, client, config, models, reference, rotowire_scraper, cli, main |
+| `tests/` | one `test_<module>.py` per engine module; not a package, hence `-t tests` |
+| `deploy/fpl-cron.sh` | the unattended entry point |
+
+## Commands
+
+```bash
+uv sync                                  # creates .venv, which the Makefile expects
+make test                                # 478 tests, ~11s
+PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests   # one class
+make status                              # read-only; exits 7 if the warehouse disagrees
+```
+
+`make deadline` before a deadline, `make settle GW=n` after the gameweek; the `Makefile`
+lists the rest, each with a comment. **Do not run bare `make`** — the first target is
+`snapshot`, so it captures live rather than printing help.
+
+The skills `/fpl-deadline` and `/fpl-settle` wrap those two with what to check and when
+not to act. Unattended, `deploy/fpl-cron.sh` runs them and decides *whether* there is work
+rather than encoding the FPL calendar in a crontab. It never executes transfers.
+
 ## The one that has bitten repeatedly
 
 **Verify the effect, not the invocation.** Every serious bug in this project so far was
@@ -35,40 +67,22 @@ Run it against real data and read the output.
   gameweek without a snapshot can never be learned from.
 - **Absence of a row is data.** A player with no `player_gameweek` row scored zero once
   the gameweek finished; a player in no rival squad is owned by 0%. Neither is "missing".
+- **Never run `make record` unprompted.** Recording is a claim about what the user
+  actually did, not a step in a plan. See the comment on the target.
 - **Never put credentials in the conversation.** `fpl-agent.ini` is gitignored (`*.ini`
   with `!*.ini.example`); point at the file or the browser login flow instead.
 
-## Facts worth not rediscovering
-
-Each lives in the docstring of the code it constrains:
-
-| Fact | Where |
-| --- | --- |
-| Price change rule: Predicted Progress > 100% is "Very Likely"; `likelihood` is a derived band of the same number | `engine/pricing.py` |
-| Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from the 622 played appearances, not the 1236 stored rows | `engine/scoring.py` |
-| `/me/` carries no league membership - leagues are on `entry/{id}/` | `state.get_user_leagues` |
-| `league_type` `x` is a private league, `s` is global and unusable ("Overall" has ~9.9M entries) | `engine/rivals.py` |
-| Per-90 rates from tiny samples must be shrunk toward a prior | `engine/projection.shrink` |
-| The sell-on fee returns only half of any profit, so budget grows slower than the market | `engine/pricing.py` |
-| The account service rotates the refresh token on every exchange, so two concurrent refreshes leave one caller holding a dead credential | `headless_auth.refresh_access_token` |
-| Each recommendation is priced as the *next* transfer you would make, not as the nth move of a plan | `engine/recommend.transfer_price` |
-
-## Workflow
-
-`make deadline` before a deadline, `make settle GW=n` after the gameweek. The skills
-`/fpl-deadline` and `/fpl-settle` wrap those with what to check and when not to act.
-
-Unattended, those same commands run from `deploy/fpl-cron.sh`, which decides *whether*
-there is anything to do rather than encoding the FPL calendar in a crontab. It never
-executes transfers. See `docs/SCHEDULING.md`.
-
 ## What is committed
 
-Code, `docs/PLAN.md`, and the reasoning trail: `learnings/` and `logs/actions.jsonl`.
-**Not** `data/fpl.db` (derived and re-fetchable) or `fpl-agent.ini` (credentials).
+Code, `docs/`, and the reasoning trail: `learnings/` and `logs/actions.jsonl`. **Not**
+`data/fpl.db` (derived and re-fetchable) or `fpl-agent.ini` (credentials).
 
-The reasoning trail is tracked but does not exist yet - no gameweek has been settled with
-`--learn` and no decision has been recorded. `settle --learn` and `recommend --record`
-each create their own directory on first write; commit what they leave behind. Do not
-commit a placeholder to make the directories appear: an empty `learnings/` in a fresh
-clone claims a loop has run that has not.
+`settle --learn` and `recommend --record` each create their directory on first write;
+commit what they leave behind. Do not commit a placeholder to make the directories
+appear: an empty `learnings/` claims a loop has run that has not.
+
+## Further reading
+
+- `docs/FACTS.md` — per-subsystem facts and where they live. Read when working in `engine/`.
+- `docs/SCHEDULING.md` — the unattended setup, exit codes, and what cron decides.
+- `docs/PLAN.md` — the roadmap.
