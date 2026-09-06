@@ -2,7 +2,14 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: snapshot backfill project rivals recommend record deadline settle status brief notify lint test
+.PHONY: now snapshot backfill project rivals recommend record deadline settle status brief notify lint test
+
+# The one to reach for when you do not want to think about which one to reach for.
+# Every other target here is a step; this asks the warehouse what is due and runs the
+# steps that answer. Safe on a day when the answer is nothing, which is most days.
+# `make now DRY=--dry-run` says what it would do without doing it.
+now:                 ## do whatever is due: capture, settle if ready, project if a deadline is near
+	./deploy/fpl-cron.sh $(DRY) auto
 
 # --force is deliberate. Bare `snapshot` skips when one already exists for today, which
 # is a guard for a hand-run repeat; every scheduled caller wants the opposite. Prices

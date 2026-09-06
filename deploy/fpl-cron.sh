@@ -12,7 +12,14 @@
 #
 #   fpl-cron.sh daily              snapshot, backfill, and settle if one is ready
 #   fpl-cron.sh deadline           project and recommend, if a deadline is near
+#   fpl-cron.sh auto               both of the above, deciding which applies
 #   fpl-cron.sh --dry-run <job>    print what would run, touch nothing
+#
+# `auto` is the one for a person. cron wants the two halves on their own clocks -
+# `daily` overnight, `deadline` hourly - but somebody at a terminal wants "do
+# whatever is due", without having to know which half today is. It captures once
+# and then asks both questions, so it is safe to run on any day, including one
+# where the answer to both is nothing.
 #
 # Both jobs end in `notify`, which pushes whatever the brief thinks is worth
 # interrupting a person for and remembers what it has already said. Its failure
@@ -106,15 +113,18 @@ gameweeks_to_settle() {
 # Caveat: a postponed opening fixture moves the kickoff but not the real
 # deadline. bootstrap-static's `deadline_time` is authoritative and the warehouse
 # does not store it yet.
+# Asked of the engine, not computed here. This used to be its own SQL, which meant
+# two statements of "when is the deadline" that could drift apart silently - the same
+# trap `gameweeks_to_settle` avoids by calling `settle --list`. Exits non-zero when the
+# warehouse cannot be read, which the caller must not confuse with "no deadline".
 hours_to_deadline() {
-    ask "SELECT CAST((julianday(MIN(kickoff_time)) - 90.0/1440 - julianday('now'))
-                     * 24 AS INTEGER)
-           FROM fixture
-          WHERE finished = 0
-            AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0);"
+    "$AGENT" status --hours-to-deadline --db "$DB"
 }
 
-job_daily() {
+# Capture, then grade whatever the capture made gradeable. Shared by `daily` and
+# `auto` so the sequence is stated once; both halves are separately guarded, so a
+# caller composing them cannot get the order wrong.
+_capture_and_settle() {
     local status=0 rc gw pending
     run snapshot --force || { rc=$?; status=$rc
         echo "snapshot exited $rc; see the exit-code table in docs/SCHEDULING.md" >&2; }
@@ -141,11 +151,19 @@ job_daily() {
     return "$status"
 }
 
+job_daily() {
+    _capture_and_settle
+}
+
 # Predicted lineups are the perishable input: RotoWire firms them up on matchday,
 # so a projection built 24 hours out and one built 3 hours out are different
 # answers. Re-snapshot each time rather than projecting over stale lineups.
-job_deadline() {
-    local hours status=0 rc
+# The projecting half of `deadline`, shared with `auto`. $1 is `capture` when the
+# market must be refreshed first - what the hourly cron job needs - or `no-capture`
+# when the caller has already snapshotted this run. That argument is the whole
+# reason `auto` costs one snapshot rather than two.
+_project_if_deadline_near() {
+    local capture="$1" hours status=0 rc
     # Distinguish "the warehouse says there is no next fixture" from "the
     # warehouse could not be read". The first is a quiet, correct no-op at the
     # end of a season; the second used to look exactly like it.
@@ -161,11 +179,37 @@ job_deadline() {
         echo "next deadline is ${hours}h away; too far out to be worth projecting"
         return 0
     fi
-    echo "next deadline is ${hours}h away; refreshing and projecting"
-    run snapshot --force  || { rc=$?; status=$rc; echo "snapshot exited $rc" >&2; }
+    if [ "$capture" = capture ]; then
+        echo "next deadline is ${hours}h away; refreshing and projecting"
+        run snapshot --force || { rc=$?; status=$rc; echo "snapshot exited $rc" >&2; }
+    else
+        echo "next deadline is ${hours}h away; projecting on the capture above"
+    fi
     run project --horizon 3 || { rc=$?; status=$rc; echo "project exited $rc" >&2; }
     run rivals            || { rc=$?; status=$rc; echo "rivals exited $rc" >&2; }
     run recommend         || { rc=$?; status=$rc; echo "recommend exited $rc" >&2; }
+    return "$status"
+}
+
+job_deadline() {
+    _project_if_deadline_near capture
+}
+
+# Both halves, one capture. The order is not a preference: settling grades what the
+# backfill just fetched, and projecting wants the market that same capture stored.
+job_auto() {
+    local status=0 rc
+    _capture_and_settle || rc=$?
+    [ "${rc:-0}" -ne 0 ] && status=$rc
+    rc=0
+    _project_if_deadline_near no-capture || rc=$?
+    # The first failure wins. A lost snapshot is the irrecoverable one, and must not
+    # be reported as whatever the projection did afterwards.
+    if [ "$rc" -ne 0 ] && [ "$status" -eq 0 ]; then
+        status=$rc
+    elif [ "$rc" -ne 0 ]; then
+        echo "projecting also exited $rc, masked by the capture's $status" >&2
+    fi
     return "$status"
 }
 
@@ -186,13 +230,14 @@ job_notify() {
 }
 
 case "$JOB" in
-    daily|deadline) require_sqlite || exit 2 ;;
+    daily|deadline|auto) require_sqlite || exit 2 ;;
 esac
 
 case "$JOB" in
     daily)    job_daily ;;
     deadline) job_deadline ;;
-    *)        echo "usage: $0 [--dry-run] {daily|deadline}" >&2; exit 64 ;;
+    auto)     job_auto ;;
+    *)        echo "usage: $0 [--dry-run] {daily|deadline|auto}" >&2; exit 64 ;;
 esac
 JOB_STATUS=$?
 

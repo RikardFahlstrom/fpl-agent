@@ -23,20 +23,27 @@ and no CI; linting is `make lint` on demand, not enforced. `MODEL_VERSION` is at
 ## Commands
 
 ```bash
-uv sync                                  # creates .venv, which the Makefile expects
-make test                                # 478 tests, ~11s
-PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests   # one class
+make now                                 # do whatever is due; DRY=--dry-run to preview
 make status                              # read-only; exits 7 if the warehouse disagrees
+uv sync                                  # creates .venv, which the Makefile expects
+make test                                # 486 tests, ~11s
+PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests   # one class
 make lint                                # unused imports and undefined names; FIX=--fix
 ```
 
-`make deadline` before a deadline, `make settle GW=n` after the gameweek; the `Makefile`
-lists the rest, each with a comment. **Do not run bare `make`** — the first target is
-`snapshot`, so it captures live rather than printing help.
+**`make now` is the one to reach for.** It asks the warehouse what is due — capture,
+settle anything finished and ungraded, project if a deadline is within 26h — and is safe
+on a day when the answer is nothing. `status` ends on a `next:` line saying the same
+without doing it.
 
-The skills `/fpl-deadline` and `/fpl-settle` wrap those two with what to check and when
-not to act. Unattended, `deploy/fpl-cron.sh` runs them and decides *whether* there is work
-rather than encoding the FPL calendar in a crontab. It never executes transfers.
+Every other target is a step, and the order matters: actuals feed the projection's rates,
+rivals must exist before ownership means anything, and `settle` reads `finished` from the
+warehouse rather than the API, so fixtures must be re-snapshotted before a gameweek can be
+graded. **Do not run bare `make`** — the first target is `snapshot`, so it captures live
+rather than printing help. The skills `/fpl-deadline` and `/fpl-settle` wrap the
+hand-driven halves with what to check and when not to act. Unattended, cron runs
+`deploy/fpl-cron.sh daily` and `deadline` on their own clocks. Nothing here ever executes
+transfers.
 
 ## The one that has bitten repeatedly
 
