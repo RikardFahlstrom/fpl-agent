@@ -38,6 +38,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/status-after-turn.py\"",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }
