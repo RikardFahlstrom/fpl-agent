@@ -158,8 +158,25 @@ CREATE TABLE IF NOT EXISTS projection (
     expected_minutes REAL,
     fixture_count   INTEGER,
     components      TEXT NOT NULL,
+    difficulties    TEXT,
     created_at      TEXT NOT NULL,
     UNIQUE (snapshot_id, gameweek, element_id, model_version)
+);
+
+-- Difficulty is the one genuinely current-state field on a fixture, and the only reason
+-- this table exists. FPL reviews FDR weekly against recent form and republishes it in
+-- place, so `fixture` - keyed on fixture id alone - holds today's opinion and no other.
+-- `event` rides along because a postponement moves a fixture between gameweeks, which
+-- silently changes which round a stored difficulty was ever about. Scores, kickoff times
+-- and `finished` are not here: those only ever settle toward a final value, so the live
+-- row is already the right one to read.
+CREATE TABLE IF NOT EXISTS fixture_snapshot (
+    snapshot_id       INTEGER NOT NULL REFERENCES snapshot(id),
+    fixture_id        INTEGER NOT NULL REFERENCES fixture(id),
+    event             INTEGER,
+    team_h_difficulty INTEGER,
+    team_a_difficulty INTEGER,
+    PRIMARY KEY (snapshot_id, fixture_id)
 );
 
 CREATE TABLE IF NOT EXISTS predicted_lineup (
@@ -284,6 +301,24 @@ def _i(value: Any) -> Optional[int]:
     return None if number is None else int(number)
 
 
+# Columns added to a table that already exists in warehouses in the wild. `SCHEMA` is all
+# `CREATE TABLE IF NOT EXISTS`, so it creates a new database correctly and does nothing at
+# all to an old one - a new column would reach a fresh clone and never the database that
+# has the history in it, and the first write would fail on a machine that had been
+# capturing all season. Each entry is additive and nullable; NULL then means "written
+# before this column existed", which is not the same as any value the column can hold.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("projection", "difficulties", "TEXT"),
+)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, column_type in _ADDED_COLUMNS:
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
 def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """Open the warehouse, creating the file and schema if absent."""
     path = Path(path)
@@ -292,6 +327,8 @@ def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
+    conn.commit()
     return conn
 
 
@@ -442,6 +479,25 @@ def upsert_fixtures(conn: sqlite3.Connection, fixtures: Iterable[dict]) -> int:
         for f in fixtures
     ]
     conn.executemany("INSERT OR REPLACE INTO fixture VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+    return len(rows)
+
+
+def record_fixture_snapshot(conn: sqlite3.Connection, snapshot_id: int,
+                            fixtures: Iterable[dict]) -> int:
+    """Freeze this snapshot's view of every fixture's difficulty.
+
+    The counterpart to `upsert_fixtures`, which overwrites. A projection records the
+    difficulty it consumed, but only for the three gameweeks in its horizon and only for
+    players it projected; this keeps the whole fixture list, so a difficulty that moves
+    between captures leaves both values behind instead of the later one alone.
+    """
+    rows = [
+        (snapshot_id, f["id"], f.get("event"),
+         f.get("team_h_difficulty"), f.get("team_a_difficulty"))
+        for f in fixtures
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO fixture_snapshot VALUES (?,?,?,?,?)", rows)
     return len(rows)
 
 
