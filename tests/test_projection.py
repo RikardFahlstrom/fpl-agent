@@ -206,6 +206,24 @@ class ProjectPlayerTests(unittest.TestCase):
         # components are rounded to 3dp, so compare at 2
         self.assertAlmostEqual(doubled, base * 2, places=2)
 
+    def test_records_the_difficulty_it_used(self):
+        """The FDR behind a projection must survive the weekly rewrite of the fixture."""
+        result = self.project(snap(), fixtures=[{"difficulty": 2, "home": True},
+                                                {"difficulty": 5, "home": False}])
+        self.assertEqual(result["difficulties"], [2, 5])
+
+    def test_difficulty_is_not_a_component(self):
+        """Components are point contributions and must keep summing to the total."""
+        result = self.project(snap())
+        self.assertNotIn("difficulty", result["components"])
+        self.assertNotIn("difficulties", result["components"])
+        self.assertAlmostEqual(sum(result["components"].values()),
+                               result["expected_points"], places=2)
+
+    def test_blank_gameweek_records_no_difficulty(self):
+        """An empty list is a blank; NULL in the column means the column postdates the row."""
+        self.assertEqual(self.project(snap(), fixtures=[])["difficulties"], [])
+
     def test_goalkeepers_never_earn_defensive_contribution(self):
         result = self.project(snap(), position="GKP", history={**HISTORY, "dc_rate": 1.0})
         self.assertEqual(result["components"]["defensive_contribution"], 0.0)
@@ -334,6 +352,7 @@ class ProjectGameweekTests(SeedMixin, unittest.TestCase):
         self.assertGreater(rows[0]["expected_points"], 0)
         self.assertEqual(rows[0]["fixture_count"], 1)
         self.assertIn("goals", json.loads(rows[0]["components"]))
+        self.assertEqual(json.loads(rows[0]["difficulties"]), [3])
 
     def test_model_versions_coexist(self):
         """A weight change must be comparable against the previous era, not overwrite it."""

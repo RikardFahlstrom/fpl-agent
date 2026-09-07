@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS projection (
     expected_minutes REAL,
     fixture_count   INTEGER,
     components      TEXT NOT NULL,
+    difficulties    TEXT,
     created_at      TEXT NOT NULL,
     UNIQUE (snapshot_id, gameweek, element_id, model_version)
 );
@@ -284,6 +285,24 @@ def _i(value: Any) -> Optional[int]:
     return None if number is None else int(number)
 
 
+# Columns added to a table that already exists in warehouses in the wild. `SCHEMA` is all
+# `CREATE TABLE IF NOT EXISTS`, so it creates a new database correctly and does nothing at
+# all to an old one - a new column would reach a fresh clone and never the database that
+# has the history in it, and the first write would fail on a machine that had been
+# capturing all season. Each entry is additive and nullable; NULL then means "written
+# before this column existed", which is not the same as any value the column can hold.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("projection", "difficulties", "TEXT"),
+)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, column_type in _ADDED_COLUMNS:
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
 def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """Open the warehouse, creating the file and schema if absent."""
     path = Path(path)
@@ -292,6 +311,8 @@ def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
+    conn.commit()
     return conn
 
 

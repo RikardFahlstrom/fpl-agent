@@ -258,6 +258,14 @@ def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
         "expected_minutes": round(expected_minutes, 1),
         "fixture_count": len(fixtures),
         "components": {k: round(v, 3) for k, v in components.items()},
+        # The difficulty behind each fixture's scales, in fixture order: empty for a
+        # blank, two entries for a double. Recorded because FDR is current-state data -
+        # FPL reviews it weekly and `upsert_fixtures` overwrites the row in place - so
+        # without this the input that moved a projection is gone by the time the
+        # gameweek is settled, and "was the model wrong, or was the FDR?" cannot be
+        # asked. It is not a component: components are point contributions that sum to
+        # the total, and this is an input.
+        "difficulties": [fixture["difficulty"] for fixture in fixtures],
     }
 
 
@@ -464,13 +472,15 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
         rows.append((snapshot["id"], gameweek, snap["element_id"], model_version,
                      result["expected_points"], result["p_start"],
                      result["expected_minutes"], result["fixture_count"],
-                     json.dumps(result["components"], sort_keys=True), now))
+                     json.dumps(result["components"], sort_keys=True),
+                     json.dumps(result["difficulties"]), now))
 
     conn.executemany(
         """INSERT OR REPLACE INTO projection
            (snapshot_id, gameweek, element_id, model_version, expected_points,
-            p_start, expected_minutes, fixture_count, components, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            p_start, expected_minutes, fixture_count, components, difficulties,
+            created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
