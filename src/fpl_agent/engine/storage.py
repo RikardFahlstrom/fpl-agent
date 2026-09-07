@@ -163,6 +163,22 @@ CREATE TABLE IF NOT EXISTS projection (
     UNIQUE (snapshot_id, gameweek, element_id, model_version)
 );
 
+-- Difficulty is the one genuinely current-state field on a fixture, and the only reason
+-- this table exists. FPL reviews FDR weekly against recent form and republishes it in
+-- place, so `fixture` - keyed on fixture id alone - holds today's opinion and no other.
+-- `event` rides along because a postponement moves a fixture between gameweeks, which
+-- silently changes which round a stored difficulty was ever about. Scores, kickoff times
+-- and `finished` are not here: those only ever settle toward a final value, so the live
+-- row is already the right one to read.
+CREATE TABLE IF NOT EXISTS fixture_snapshot (
+    snapshot_id       INTEGER NOT NULL REFERENCES snapshot(id),
+    fixture_id        INTEGER NOT NULL REFERENCES fixture(id),
+    event             INTEGER,
+    team_h_difficulty INTEGER,
+    team_a_difficulty INTEGER,
+    PRIMARY KEY (snapshot_id, fixture_id)
+);
+
 CREATE TABLE IF NOT EXISTS predicted_lineup (
     snapshot_id  INTEGER NOT NULL REFERENCES snapshot(id),
     gameweek     INTEGER NOT NULL,
@@ -463,6 +479,25 @@ def upsert_fixtures(conn: sqlite3.Connection, fixtures: Iterable[dict]) -> int:
         for f in fixtures
     ]
     conn.executemany("INSERT OR REPLACE INTO fixture VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+    return len(rows)
+
+
+def record_fixture_snapshot(conn: sqlite3.Connection, snapshot_id: int,
+                            fixtures: Iterable[dict]) -> int:
+    """Freeze this snapshot's view of every fixture's difficulty.
+
+    The counterpart to `upsert_fixtures`, which overwrites. A projection records the
+    difficulty it consumed, but only for the three gameweeks in its horizon and only for
+    players it projected; this keeps the whole fixture list, so a difficulty that moves
+    between captures leaves both values behind instead of the later one alone.
+    """
+    rows = [
+        (snapshot_id, f["id"], f.get("event"),
+         f.get("team_h_difficulty"), f.get("team_a_difficulty"))
+        for f in fixtures
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO fixture_snapshot VALUES (?,?,?,?,?)", rows)
     return len(rows)
 
 

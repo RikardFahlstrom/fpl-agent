@@ -160,6 +160,45 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(rows[0]["team_h_score"], 2)
         self.assertEqual(rows[0]["finished"], 1)
 
+    def test_fixture_snapshot_keeps_a_difficulty_the_live_row_overwrote(self):
+        """FDR is reviewed weekly and republished in place; both values must survive."""
+        boot = _bootstrap()
+        first = storage.create_snapshot(self.conn, boot)
+        storage.upsert_fixtures(self.conn, [_fixture()])
+        storage.record_fixture_snapshot(self.conn, first, [_fixture()])
+
+        harder = dict(_fixture(), team_h_difficulty=5)
+        second = storage.create_snapshot(self.conn, boot)
+        storage.upsert_fixtures(self.conn, [harder])
+        storage.record_fixture_snapshot(self.conn, second, [harder])
+
+        self.assertEqual(
+            self.conn.execute("SELECT team_h_difficulty FROM fixture").fetchone()[0], 5,
+            "the live row holds today's opinion")
+        history = [r["team_h_difficulty"] for r in self.conn.execute(
+            "SELECT team_h_difficulty FROM fixture_snapshot "
+            "WHERE fixture_id = 1 ORDER BY snapshot_id")]
+        self.assertEqual(history, [3, 5], "and the snapshots hold both")
+
+    def test_fixture_snapshot_records_the_round_a_difficulty_was_about(self):
+        """A postponement moves a fixture between gameweeks; the old row must not follow."""
+        boot = _bootstrap()
+        snapshot_id = storage.create_snapshot(self.conn, boot)
+        storage.upsert_fixtures(self.conn, [_fixture(event=3)])
+        storage.record_fixture_snapshot(self.conn, snapshot_id, [_fixture(event=3)])
+        row = self.conn.execute("SELECT * FROM fixture_snapshot").fetchone()
+        self.assertEqual(row["event"], 3)
+        self.assertEqual(row["team_a_difficulty"], 2)
+
+    def test_fixture_snapshot_is_idempotent(self):
+        boot = _bootstrap()
+        snapshot_id = storage.create_snapshot(self.conn, boot)
+        storage.upsert_fixtures(self.conn, [_fixture()])
+        storage.record_fixture_snapshot(self.conn, snapshot_id, [_fixture()])
+        storage.record_fixture_snapshot(self.conn, snapshot_id, [_fixture()])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM fixture_snapshot").fetchone()[0], 1)
+
     def test_player_gameweeks_are_idempotent(self):
         boot = _bootstrap()
         storage.upsert_players(self.conn, boot)

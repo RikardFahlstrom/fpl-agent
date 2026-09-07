@@ -134,7 +134,8 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> CaptureRe
     storage.upsert_players(conn, bootstrap)
     storage.record_player_snapshot(conn, snapshot_id, bootstrap)
     storage.record_game_config(conn, bootstrap)
-    fixture_count = storage.upsert_fixtures(conn, fixtures)
+    storage.upsert_fixtures(conn, fixtures)
+    storage.record_fixture_snapshot(conn, snapshot_id, fixtures)
 
     # The authenticated squad is optional: an unauthenticated run still captures the
     # market, which is the part that cannot be recovered later.
@@ -184,7 +185,9 @@ async def capture(conn, client: FPLClient, *, kind: str = "manual") -> CaptureRe
         snapshot_id=snapshot_id,
         gameweek=gameweek,
         players=count("player_snapshot"),
-        fixtures=fixture_count,
+        # Counted, not taken from the writer's return value, now that there is a
+        # snapshot-scoped table to count - see this class's docstring.
+        fixtures=count("fixture_snapshot"),
         squad_rows=count("my_squad"),
         lineup_rows=count("predicted_lineup"),
         lineup_gameweeks=lineup_gameweeks,
