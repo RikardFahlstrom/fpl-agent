@@ -36,13 +36,16 @@ passphrase or an agent that has to survive reboots. The server only ever reads t
 The crontab examples below assume it is checked out at `/srv/fpl-agent`; anywhere the
 service user can write is fine, as long as the paths match.
 
-On a Linux box, two system packages first. `sqlite3` is the CLI, which is a separate
-package from python's `sqlite3` module — `deploy/fpl-cron.sh` uses the command to ask the
-warehouse what needs doing, and without it the scheduled jobs refuse to run rather than
-guessing. `flock` comes from `util-linux` and serialises those jobs.
+On a Linux box, one system package first: `flock`, from `util-linux`, which serialises
+the scheduled jobs. The scheduled jobs do not need the `sqlite3` *command* — python's
+`sqlite3` module is a different thing, and is what the warehouse is read with. The
+scheduler used to require the CLI and refuse to start without it, long after the queries
+that needed it had moved into the engine. Install it anyway if you want the backup
+recipe in `docs/SCHEDULING.md` or the comparison harness in `tools/`; nothing that runs
+unattended does.
 
 ```bash
-sudo apt install sqlite3 util-linux
+sudo apt install util-linux
 uv run playwright install-deps chromium    # needs root; Chromium's shared libraries
 ```
 
@@ -104,7 +107,8 @@ the list. `make record` logs the move you actually made; nothing records for you
 Snapshot daily. `bootstrap-static` serves current state only — prices, ownership and
 price forecasts are overwritten in place with no history endpoint — so a day not captured
 can never be recovered. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for the unattended
-setup: cron calls `deploy/fpl-cron.sh`, which decides whether there is anything to do.
+setup: cron calls `deploy/fpl-cron.sh`, which takes a lock and asks the engine's
+schedule what is due.
 
 Snapshotting **refuses to run** if it cannot capture your squad, because selling prices,
 bank and free transfers exist in no public endpoint. Pass `--allow-partial` to take the
@@ -150,8 +154,8 @@ refresh token on every exchange, so two hosts sharing one would fight and both l
 ./deploy/fpl-cron.sh --dry-run deadline
 ```
 
-The dry runs cost ten seconds and are what catches a missing `sqlite3` before it becomes a
-week of jobs quietly doing nothing.
+The dry runs are one read each and print what the job is due to do and why, which is what
+catches a misconfiguration before it becomes a week of jobs quietly doing nothing.
 
 **4. Schedule it.** Cron fires dumbly and often; the guards decide whether there is work.
 

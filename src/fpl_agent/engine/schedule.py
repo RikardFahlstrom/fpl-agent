@@ -248,9 +248,10 @@ def _grading(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
 def _ranking() -> list[Step]:
     """The expensive half, and the only half that is actually deadline-shaped.
 
-    It ends on `status`, which cron does not run today. Every step before it reports its
-    own success; this is the one that checks the state they claim to have left behind -
-    which is the whole lesson of this project's bug history.
+    It ends on `status`, which the scheduled job never used to run. Every step before it
+    reports its own success; this is the one that checks the state they claim to have left
+    behind - which is the whole lesson of this project's bug history. It is not tolerated,
+    so its 7 is now reachable from an hourly cron mail, deliberately.
     """
     return [
         Step("rivals", (), "effective ownership has to exist before it can be judged; a "

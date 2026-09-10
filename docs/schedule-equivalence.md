@@ -20,7 +20,8 @@ console script with a stub that exits with scripted codes.
 ## What each side would run
 
 Six states × three jobs, run 2026-09-10 against a copy of the real warehouse.
-Fourteen of the eighteen agree exactly, step for step and code for code.
+Eleven of the eighteen agree exactly, step for step and code for code; the seven that
+do not are the two deliberate changes below, each of which lands on several rows.
 
 | State | `daily` | `deadline` | `auto` |
 | --- | --- | --- | --- |
@@ -86,6 +87,40 @@ for a single rule for tolerated steps; #35's user story 10 asks that a failed br
 fail the run. Taken literally, honouring both needs two kinds of tolerance and a special
 case for the brief — which is the shape #37 set out to remove. The rule stays general, on
 the grounds that the only code the brief can return already means what it would mean here.
+
+## After the entry point was shrunk
+
+`deploy/fpl-cron.sh` passes its argv to `fpl-agent schedule` and decides nothing now, so
+comparing it against the module would prove nothing: they are one process and agree by
+construction. The harness therefore takes the *old* script out of git and compares that
+against today's entry point — `tools/schedule-equivalence.sh [git-ref]`, defaulting to
+`52a54f5`, the last commit in which the script decided for itself. The comparison stays
+live and re-runnable rather than becoming a claim in a document.
+
+Run that way on 2026-09-10 it reproduces the table above exactly: the same eleven rows
+agree, and the same seven diverge for the same two reasons. Nothing else moved.
+
+And the guard the ticket was named for: on a host with no `sqlite3` command on `PATH`,
+
+```
+old script, daily     exit=2  warning: flock not found; running unserialised...
+old script, deadline  exit=2
+old script, auto      exit=2
+daily     exit=0  daily: 4 steps due, 2 skipped
+deadline  exit=0  deadline: nothing due - the next deadline is 41h away...
+auto      exit=0  auto: 4 steps due, 3 skipped
+```
+
+The binary had not been used by the script since both of its queries moved into the
+engine, and the two lines above the exits are the `flock`-missing warning surviving the
+shrink, on a box that has no `flock` either.
+
+**(4) A third behaviour change, from the same commit: `FPL_DB` now reaches the commands.**
+The old script's `FPL_DB` selected the warehouse it *queried*; the commands it ran used
+the default one regardless, so a non-default warehouse was planned from one database and
+written to another. The entry point passes it through as `--db`, and the executor passes
+that to every step. It does not show in the comparison above, because the difference is
+which database a step writes to rather than which step runs.
 
 ## What is not compared
 

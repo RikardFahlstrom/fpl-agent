@@ -12,7 +12,10 @@ when its last fixture ends rather than on a weekday. Any crontab encoding that i
 wrong within weeks. `settle` already refuses a gameweek that has not finished, so
 attempting it every morning costs one process and answers correctly.
 
-`deploy/fpl-cron.sh` is that decision layer. Cron calls it; it calls the agent.
+`engine/schedule` is that decision layer, and `fpl-agent schedule` is how it is reached.
+`deploy/fpl-cron.sh` is what cron calls: a directory change, a `flock` re-exec, and one
+invocation of the schedule. It decides nothing, which is why it fits on one screen — the
+eight commits it took to get its three rules right are the reason those rules moved.
 
 ## What runs, and how often
 
@@ -107,10 +110,12 @@ is configured at all is `notify.target_from_env` — the engine, not a regex ove
 The schedule adds no exit code of its own: it propagates the failing step's, and the table
 above is unchanged.
 
-Before any of the shell's decision logic is deleted, the two were diffed across the six
-states that can be enumerated — see [schedule-equivalence.md](schedule-equivalence.md) for
-the result and `tools/schedule-equivalence.sh` to re-run it. Fourteen of the eighteen
-comparisons agree exactly; the divergences are the three deliberate behaviour changes.
+The two were diffed across the six states that can be enumerated before any of the shell's
+decision logic was deleted, and the harness still compares today's entry point against the
+old script taken out of git — see [schedule-equivalence.md](schedule-equivalence.md) for
+the result and `tools/schedule-equivalence.sh` to re-run it. Eleven of the eighteen
+comparisons agree exactly; the seven that do not are the deliberate behaviour changes,
+each written down with its reasoning.
 
 ## `status` is the last line of a run
 
@@ -291,8 +296,8 @@ job's code == 0  ->  exit notify's code (0, or 8 if a send failed)
 
 The snapshot is the irrecoverable asset; a notification is not. A dead ntfy server must
 never make a `daily` run that captured the market look like one that lost it. And if no
-topic is configured, `fpl-cron.sh` skips notify with a line saying so rather than
-mailing a failure every hour.
+topic is configured, the schedule skips notify with a line saying so rather than
+mailing a failure every hour — `notify.target_from_env` is what it asks.
 
 ## Exit codes
 
@@ -308,7 +313,7 @@ actionable without opening the log:
 | 4 | `snapshot`: the squad the preflight promised was not captured | Usually `my-team/` returning 403 during an FPL maintenance window. The market half was kept; re-run later. |
 | 5 | Backfill failed for more than 5% of players | Transient FPL trouble. Re-run; if it persists, the API shape may have changed. |
 | 6 | `settle`: the gameweek is finished but the actuals are not there to grade it | Run the backfill first. Never force this - grading against absent actuals is the bug this code exists to prevent. |
-| 7 | `status`: the warehouse disagrees with itself | Read the `FAIL` lines - each names what is wrong and what to run. Nothing is broken *by* status; it only reports. |
+| 7 | `status`: the warehouse disagrees with itself | Read the `FAIL` lines - each names what is wrong and what to run. Nothing is broken *by* status; it only reports. Reachable from the hourly job since the deadline plan began ending on `status`, so this can now arrive from cron rather than only from a hand-run check. |
 | 8 | `notify`: a push was not accepted by the server | The message was **not** recorded as sent, so the next run will try it again. If it persists, check the ntfy server and the topic. Never masks the job's own failure - see below. |
 
 Codes 3 and 4 are the two worth alerting on loudly. 4 in particular is the one that

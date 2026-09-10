@@ -1,21 +1,40 @@
 #!/usr/bin/env bash
 #
-# Diff what `engine/schedule` plans against what `deploy/fpl-cron.sh` decides, across the
-# six states that can be enumerated. The script has no tests, so "the new one behaves like
-# the old one" is otherwise unfalsifiable - and three of the changes in this rewrite alter
-# the behaviour of an unattended job that mails its owner on failure.
+# Diff what `deploy/fpl-cron.sh` does today against what it did when it made the decisions
+# itself, across the six states that can be enumerated.
 #
-#   tools/schedule-equivalence.sh            # what each side would run, per state
+# The old script is taken out of git rather than remembered, so the comparison stays live:
+# it is the answer to "does each job name still map to the same work?", which is the one
+# thing a crontab on a deployed server depends on. Comparing today's entry point against
+# `fpl-agent schedule` instead would prove nothing - the entry point execs it, so the two
+# are the same process and agree by construction.
+#
+#   tools/schedule-equivalence.sh              # against the commit before the shrink
+#   tools/schedule-equivalence.sh <git-ref>    # against any other version of the script
 #
 # Reads only. Every state is a *copy* of data/fpl.db, both sides run in dry-run mode, and
-# neither writes anything. Findings live in docs/schedule-equivalence.md; re-run this
-# before cutting the shell down and after, and the two runs should agree.
+# neither writes anything. The findings, and why each divergence is deliberate, are in
+# docs/schedule-equivalence.md.
+
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 WORK="$(mktemp -d)"
 AGENT=.venv/bin/fpl-agent
+# The last commit in which the script decided what to run for itself.
+BASELINE="${1:-52a54f5}"
 trap 'rm -rf "$WORK"' EXIT
+
+OLD="$WORK/fpl-cron-$BASELINE.sh"
+if ! git show "$BASELINE:deploy/fpl-cron.sh" > "$OLD" 2>/dev/null; then
+    echo "no deploy/fpl-cron.sh at $BASELINE" >&2
+    exit 2
+fi
+chmod +x "$OLD"
+# It resolves the repository root from its own path, which in a temporary directory is
+# the wrong answer, so it is run from a copy that skips the `cd`.
+sed -i '' 's|^cd "$(dirname "$0")/\.\." .*|:|' "$OLD" 2>/dev/null || \
+    sed -i 's|^cd "$(dirname "$0")/\.\." .*|:|' "$OLD"
 
 # Each state is reached by mutating a copy, because the real warehouse only ever holds
 # one of them at a time and the interesting ones are the rare ones.
@@ -51,18 +70,20 @@ for state in no-deadline outside-window inside-window pending-grading no-warehou
     prepare "$state"
     db="$WORK/$state.db"
     for job in daily deadline auto; do
-        shell_out=$(FPL_DB="$db" FPL_AGENT_BIN="$AGENT" FPL_LOCK="$WORK/lock" \
-                    ./deploy/fpl-cron.sh --dry-run "$job" 2>&1)
-        shell_code=$?
-        shell_steps=$(printf '%s\n' "$shell_out" | sed -n "s|^would run: $AGENT ||p" | tr '\n' '|')
-        plan_out=$("$AGENT" schedule --dry-run "$job" --db "$db" 2>&1)
-        plan_code=$?
-        plan_steps=$(printf '%s\n' "$plan_out" | steps_of_plan | tr '\n' '|')
-        verdict=$([ "$shell_steps" = "$plan_steps" ] && [ "$shell_code" = "$plan_code" ] \
+        old_out=$(FPL_DB="$db" FPL_AGENT_BIN="$AGENT" FPL_LOCK="$WORK/lock" \
+                  "$OLD" --dry-run "$job" 2>&1)
+        old_code=$?
+        # The old script announced each step as `would run: <agent> <command>`.
+        old_steps=$(printf '%s\n' "$old_out" | sed -n "s|^would run: $AGENT ||p" | tr '\n' '|')
+        now_out=$(FPL_DB="$db" FPL_AGENT_BIN="$AGENT" FPL_LOCK="$WORK/lock" \
+                  ./deploy/fpl-cron.sh --dry-run "$job" 2>&1)
+        now_code=$?
+        now_steps=$(printf '%s\n' "$now_out" | steps_of_plan | tr '\n' '|')
+        verdict=$([ "$old_steps" = "$now_steps" ] && [ "$old_code" = "$now_code" ] \
                   && echo same || echo DIVERGES)
-        printf '%-16s %-9s %s\n  shell(%s): %s\n  plan (%s): %s\n' \
+        printf '%-16s %-9s %s\n  %s(%s): %s\n  now      (%s): %s\n' \
             "$state" "$job" "$verdict" \
-            "$shell_code" "${shell_steps:-<nothing>}" \
-            "$plan_code" "${plan_steps:-<nothing>}"
+            "$BASELINE" "$old_code" "${old_steps:-<nothing>}" \
+            "$now_code" "${now_steps:-<nothing>}"
     done
 done
