@@ -196,7 +196,7 @@ The plan sketched one skill per engine command. What was built is three, split b
 
 | Skill | Does |
 |---|---|
-| `/fpl-deadline` | `make deadline` — snapshot, backfill, project, rivals, recommend, status — then how to read the ranking and when not to act. |
+| `/fpl-deadline` | `make deadline` — the deadline half of the schedule, when one is near — then how to read the ranking and when not to act. |
 | `/fpl-settle` | `make settle GW=n`: grade projections, read the calibration slices, decide whether a deviation is a finding or noise. |
 | `/fpl-verify` | Check an assumption against the live API when a result looks wrong. |
 

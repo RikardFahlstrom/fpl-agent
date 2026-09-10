@@ -113,6 +113,10 @@ class Step:
     args: tuple[str, ...] = ()
     reason: str = ""
     tolerated: bool = False
+    #: The gameweek this step is about, where it is about one. Carried rather than parsed
+    #: back out of `args` by whoever needs it: the number goes into the argv as a string,
+    #: and reading it back means a second place that knows the flag's name and position.
+    gameweek: Optional[int] = None
 
     @property
     def invocation(self) -> str:
@@ -144,6 +148,11 @@ class Plan:
     steps: tuple[Step, ...] = ()
     skipped: tuple[Skipped, ...] = ()
     problem: Optional[str] = None
+    #: Hours to the next deadline as this Plan was decided, or None when the warehouse
+    #: could not be asked or no fixture is left to play. Carried because a caller that
+    #: summarises a Plan should not have to ask the question a second time and risk a
+    #: different answer - which is the whole failure this module was built out of.
+    hours_to_deadline: Optional[int] = None
 
     @property
     def exit_code(self) -> int:
@@ -241,7 +250,8 @@ def _grading(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
     if not pending:
         return [], [Skipped("grading", "no finished gameweek is waiting to be graded")]
     return [Step("settle", ("--gameweek", str(gameweek), "--learn"),
-                 f"gameweek {gameweek} has finished and has never been graded")
+                 f"gameweek {gameweek} has finished and has never been graded",
+                 gameweek=gameweek)
             for gameweek in pending], []
 
 
@@ -262,13 +272,12 @@ def _ranking() -> list[Step]:
     ]
 
 
-def _ranking_or_skip(warehouse: Warehouse, now: datetime,
+def _ranking_or_skip(warehouse: Warehouse, hours: Optional[int],
                      settings: Settings) -> tuple[list[Step], list[Skipped]]:
     """The ranking half if a deadline is near, else the reason it is not due."""
     what = "the ranking half"
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
-    hours = storage.hours_to_deadline(warehouse.conn, now)
     if hours is None:
         return [], [Skipped(what, "no fixture is left to play, so there is no deadline "
                                   "to rank against")]
@@ -326,6 +335,8 @@ def due(job: str, *, now: datetime, warehouse: Warehouse,
 
     steps: list[Step] = []
     skipped: list[Skipped] = []
+    hours = (storage.hours_to_deadline(warehouse.conn, now) if warehouse.readable
+             else None)
 
     if job in ("daily", "auto"):
         # The capture is due whatever the warehouse says - on a host that has none, it is
@@ -336,7 +347,7 @@ def due(job: str, *, now: datetime, warehouse: Warehouse,
         skipped += not_graded
 
     if job in ("deadline", "auto"):
-        ranking, not_ranking = _ranking_or_skip(warehouse, now, settings)
+        ranking, not_ranking = _ranking_or_skip(warehouse, hours, settings)
         if job == "deadline" and ranking:
             # The hourly job re-captures rather than ranking over a stale market:
             # RotoWire firms predicted lineups up through matchday, so a projection built
@@ -358,7 +369,7 @@ def due(job: str, *, now: datetime, warehouse: Warehouse,
         skipped += no_tail
 
     return Plan(job=job, at=now, steps=tuple(steps), skipped=tuple(skipped),
-                problem=warehouse.problem)
+                problem=warehouse.problem, hours_to_deadline=hours)
 
 
 # --------------------------------------------------------------------------
@@ -530,6 +541,40 @@ def render(plan: Plan, *, one_line: bool = False) -> str:
         width = max(len(skip.what) for skip in plan.skipped)
         lines += [f"     {skip.what:<{width}}  {skip.reason}" for skip in plan.skipped]
     return "\n".join(lines)
+
+
+def summarise(plan: Plan) -> str:
+    """What is due, in the one line a reader gets who does not know the pipeline.
+
+    `status` ends its report on this. It used to decide for itself - its own settle
+    query, its own deadline window - which is a fourth statement of the pipeline and
+    exactly how the scheduler and the engine came to disagree before.
+
+    What it names is what a *person* has to know about. The capture, the projection and
+    the brief are due every time and saying so every time would train the reader to skip
+    the line; a gameweek sitting ungraded and a deadline coming up are the two facts that
+    change what today looks like.
+    """
+    if plan.problem:
+        # "Could not ask the question" and "nothing is due" must never render the same.
+        # A plan made without a readable warehouse still holds the capture, which is due
+        # regardless - so the absence of a settle step here is not evidence of anything.
+        return f"could not tell what is due - {plan.problem}"
+    grading = [step for step in plan.steps if step.command == "settle"]
+    if grading:
+        # Grading is the one that expires. A deadline comes round again; a gameweek left
+        # ungraded is a projection never scored against the result it was made for.
+        gameweeks = [str(step.gameweek) for step in grading]
+        which = "gameweek" if len(gameweeks) == 1 else "gameweeks"
+        return f"{which} {', '.join(gameweeks)} ready to grade - run `make now`"
+    if any(step.command == "recommend" for step in plan.steps):
+        # The hours cannot be absent while a ranking is due - the window is what put the
+        # ranking in the plan - but saying "deadline in Noneh" if that ever stops being
+        # true is worse than saying less.
+        if plan.hours_to_deadline is None:
+            return "a deadline is near - run `make now`"
+        return f"deadline in {plan.hours_to_deadline}h - run `make now`"
+    return "nothing due - `make now` is safe to run anyway and will say the same"
 
 
 def render_outcome(outcome: Outcome) -> str:

@@ -5,16 +5,25 @@ description: Run the pre-deadline cycle - capture, project, and rank transfers -
 
 # Pre-deadline cycle
 
-Run `make deadline`. It captures a snapshot, backfills actuals, projects the three-gameweek
-horizon, captures rival squads and ranks transfers, in that order. The order matters:
-actuals feed the projection's rates, and rivals must exist before ownership means anything.
+Run `make deadline`. It runs the deadline half of `engine/schedule`'s plan: a fresh
+capture, the three-gameweek projection, rival squads, the transfer ranking, and then
+`status` over what that left behind. The order matters - rivals must exist before ownership
+means anything - and it is stated once, in the schedule, so this file does not restate it.
+
+**It does nothing when no deadline is near**, which is the same answer the hourly cron job
+gives and is not a failure. `make deadline DRY=--dry-run` shows the decision without acting
+on it, and prints the reason each step is due or was skipped.
+
+It deliberately does not backfill actuals: this half is refreshing a market, not learning a
+result. `make now` is the one that does both.
 
 Then interpret. The numbers are not the answer.
 
 ## Check the warehouse first
 
-Run `.venv/bin/fpl-agent status` **after `make deadline` and before reading a single
-recommendation.** It is read-only - it authenticates against nothing and writes nothing -
+The plan ends on `status`, so a `make deadline` that ranked has already run it - read
+those lines before reading a single recommendation. Run `.venv/bin/fpl-agent status` by
+hand when you are reading a ranking from an earlier run. It is read-only - it authenticates against nothing and writes nothing -
 and it answers in one command what used to be three SQL queries and a hope.
 
 Exit 0 means the warehouse is consistent and the recommendations rest on something. Any

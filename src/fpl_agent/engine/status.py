@@ -484,23 +484,19 @@ def next_action(conn: sqlite3.Connection,
         return (f"next: {which} above must be fixed first - "
                 f"that line names the command")
 
+    # What is due is the schedule's question, and this is a reader of the answer. It used
+    # to ask its own: its own settle query and its own deadline window, which made this
+    # the fourth statement of the pipeline. `make now` runs this same `auto` plan - bar
+    # the notification step, which depends on configuration this command does not read
+    # and which the summary never mentions - so the line cannot promise work the command
+    # will not do.
     try:
-        pending = settle.settleable_gameweeks(conn)
+        plan = schedule.due("auto", now=datetime.now(timezone.utc),
+                            warehouse=schedule.Warehouse(conn),
+                            settings=schedule.Settings())
     except sqlite3.Error:
         return "next: could not tell - the warehouse would not answer"
-    if pending:
-        which = ", ".join(str(gw) for gw in pending)
-        ready = "gameweek" if len(pending) == 1 else "gameweeks"
-        return f"next: {ready} {which} ready to grade - run `make now`"
-
-    hours = hours_to_deadline(conn)
-    # Beyond the schedule's window a deadline is too far out to rank against, and this
-    # line reports what the scheduler will act on rather than holding a second number.
-    # It does not gate projecting: a capture is projected whenever it happens, because a
-    # snapshot with no projection is a warehouse `status` calls inconsistent.
-    if hours is not None and 0 <= hours <= schedule.DEADLINE_WITHIN_HOURS:
-        return f"next: deadline in {hours}h - run `make now`"
-    return "next: nothing due - `make now` is safe to run anyway and will say the same"
+    return f"next: {schedule.summarise(plan)}"
 
 
 def render(checks: list[Check], db: Path | str, next_line: Optional[str] = None) -> str:
@@ -567,6 +563,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         checks = gather(conn, include_token=not args.no_token)
         upcoming = next_action(conn, checks)
+    except sqlite3.DatabaseError as e:
+        # `connect_readonly` opens a file without reading a page of it, so a path that is
+        # not a database at all gets this far and then raises on the first query. It used
+        # to arrive as a traceback and exit 1; 2 is the code that says "the thing I was
+        # asked about could not be read", and the schedule runs this command from cron
+        # now, where a traceback is what the owner is mailed.
+        print(f"could not read {args.db}: {e}", file=sys.stderr)
+        return EXIT_UNREADABLE
     finally:
         conn.close()
 

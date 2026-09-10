@@ -84,7 +84,7 @@ credentials are no longer needed.
 ```bash
 make now             # do whatever is due today; DRY=--dry-run to see it decide first
 make status          # read-only: does the warehouse agree with itself, and what is next?
-make deadline        # snapshot, backfill, project, capture rivals, recommend, status
+make deadline        # the deadline half: re-capture and rank, if one is near
 make settle GW=3     # after a gameweek: grade projections, draft a learning
 make brief           # write logs/gwNN.md: what changed and what needs you
 make test
@@ -96,8 +96,12 @@ and rank transfers if a deadline is close. It is safe to run on a day when the a
 is most days, and `make now DRY=--dry-run` shows the decision without acting on it. The
 targets below it are the individual steps, for when you want one.
 
-`make deadline` runs the steps in order because the order matters: actuals feed the
-projection's rates, and rivals must exist before ownership means anything. `settle` reads
+`make deadline` runs the same half of the pipeline the hourly cron job runs, and asks the
+same question first: it does nothing when no deadline is near, and when one is it
+re-captures, projects, captures rivals, ranks, and ends by checking the state it claims to
+have left behind. The order matters — actuals feed the projection's rates, and rivals must
+exist before ownership means anything — and it is stated once, in `engine/schedule`.
+`settle` reads
 `finished` from the warehouse rather than the API, so a gameweek cannot be graded until a
 snapshot has refreshed its fixtures — which is one of the things `make now` gets right for
 you. Individual steps are `fpl-agent snapshot`, `fpl-agent project`, `fpl-agent rivals`,
