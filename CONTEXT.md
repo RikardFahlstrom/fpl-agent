@@ -44,22 +44,25 @@ later. Two of its parts carry weight beyond their obvious use:
 - **The skips are half the value.** A run that had nothing to do and a run that could not
   find out are the same empty step list and completely different states, and only the
   reasons tell them apart.
-- **`problem` is not "empty".** A Plan made without a readable warehouse still holds the
-  capture, because on a host with no warehouse the capture is what creates one. So the
-  absence of a grading step in such a Plan is evidence of nothing, and every reader of a
-  Plan has to check `problem` before concluding that nothing is due.
+- **`problem` is not "empty".** A `daily` or `auto` Plan made without a readable warehouse
+  still holds the capture, because on a host with no warehouse the capture is what creates
+  one; a `deadline` Plan holds nothing at all and reports 2, because an hourly job that
+  could not ask the question has nothing to say. Either way the absence of a grading step
+  there is evidence of nothing, so every reader of a Plan has to check `problem` before
+  concluding that nothing is due.
 
 ## Step
 
-One command a job would run, with the arguments to run it with, the reason it is due, and
-whether its failure may be tolerated.
+One command a job would run, with the arguments to run it with, the reason it is due,
+whether its failure may be tolerated, and — where the step is about one — the gameweek it
+concerns, carried as a field so that nobody has to parse it back out of the arguments.
 
 A Step is one process. Execution stays out of process deliberately: each engine command
 loads its own configuration, sets up its own logging, opens and closes its own connection,
 and one of them may launch a browser — and process isolation is also what preserves the
 per-command exit codes that `docs/SCHEDULING.md` promises cron.
 
-**Tolerated** means a failure here is reported only when every other step succeeded. The
+**Tolerated** means a failure here is reported only when nothing untolerated failed. The
 brief and the notification are the tolerated steps: the snapshot is the irrecoverable
 asset and neither of those is, so a dead ntfy server can turn a 0 into an 8 and can never
 turn a 3 into one.
@@ -78,10 +81,10 @@ what used to leave the warehouse holding a snapshot with no projections between 
 and Friday, which `status` calls an inconsistency and exits 7 for.
 
 **Still unsettled, deliberately.** *Which* capture a later reader means is derived
-independently in five modules (`brief`, `lineups`, `projection`, `recommend`, `status`),
-and those derivations do not all ask the same question — the latest snapshot, the latest
-holding lineups for a gameweek, and the one targeting a gameweek are three different
-things. Naming that properly is its own piece of work with its own spec. This entry is
+independently in six modules (`brief`, `lineups`, `pricing`, `projection`, `recommend`,
+`status`), and those derivations do not all ask the same question — the latest snapshot,
+the latest holding lineups for a gameweek, the one targeting a gameweek, and "the latest
+unless told otherwise" are four different things. Naming that properly is its own piece of work with its own spec. This entry is
 vocabulary; it moves no code.
 
 ## The seam

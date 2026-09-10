@@ -102,12 +102,12 @@ class Settings:
 class Step:
     """One command a job would run, and why.
 
-    `tolerated` says whether a failure here may be dropped rather than failing the run.
-    Nothing in a Plan tolerates failure today - every step below is either the capture,
-    which is the irrecoverable one, or a decision made from it. The flag exists because
-    the pieces that do tolerate failure (the brief, the notification) become Steps when
-    running a Plan lands, and the precedence rule has to read the answer from the Plan
-    rather than hold its own list.
+    `tolerated` says whether a failure here may be dropped rather than failing the run:
+    reported only when nothing untolerated failed, and logged and dropped otherwise. The
+    brief and the notification carry it, and nothing else does - every other step is
+    either the capture, which is the irrecoverable one, or a decision made from it. The
+    rule lives in `Outcome` and reads the flag from the Plan rather than holding its own
+    list of which commands are which.
     """
     command: str
     args: tuple[str, ...] = ()
