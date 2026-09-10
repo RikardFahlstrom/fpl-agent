@@ -33,7 +33,7 @@ be asked*. A warehouse that will not open is the second, and the renderer says s
 import argparse
 import sqlite3
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -56,6 +56,8 @@ PROJECTION_HORIZON = 3
 # regardless, and that capture is what creates a warehouse on a new host.
 EXIT_OK = 0
 EXIT_UNREADABLE = 2
+# 64 is what `deploy/fpl-cron.sh` already exits on a job name it does not know; the
+# schedule adds no code of its own to the table in docs/SCHEDULING.md.
 EXIT_USAGE = 64
 
 # Tables a Plan is decided from. A file without them is not this project's warehouse, and
@@ -139,7 +141,7 @@ class Plan:
 class Warehouse:
     """The warehouse as a value: an open connection, or the reason there is not one."""
     conn: Optional[sqlite3.Connection] = None
-    problem: Optional[str] = field(default=None)
+    problem: Optional[str] = None
 
     @property
     def readable(self) -> bool:
@@ -173,28 +175,6 @@ def open_warehouse(path: Path | str) -> Warehouse:
         return Warehouse(problem=f"{path} is missing {', '.join(absent)}, so it is not "
                                  f"an fpl-agent warehouse")
     return Warehouse(conn=conn)
-
-
-# --------------------------------------------------------------------------
-# Reading the two facts a Plan turns on
-# --------------------------------------------------------------------------
-
-def hours_to_deadline(conn: sqlite3.Connection, now: datetime) -> Optional[int]:
-    """Hours from `now` until the next deadline, or None when no fixture is unplayed.
-
-    Measured against the time passed in rather than the database's `now`, which is what
-    makes a window testable at its edges. Truncated toward zero, and negative is a real
-    answer: a round whose deadline has passed but whose fixtures FPL has not confirmed
-    finished sits there for hours.
-    """
-    deadline = storage.next_deadline(conn)
-    if deadline is None:
-        return None
-    return int((deadline - now).total_seconds() / 3600)
-
-
-def _settleable(warehouse: Warehouse) -> list[int]:
-    return settle.settleable_gameweeks(warehouse.conn)
 
 
 # --------------------------------------------------------------------------
@@ -236,7 +216,7 @@ def _grading(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
     """
     if not warehouse.readable:
         return [], [Skipped("grading", warehouse.problem)]
-    pending = _settleable(warehouse)
+    pending = settle.settleable_gameweeks(warehouse.conn)
     if not pending:
         return [], [Skipped("grading", "no finished gameweek is waiting to be graded")]
     return [Step("settle", ("--gameweek", str(gameweek), "--learn"),
@@ -266,7 +246,7 @@ def _ranking_or_skip(warehouse: Warehouse, now: datetime,
     what = "the ranking half"
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
-    hours = hours_to_deadline(warehouse.conn, now)
+    hours = storage.hours_to_deadline(warehouse.conn, now)
     if hours is None:
         return [], [Skipped(what, "no fixture is left to play, so there is no deadline "
                                   "to rank against")]

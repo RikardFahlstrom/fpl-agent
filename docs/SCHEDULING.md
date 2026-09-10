@@ -39,12 +39,14 @@ script consumes it, so the rule lives in exactly one place — `settle.settleabl
 the scheduler and the engine came to disagree in the first place.
 
 "When is the next deadline" is now asked the same way. It was the script's own SQL until
-it became `storage.next_deadline`, which `status.hours_to_deadline` measures from and the
-schedule decides its window from, because a scheduler and an engine that disagree about
-when to project will disagree quietly and on a matchday. The 26-hour cutoff is
+it became `storage.next_deadline` and `storage.hours_to_deadline`, which `status` re-exports
+and the schedule decides its window from, because a scheduler and an engine that disagree
+about when to project will disagree quietly and on a matchday. The hours are rounded
+*down*, so a deadline half an hour gone reads as past rather than as "0h away" — which
+every window that tests `hours < 0` would have let through. The 26-hour cutoff is
 `schedule.DEADLINE_WITHIN_HOURS` — the schedule owns the window because the schedule is
-what acts on it — and `status.RANK_WITHIN_HOURS` reads it from there, so the `next:` line
-and the scheduler cannot come to disagree.
+what acts on it — and `status`'s `next:` line reads it from there, so the two cannot come
+to disagree.
 
 That cutoff gates *ranking*, not projecting. Every capture is projected, in every job,
 because the alternative is what the warehouse used to hold between Tuesday and Friday: a
@@ -90,7 +92,8 @@ and *nothing is due* must never render the same. `daily` and `auto` still plan t
 capture there — that capture is what creates the warehouse on a new host.
 
 Running a Plan is not wired up yet: `fpl-agent schedule <job>` without `--dry-run` says
-so and exits 64. `deploy/fpl-cron.sh` still holds the execution and the exit-code
+so and exits 64 — the code `deploy/fpl-cron.sh` already uses for a job name it does not
+know, so the exit-code table above is unchanged. `deploy/fpl-cron.sh` still holds the execution and the exit-code
 precedence, and the Plan is what will replace its decision half.
 
 ## `status` is the last line of a run

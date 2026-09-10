@@ -17,6 +17,7 @@ Writers take plain dicts straight from the API so they are testable without netw
 """
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -383,6 +384,29 @@ def next_deadline(conn: sqlite3.Connection) -> Optional[datetime]:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return when - DEADLINE_BEFORE_KICKOFF
+
+
+def hours_to_deadline(conn: sqlite3.Connection,
+                      now: Optional[datetime] = None) -> Optional[int]:
+    """Hours from `now` until the next deadline, or None when no fixture is unplayed.
+
+    Negative is a real answer rather than an error: a round whose deadline has passed but
+    whose fixtures FPL has not confirmed finished sits there for hours.
+
+    Rounded *down*, which matters on one side only. Truncating toward zero would report a
+    deadline thirty minutes gone as "0h away" - inside every window that tests `hours <
+    0`, so a scheduler would re-capture and rank for a deadline nobody can act on any
+    more. Flooring makes the first minute past the deadline read as past it.
+
+    `now` is injectable because the schedule decides a window from this and a window is
+    worth testing at its edges. It lives here for the same reason `next_deadline` does:
+    `status` reports the number and `schedule` acts on it, and two conversions agreeing
+    today is how they came to disagree last time.
+    """
+    deadline = next_deadline(conn)
+    if deadline is None:
+        return None
+    return math.floor((deadline - (now or datetime.now(timezone.utc))).total_seconds() / 3600)
 
 
 def target_gameweek(bootstrap: dict) -> Optional[int]:

@@ -457,29 +457,13 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
     return checks
 
 
-def hours_to_deadline(conn: sqlite3.Connection,
-                     now: Optional[datetime] = None) -> Optional[int]:
-    """Hours until the next deadline, or None when no fixture is unplayed.
-
-    When the deadline falls is `storage.next_deadline`, asked rather than restated: the
-    scheduler decides its window from the same function, and a scheduler and an engine
-    that disagree about when to project will disagree quietly and on a matchday.
-
-    Negative is a real answer, not an error: a round whose deadline has passed but whose
-    fixtures are not all marked finished sits there until FPL confirms them.
-    """
-    deadline = storage.next_deadline(conn)
-    if deadline is None:
-        return None
-    return int((deadline - (now or datetime.now(timezone.utc))).total_seconds() / 3600)
+# Both live in `storage`, next to the fixtures they read, because `schedule` needs them
+# too and neither module should have to import the other. Re-exported because callers and
+# tests reach for this one by this name - `deploy/fpl-cron.sh` through
+# `status --hours-to-deadline`.
+hours_to_deadline = storage.hours_to_deadline
 
 
-# Beyond this, a deadline is too far out to rank a transfer against. The number belongs
-# to the schedule, which is what acts on it; this line is a reader, not a second
-# statement of it. It does not gate projecting: a capture is projected whenever it
-# happens, because a snapshot with no projection is a warehouse `status` calls
-# inconsistent.
-RANK_WITHIN_HOURS = schedule.DEADLINE_WITHIN_HOURS
 
 
 def next_action(conn: sqlite3.Connection,
@@ -510,7 +494,11 @@ def next_action(conn: sqlite3.Connection,
         return f"next: {ready} {which} ready to grade - run `make now`"
 
     hours = hours_to_deadline(conn)
-    if hours is not None and 0 <= hours <= RANK_WITHIN_HOURS:
+    # Beyond the schedule's window a deadline is too far out to rank against, and this
+    # line reports what the scheduler will act on rather than holding a second number.
+    # It does not gate projecting: a capture is projected whenever it happens, because a
+    # snapshot with no projection is a warehouse `status` calls inconsistent.
+    if hours is not None and 0 <= hours <= schedule.DEADLINE_WITHIN_HOURS:
         return f"next: deadline in {hours}h - run `make now`"
     return "next: nothing due - `make now` is safe to run anyway and will say the same"
 

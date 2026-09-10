@@ -15,6 +15,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from fpl_agent.engine import schedule, storage
 
@@ -36,27 +37,41 @@ class ScheduleTestCase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.w = WarehouseBuilder(self.conn)
         for gameweek in (1, 2):
-            self.w.fixtures(gameweek, finished=True)
+            self.fixtures(gameweek, finished=True)
             self.w.actuals(gameweek)
             self.w.graded_gameweek(gameweek)
-        self.w.fixtures(3, finished=False)
+        self.fixtures(3, finished=False)
         self.snapshot_id = self.w.snapshot(gameweek=3)
         self.w.projections(self.snapshot_id, 3)
         self.conn.commit()
 
-    def kickoff(self, hours_from_now: float, gameweek: int = 3) -> None:
-        """Put gameweek 3's first kickoff that many hours after NOW.
+    def fixtures(self, gameweek: int, *, finished: bool,
+                 hours_from_now: Optional[float] = None, count: int = 2) -> None:
+        """A round's fixtures, written the way a capture writes them.
 
-        The deadline is 90 minutes before it, so 5 hours here is 3 hours to the deadline.
+        Through `storage.upsert_fixtures` from API-shaped dicts rather than by hand, so
+        the kickoff timestamps under test are the shape the API actually stores - which
+        is `...Z`, the one `datetime.fromisoformat` refuses before Python 3.11.
         """
-        when = (NOW + timedelta(hours=hours_from_now)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        self.conn.execute("UPDATE fixture SET kickoff_time = ? WHERE event = ?",
-                          (when, gameweek))
+        kickoff = None if hours_from_now is None else (
+            NOW + timedelta(hours=hours_from_now)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        storage.upsert_fixtures(self.conn, [
+            {"id": gameweek * 100 + i, "event": gameweek, "team_h": 1, "team_a": 2,
+             "team_h_difficulty": 3, "team_a_difficulty": 3,
+             "kickoff_time": kickoff, "finished": finished}
+            for i in range(count)])
         self.conn.commit()
+
+    def kickoff(self, hours_from_now: float, gameweek: int = 3) -> None:
+        """Put the gameweek's first kickoff that many hours after NOW.
+
+        The deadline is 90 minutes before it, so 5 hours here is 3.5 hours to the deadline.
+        """
+        self.fixtures(gameweek, finished=False, hours_from_now=hours_from_now)
 
     def settleable_gameweek(self, gameweek: int) -> None:
         """A round that has finished, was projected from its own snapshot, and is ungraded."""
-        self.w.fixtures(gameweek, finished=True)
+        self.fixtures(gameweek, finished=True)
         self.w.actuals(gameweek)
         snapshot_id = self.w.snapshot(gameweek=gameweek)
         self.w.projections(snapshot_id, gameweek)
@@ -120,8 +135,7 @@ class DeadlineTests(ScheduleTestCase):
         self.assertTrue(any("78" in skip.reason for skip in plan.skipped), plan.skipped)
 
     def test_nothing_is_planned_when_no_fixture_is_left_to_play(self):
-        self.conn.execute("UPDATE fixture SET finished = 1")
-        self.conn.commit()
+        self.fixtures(3, finished=True)
         plan = self.due("deadline")
         self.assertEqual(plan.steps, ())
         self.assertTrue(plan.skipped)
@@ -130,6 +144,14 @@ class DeadlineTests(ScheduleTestCase):
         # A round played but not yet confirmed finished by FPL sits here for hours.
         self.kickoff(-5)
         self.assertEqual(self.due("deadline").steps, ())
+
+    def test_a_deadline_thirty_minutes_gone_is_already_gone(self):
+        # Truncating toward zero would call this "0h away", which is inside every window:
+        # a full re-capture and ranking for a deadline nobody can act on any more.
+        self.kickoff(1.0)   # kickoff in an hour, so the deadline went half an hour ago
+        plan = self.due("deadline")
+        self.assertEqual(plan.steps, ())
+        self.assertTrue(any("passed" in skip.reason for skip in plan.skipped), plan.skipped)
 
     def test_inside_the_window_it_recaptures_ranks_and_ends_on_status(self):
         self.kickoff(5)
@@ -276,6 +298,11 @@ class RenderTests(ScheduleTestCase):
             self.assertIn(step.reason, text)
         for skip in plan.skipped:
             self.assertIn(skip.reason, text)
+
+    def test_a_step_whose_failure_is_tolerated_says_so(self):
+        plan = schedule.Plan(job="daily", at=NOW, steps=(
+            schedule.Step("brief", (), "the reasoning is worth keeping", tolerated=True),))
+        self.assertIn("tolerated", schedule.render(plan))
 
     def test_one_line_is_the_first_line_of_the_whole_thing(self):
         plan = self.due("daily")
