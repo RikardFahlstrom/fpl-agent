@@ -81,6 +81,12 @@ or 2, and 2 already means exactly what it would mean here — the warehouse coul
 read at all. It still cannot mask anything: a real failure always outranks it, which the
 row above pins.
 
+This one was a deliberate choice between two specs rather than a reading of one. #37 asks
+for a single rule for tolerated steps; #35's user story 10 asks that a failed brief never
+fail the run. Taken literally, honouring both needs two kinds of tolerance and a special
+case for the brief — which is the shape #37 set out to remove. The rule stays general, on
+the grounds that the only code the brief can return already means what it would mean here.
+
 ## What is not compared
 
 The lock, which stays in the shell and is about the rotating credential rather than the
