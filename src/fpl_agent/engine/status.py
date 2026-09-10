@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import settle, storage
+from . import schedule, settle, storage
 from .projection import MODEL_VERSION
 from .snapshot import SQUAD_SIZE
 
@@ -457,36 +457,29 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
     return checks
 
 
-def hours_to_deadline(conn: sqlite3.Connection) -> Optional[int]:
+def hours_to_deadline(conn: sqlite3.Connection,
+                     now: Optional[datetime] = None) -> Optional[int]:
     """Hours until the next deadline, or None when no fixture is unplayed.
 
-    The deadline is derived, not fetched: 90 minutes before the first kickoff of the
-    earliest round that still has an unplayed fixture. `bootstrap-static` carries an
-    authoritative `deadline_time` and the warehouse does not store it yet.
-
-    This is the one statement of that rule. `deploy/fpl-cron.sh` used to hold its own
-    copy in SQL and now asks for this one through `status --hours-to-deadline`, the same
-    way it asks `settle --list` what is gradeable - because a scheduler and an engine
-    that disagree about when the deadline is will disagree quietly.
+    When the deadline falls is `storage.next_deadline`, asked rather than restated: the
+    scheduler decides its window from the same function, and a scheduler and an engine
+    that disagree about when to project will disagree quietly and on a matchday.
 
     Negative is a real answer, not an error: a round whose deadline has passed but whose
     fixtures are not all marked finished sits there until FPL confirms them.
     """
-    row = conn.execute(
-        """SELECT CAST((julianday(MIN(kickoff_time)) - 90.0/1440 - julianday('now'))
-                       * 24 AS INTEGER)
-             FROM fixture
-            WHERE finished = 0
-              AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0)"""
-    ).fetchone()
-    return None if row is None or row[0] is None else int(row[0])
+    deadline = storage.next_deadline(conn)
+    if deadline is None:
+        return None
+    return int((deadline - (now or datetime.now(timezone.utc))).total_seconds() / 3600)
 
 
-# Beyond this, a deadline is too far out to rank a transfer against. Shared with
-# `deploy/fpl-cron.sh`, which stops ranking at the same distance. It does not gate
-# projecting: a capture is projected whenever it happens, because a snapshot with no
-# projection is a warehouse `status` calls inconsistent.
-RANK_WITHIN_HOURS = 26
+# Beyond this, a deadline is too far out to rank a transfer against. The number belongs
+# to the schedule, which is what acts on it; this line is a reader, not a second
+# statement of it. It does not gate projecting: a capture is projected whenever it
+# happens, because a snapshot with no projection is a warehouse `status` calls
+# inconsistent.
+RANK_WITHIN_HOURS = schedule.DEADLINE_WITHIN_HOURS
 
 
 def next_action(conn: sqlite3.Connection,

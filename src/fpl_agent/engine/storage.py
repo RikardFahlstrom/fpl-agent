@@ -18,7 +18,7 @@ Writers take plain dicts straight from the API so they are testable without netw
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -348,6 +348,41 @@ def connect_readonly(path: Path | str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# FPL's deadline is 90 minutes before the first kickoff of the round.
+DEADLINE_BEFORE_KICKOFF = timedelta(minutes=90)
+
+
+def next_deadline(conn: sqlite3.Connection) -> Optional[datetime]:
+    """When the next gameweek deadline falls, or None when no fixture is unplayed.
+
+    Derived from the stored fixtures rather than fetched, so it is free to ask hourly.
+    Caveat: a postponed opening fixture moves the kickoff but not the real deadline;
+    `bootstrap-static` carries an authoritative `deadline_time` and the warehouse does
+    not store it yet.
+
+    It lives here, beside `connect_readonly`, because two callers need it and neither
+    should have to import the other: `status` reports the hours left and `schedule`
+    decides a window from them. A second statement of "when is the deadline" is how the
+    scheduler and the engine came to disagree once already.
+    """
+    row = conn.execute(
+        """SELECT MIN(kickoff_time) AS kickoff FROM fixture
+            WHERE finished = 0
+              AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0)""").fetchone()
+    kickoff = None if row is None else row["kickoff"]
+    if not kickoff:
+        return None
+    # The API writes `...Z`, which datetime.fromisoformat only accepts from 3.11.
+    text = kickoff[:-1] + "+00:00" if kickoff.endswith("Z") else kickoff
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when - DEADLINE_BEFORE_KICKOFF
 
 
 def target_gameweek(bootstrap: dict) -> Optional[int]:
