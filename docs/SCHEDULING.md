@@ -110,8 +110,7 @@ above is unchanged.
 Before any of the shell's decision logic is deleted, the two were diffed across the six
 states that can be enumerated — see [schedule-equivalence.md](schedule-equivalence.md) for
 the result and `tools/schedule-equivalence.sh` to re-run it. Fourteen of the eighteen
-comparisons agree exactly; the divergences are the three deliberate behaviour changes. `deploy/fpl-cron.sh` still holds the execution and the exit-code
-precedence, and the Plan is what will replace its decision half.
+comparisons agree exactly; the divergences are the three deliberate behaviour changes.
 
 ## `status` is the last line of a run
 

@@ -48,8 +48,6 @@ from .. import config
 
 from . import settle, storage
 
-logger = logging.getLogger("fpl_schedule")
-
 JOBS = ("daily", "deadline", "auto")
 
 # The one statement of "the deadline is near enough to rank for". It was three - the
@@ -88,7 +86,7 @@ class Settings:
     notifications_configured: bool = False
 
     @classmethod
-    def from_env(cls, **overrides) -> "Settings":
+    def from_env(cls) -> "Settings":
         """Settings for the process this is running in.
 
         The one place the schedule looks at process state, called from `main` and never
@@ -97,8 +95,7 @@ class Settings:
         the import is local because `notify` reaches `status`, which reads this module.
         """
         from . import notify
-        return cls(notifications_configured=notify.target_from_env() is not None,
-                   **overrides)
+        return cls(notifications_configured=notify.target_from_env() is not None)
 
 
 @dataclass(frozen=True)
@@ -402,13 +399,26 @@ class Outcome:
     results: tuple[Result, ...] = ()
 
     @property
-    def exit_code(self) -> int:
+    def reported(self) -> Optional[Result]:
+        """The one failure the run reports, or None when nothing failed.
+
+        The winner is carried as the Result rather than as its integer, because two steps
+        can fail with the same code and matching on the number then names the wrong one -
+        in the very line that exists to stop an hour being spent on the wrong failure.
+        """
         for result in self.results:
             if result.failed and not result.step.tolerated:
-                return result.code
+                return result
         for result in self.results:
             if result.failed:
-                return result.code
+                return result
+        return None
+
+    @property
+    def exit_code(self) -> int:
+        reported = self.reported
+        if reported is not None:
+            return reported.code
         # Nothing ran, or everything passed: the plan's own code still stands, which is
         # how an hourly job that could not read the warehouse reports 2 rather than 0.
         return self.plan.exit_code
@@ -420,15 +430,8 @@ class Outcome:
     @property
     def masked(self) -> tuple[Result, ...]:
         """Failures that happened and are not what is being reported."""
-        reported = self.exit_code
-        seen = False
-        masked = []
-        for result in self.failures:
-            if not seen and result.code == reported:
-                seen = True
-                continue
-            masked.append(result)
-        return tuple(masked)
+        reported = self.reported
+        return tuple(result for result in self.failures if result is not reported)
 
 
 def run(plan: Plan, executor: Executor) -> Outcome:
@@ -441,11 +444,7 @@ def run(plan: Plan, executor: Executor) -> Outcome:
     """
     results = []
     for step in plan.steps:
-        code = executor(step)
-        results.append(Result(step=step, code=code))
-        if code:
-            logger.error("%s exited %s%s", step.invocation, code,
-                         " (tolerated)" if step.tolerated else "")
+        results.append(Result(step=step, code=executor(step)))
     return Outcome(plan=plan, results=tuple(results))
 
 
@@ -548,19 +547,17 @@ def render_outcome(outcome: Outcome) -> str:
         lines.append(f"  {result.step.invocation:<{width}}  {verdict}")
     lines.append("")
     code = outcome.exit_code
-    if not code:
-        lines.append("every step succeeded; exiting 0")
-        return "\n".join(lines)
-    reported = next((r for r in outcome.failures if r.code == code), None)
+    reported = outcome.reported
     if reported is None:
-        lines.append(f"nothing ran and the plan itself could not be made; exiting {code}")
+        lines.append("every step succeeded; exiting 0" if not code else
+                     f"nothing ran and the plan itself could not be made; exiting {code}")
         return "\n".join(lines)
     lines.append(f"exiting {code}, from {reported.step.command} - the first failure, and "
                  f"the one worth acting on. See the exit-code table in "
                  f"docs/SCHEDULING.md.")
     for result in outcome.masked:
         lines.append(f"  also: {result.step.invocation} exited {result.code}, masked by "
-                     f"{reported.step.command}'s {code}")
+                     f"{reported.step.invocation}'s {reported.code}")
     return "\n".join(lines)
 
 

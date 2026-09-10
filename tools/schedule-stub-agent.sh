@@ -9,18 +9,20 @@
 #
 # `settle --list` and `status --hours-to-deadline` are what the shell *asks* rather than
 # runs, so those two are passed through to the real command and answer from the warehouse.
-command="$1"; shift
+set -u
 
-case "$command" in
+cmd="$1"; shift
+
+case "$cmd" in
     settle) [ "${1:-}" = "--list" ] && exec .venv/bin/fpl-agent settle "$@" ;;
     status) [ "${1:-}" = "--hours-to-deadline" ] && exec .venv/bin/fpl-agent status "$@" ;;
 esac
 
 for pair in ${STUB_CODES:-}; do
-    if [ "${pair%%=*}" = "$command" ]; then
-        echo "stub: $command exiting ${pair#*=}" >&2
+    if [ "${pair%%=*}" = "$cmd" ]; then
+        echo "stub: $cmd exiting ${pair#*=}" >&2
         exit "${pair#*=}"
     fi
 done
-echo "stub: $command ok" >&2
+echo "stub: $cmd ok" >&2
 exit 0

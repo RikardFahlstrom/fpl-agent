@@ -18,3 +18,5 @@ standing rules are in [CLAUDE.md](../CLAUDE.md).
 | The account service rotates the refresh token on every exchange, so two concurrent refreshes leave one caller holding a dead credential | `headless_auth.save_refreshed_session`, `headless_auth.py:140` |
 | Each recommendation is priced as the *next* transfer you would make, not as the nth move of a plan | `engine/recommend.transfer_price`, `recommend.py:131` |
 | The deadline is 90 minutes before the round's first kickoff, derived from stored fixtures because the warehouse does not keep `deadline_time`; a postponed opening fixture moves the kickoff but not the real deadline | `engine/storage.next_deadline` |
+| The scheduler reported the *last* failing step's code, so a lost snapshot (3) arrived wearing whatever a later recoverable step exited | `engine/schedule.Outcome` |
+| `deploy/fpl-cron.sh`'s `FPL_DB` reached the queries it asked and not the commands it ran, so a non-default warehouse was planned from one database and written to another | `engine/schedule.SubprocessExecutor` |

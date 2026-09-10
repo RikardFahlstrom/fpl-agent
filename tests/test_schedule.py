@@ -135,6 +135,34 @@ class DailyTests(ScheduleTestCase):
         self.assertNotIn("recommend", [step.command for step in plan.steps])
 
 
+class TailTests(ScheduleTestCase):
+    """The brief and the notifier, which are Steps now rather than a special case."""
+
+    def test_both_tolerate_failure(self):
+        settings = schedule.Settings(notifications_configured=True)
+        plan = schedule.due("daily", now=NOW, warehouse=schedule.Warehouse(self.conn),
+                            settings=settings)
+        tail = [step for step in plan.steps if step.command in ("brief", "notify")]
+        self.assertEqual([step.command for step in tail], ["brief", "notify"])
+        self.assertTrue(all(step.tolerated for step in tail))
+
+    def test_they_come_last_so_they_describe_what_the_run_left_behind(self):
+        plan = schedule.due("daily", now=NOW, warehouse=schedule.Warehouse(self.conn),
+                            settings=schedule.Settings(notifications_configured=True))
+        self.assertEqual(commands(plan)[-2:], ["brief", "notify"])
+
+    def test_an_unconfigured_topic_skips_the_push_rather_than_failing_it(self):
+        # notify is opt-in: a host that has never set a topic must not be mailed an error
+        # every hour.
+        plan = self.due("daily")
+        self.assertNotIn("notify", [step.command for step in plan.steps])
+        self.assertTrue(any(skip.what == "notify" for skip in plan.skipped), plan.skipped)
+
+    def test_a_job_with_nothing_due_writes_no_brief(self):
+        self.kickoff(80)
+        self.assertEqual(self.due("deadline").steps, ())
+
+
 class DeadlineTests(ScheduleTestCase):
     """The hourly job: cheap when idle, and a full re-capture inside the window."""
 
@@ -403,6 +431,17 @@ class RunTests(ScheduleTestCase):
         outcome = schedule.run(plan, executor)
         self.assertEqual(executor.ran, [])
         self.assertEqual(outcome.exit_code, schedule.EXIT_UNREADABLE)
+
+    def test_two_failures_sharing_a_code_are_not_confused_for_each_other(self):
+        # Matching the reported code back to a step by its number named the wrong one:
+        # the tolerated brief here would have been reported as the failure that mattered.
+        outcome = schedule.run(self.plan(
+            schedule.Step("brief", (), "writes", tolerated=True),
+            schedule.Step("snapshot", (), "captures")),
+            RecordingExecutor({"brief": 3, "snapshot": 3}))
+        self.assertEqual(outcome.reported.step.command, "snapshot")
+        self.assertEqual([r.step.command for r in outcome.masked], ["brief"])
+        self.assertIn("masked by snapshot's 3", schedule.render_outcome(outcome))
 
     def test_the_masked_failure_is_named_in_the_report(self):
         outcome = schedule.run(self.plan(
