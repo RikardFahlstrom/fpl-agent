@@ -18,6 +18,7 @@ and no CI; linting is `make lint` on demand, not enforced. `MODEL_VERSION` is at
 | `src/fpl_agent/` | auth, headless_auth, sessions, client, config, models, reference, rotowire_scraper, cli, main |
 | `tests/` | one `test_<module>.py` per engine module; not a package, hence `-t tests` |
 | `deploy/fpl-cron.sh` | the unattended entry point |
+| `tools/` | the schedule-versus-shell equivalence harness; not shipped, not on the server |
 | `.claude/hooks/` | tests gate `git commit`; `fpl-agent status` gates the end of a turn |
 
 ## Commands
@@ -112,6 +113,7 @@ Single-context: one root `CONTEXT.md` and `docs/adr/`, neither created yet. See
 
 - `docs/FACTS.md` — per-subsystem facts and where they live. Read when working in `engine/`.
 - `docs/SCHEDULING.md` — the unattended setup, exit codes, and what cron decides.
+- `docs/schedule-equivalence.md` — how the schedule module was proved equivalent to the shell.
 - `docs/PLAN.md` — the roadmap.
 
 ## Plan Mode

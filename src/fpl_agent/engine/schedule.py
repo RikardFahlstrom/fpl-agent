@@ -10,9 +10,11 @@ one is due, and every **Skipped** item with the reason it was skipped. A Plan is
 by reads only - no writes, no subprocesses, no clock of its own - so "what would run
 tonight" is an assertion rather than a dry run against a live warehouse.
 
-Nothing here executes a Step. Running a Plan, and the rule about which failure wins, is
-the next piece; a Step's `tolerated` flag is where that rule will read whether a failure
-may be dropped.
+`run` takes a Plan and an executor and returns an **Outcome**, which holds the rule about
+which failure wins: the *first* non-zero code, and a tolerated step's code only when
+nothing else failed. Execution stays out of process - each command loads its own
+configuration and one of them may launch a browser - so the executor is the seam, not the
+process boundary.
 
 Three jobs, and each is a different question:
 
@@ -27,18 +29,26 @@ Three jobs, and each is a different question:
 Two states that must never render the same: *nothing is due* and *the question could not
 be asked*. A warehouse that will not open is the second, and the renderer says so.
 
-    fpl-agent schedule --dry-run daily
+    fpl-agent schedule --dry-run daily      what is due, and why
+    fpl-agent schedule daily                run it, reporting the first failure
 """
 
 import argparse
+import logging
+import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+from .. import config
 
 from . import settle, storage
+
+logger = logging.getLogger("fpl_schedule")
 
 JOBS = ("daily", "deadline", "auto")
 
@@ -56,10 +66,6 @@ PROJECTION_HORIZON = 3
 # regardless, and that capture is what creates a warehouse on a new host.
 EXIT_OK = 0
 EXIT_UNREADABLE = 2
-# 64 is what `deploy/fpl-cron.sh` already exits on a job name it does not know; the
-# schedule adds no code of its own to the table in docs/SCHEDULING.md.
-EXIT_USAGE = 64
-
 # Tables a Plan is decided from. A file without them is not this project's warehouse, and
 # saying so beats "no such table: projection" arriving from three lines deeper.
 REQUIRED_TABLES = ("snapshot", "projection", "outcome", "fixture")
@@ -75,6 +81,24 @@ class Settings:
     """
     deadline_within_hours: int = DEADLINE_WITHIN_HOURS
     horizon: int = PROJECTION_HORIZON
+    #: Whether a push target is configured. The engine decides this, not a regex over
+    #: `fpl-agent.ini`: the shell grepped the file and so was a fourth place that could
+    #: get it wrong - it saw neither `FPL_NTFY_TOPIC` in the environment nor a topic set
+    #: any other way `notify` accepts.
+    notifications_configured: bool = False
+
+    @classmethod
+    def from_env(cls, **overrides) -> "Settings":
+        """Settings for the process this is running in.
+
+        The one place the schedule looks at process state, called from `main` and never
+        from `due`, so a Plan stays a function of its arguments. `notify` owns the
+        question of whether it is configured, so it is asked rather than re-answered;
+        the import is local because `notify` reaches `status`, which reads this module.
+        """
+        from . import notify
+        return cls(notifications_configured=notify.target_from_env() is not None,
+                   **overrides)
 
 
 @dataclass(frozen=True)
@@ -260,6 +284,34 @@ def _ranking_or_skip(warehouse: Warehouse, now: datetime,
     return _ranking(), []
 
 
+def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
+    """Write the brief, then push what is worth interrupting a person for.
+
+    Both tolerate failure, which is the whole reason they are marked rather than
+    special-cased: the snapshot is the irrecoverable asset and neither of these is. A
+    dead ntfy server must never make a run that captured the market look like one that
+    lost it, and a formatting problem in the brief must not mask a healthy capture.
+
+    They were the shell's tail, outside the job dispatch, with the masking rule written
+    by hand around them. Here they are ordinary Steps and the rule is `Outcome`'s.
+    """
+    steps = [Step("brief", (),
+                  "the push carries only what is worth a phone buzzing; the brief is the "
+                  "rest of the reasoning, and `logs/` is tracked so it survives",
+                  tolerated=True)]
+    if not settings.notifications_configured:
+        # Skipped, not failed: notify is opt-in, and a host that has never set a topic
+        # should not be mailed an error every hour.
+        return steps, [Skipped("notify", "no ntfy topic is configured; notification is "
+                                         "opt-in - see docs/SCHEDULING.md")]
+    steps.append(Step("notify", (),
+                      "each trigger is pushed once; the fingerprints already sent live "
+                      "in the warehouse, which is what makes an hourly job safe to "
+                      "notify from",
+                      tolerated=True))
+    return steps, []
+
+
 # --------------------------------------------------------------------------
 # The jobs
 # --------------------------------------------------------------------------
@@ -299,8 +351,137 @@ def due(job: str, *, now: datetime, warehouse: Warehouse,
         steps += ranking
         skipped += not_ranking
 
+    if steps:
+        # Only over a job that did something. The shell writes the brief and evaluates
+        # the triggers on every hourly wake-up, which over an idle Tuesday is 24 rewrites
+        # of a tracked file about a warehouse nothing touched.
+        tail, no_tail = _tail(settings)
+        steps += tail
+        skipped += no_tail
+
     return Plan(job=job, at=now, steps=tuple(steps), skipped=tuple(skipped),
                 problem=warehouse.problem)
+
+
+# --------------------------------------------------------------------------
+# Running a Plan
+# --------------------------------------------------------------------------
+
+#: Anything that can run a Step and report its exit code. A subprocess in production, a
+#: recording stub in the tests. The seam is here rather than at the process boundary,
+#: because the precedence rule below has no test surface without it.
+Executor = Callable[[Step], int]
+
+
+@dataclass(frozen=True)
+class Result:
+    """What one Step did."""
+    step: Step
+    code: int
+
+    @property
+    def failed(self) -> bool:
+        return self.code != 0
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """What a whole run did, and the single code it reports.
+
+    **The first failure wins.** The shell assigned each step's code unconditionally, so
+    the *last* failure was reported: a `snapshot` exiting 3 (no session) followed by a
+    `project` exiting 1 reported 1, and a lost snapshot - the irrecoverable one - arrived
+    in the cron mail wearing the code of something recoverable.
+
+    A tolerated step's failure is reported only when nothing else failed. That is the
+    shell's hand-written masking of `notify` behind the job's own code, generalised: the
+    snapshot is the irrecoverable asset and a push is not, so a dead ntfy server can turn
+    a 0 into an 8 and can never turn a 3 into one.
+    """
+    plan: Plan
+    results: tuple[Result, ...] = ()
+
+    @property
+    def exit_code(self) -> int:
+        for result in self.results:
+            if result.failed and not result.step.tolerated:
+                return result.code
+        for result in self.results:
+            if result.failed:
+                return result.code
+        # Nothing ran, or everything passed: the plan's own code still stands, which is
+        # how an hourly job that could not read the warehouse reports 2 rather than 0.
+        return self.plan.exit_code
+
+    @property
+    def failures(self) -> tuple[Result, ...]:
+        return tuple(result for result in self.results if result.failed)
+
+    @property
+    def masked(self) -> tuple[Result, ...]:
+        """Failures that happened and are not what is being reported."""
+        reported = self.exit_code
+        seen = False
+        masked = []
+        for result in self.failures:
+            if not seen and result.code == reported:
+                seen = True
+                continue
+            masked.append(result)
+        return tuple(masked)
+
+
+def run(plan: Plan, executor: Executor) -> Outcome:
+    """Run every Step in order and report what happened.
+
+    A failing step does not stop the ones after it, which is today's behaviour and is
+    deliberate: a `settle` that refuses an unfinished gameweek must not cost the run its
+    brief, and a failed capture still leaves a warehouse worth reporting on. What changes
+    is only which code comes out - see `Outcome`.
+    """
+    results = []
+    for step in plan.steps:
+        code = executor(step)
+        results.append(Result(step=step, code=code))
+        if code:
+            logger.error("%s exited %s%s", step.invocation, code,
+                         " (tolerated)" if step.tolerated else "")
+    return Outcome(plan=plan, results=tuple(results))
+
+
+@dataclass(frozen=True)
+class SubprocessExecutor:
+    """Run each Step as its own process, the way the shell does.
+
+    Process isolation is load-bearing, not incidental: each command loads its own
+    configuration, sets up its own logging, opens and closes its own connection, and one
+    of them may launch a browser. It is also what preserves the per-command exit codes
+    for free - the table in `docs/SCHEDULING.md` is a contract between the commands and
+    cron, not something this module invents.
+
+    `--db` is appended only when it is not the default, so the ordinary deployment's
+    invocation is exactly the one the shell makes today. The shell's own `FPL_DB` reached
+    its queries and not the commands it ran, so a non-default warehouse was planned from
+    one database and written to another.
+    """
+    agent: Path
+    db: Optional[Path] = None
+
+    def argv(self, step: Step) -> list[str]:
+        argv = [str(self.agent), step.command, *step.args]
+        if self.db is not None and Path(self.db) != storage.DEFAULT_DB_PATH:
+            argv += ["--db", str(self.db)]
+        return argv
+
+    def __call__(self, step: Step) -> int:
+        argv = self.argv(step)
+        print(f"--- {' '.join(argv)}", flush=True)
+        return subprocess.run(argv).returncode
+
+
+def agent_binary() -> Path:
+    """The console script to run steps with, overridable the way the shell allows."""
+    return Path(os.environ.get("FPL_AGENT_BIN") or ".venv/bin/fpl-agent")
 
 
 # --------------------------------------------------------------------------
@@ -351,35 +532,72 @@ def render(plan: Plan, *, one_line: bool = False) -> str:
     return "\n".join(lines)
 
 
+def render_outcome(outcome: Outcome) -> str:
+    """What ran, what it exited, and which code is being reported - and why.
+
+    A cron mail is read at 03:00 by somebody with no other context, so a masked failure
+    is named rather than dropped silently. "notify exited 8, masked by snapshot's 3" is
+    the line that stops an hour being spent on the wrong one.
+    """
+    lines = [f"{outcome.plan.job}: ran {len(outcome.results)} step(s)"]
+    width = max((len(r.step.invocation) for r in outcome.results), default=0)
+    for result in outcome.results:
+        verdict = "ok" if not result.failed else f"exited {result.code}"
+        if result.failed and result.step.tolerated:
+            verdict += " (tolerated)"
+        lines.append(f"  {result.step.invocation:<{width}}  {verdict}")
+    lines.append("")
+    code = outcome.exit_code
+    if not code:
+        lines.append("every step succeeded; exiting 0")
+        return "\n".join(lines)
+    reported = next((r for r in outcome.failures if r.code == code), None)
+    if reported is None:
+        lines.append(f"nothing ran and the plan itself could not be made; exiting {code}")
+        return "\n".join(lines)
+    lines.append(f"exiting {code}, from {reported.step.command} - the first failure, and "
+                 f"the one worth acting on. See the exit-code table in "
+                 f"docs/SCHEDULING.md.")
+    for result in outcome.masked:
+        lines.append(f"  also: {result.step.invocation} exited {result.code}, masked by "
+                     f"{reported.step.command}'s {code}")
+    return "\n".join(lines)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="fpl-agent schedule",
         description="Say what a scheduled job is due to do, and why.")
     parser.add_argument("job", choices=JOBS)
     parser.add_argument("--dry-run", action="store_true",
-                        help="print the plan and touch nothing (the only mode today)")
+                        help="print the plan and touch nothing")
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
     args = parser.parse_args(argv)
 
-    if not args.dry_run:
-        # Running a Plan is a separate piece of work, and the rule about which failure
-        # wins belongs with it. Saying so beats a command that silently plans when it was
-        # asked to act - this project's own recurring bug wearing a new hat.
-        print("schedule can only plan today; running a plan is not wired up yet. "
-              "Re-run with --dry-run to see what is due.", file=sys.stderr)
-        return EXIT_USAGE
+    # Before the settings are read, since the ini is how a topic is usually configured
+    # and whether one is decides whether `notify` is a Step at all.
+    config.load()
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 
     warehouse = open_warehouse(args.db)
     try:
         plan = due(args.job, now=datetime.now(timezone.utc), warehouse=warehouse,
-                   settings=Settings())
+                   settings=Settings.from_env())
     finally:
+        # Closed before anything runs: the steps open the warehouse themselves, and each
+        # of them writes to it.
         if warehouse.conn is not None:
             warehouse.conn.close()
 
     print(render(plan))
-    print("\nnothing above was run.")
-    return plan.exit_code
+    if args.dry_run:
+        print("\nnothing above was run.")
+        return plan.exit_code
+
+    print()
+    outcome = run(plan, SubprocessExecutor(agent=agent_binary(), db=args.db))
+    print(render_outcome(outcome))
+    return outcome.exit_code
 
 
 if __name__ == "__main__":

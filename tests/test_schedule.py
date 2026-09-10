@@ -24,6 +24,12 @@ from test_status import WarehouseBuilder
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 
 
+#: What every job that does anything ends on, once the tolerated tail is planned. With
+#: no topic configured - the default in these tests - `notify` is skipped rather than
+#: planned, so the tail is the brief alone.
+TAIL = ["brief"]
+
+
 def commands(plan: schedule.Plan) -> list[str]:
     """The invocations in order, which is what a caller would actually run."""
     return [step.invocation for step in plan.steps]
@@ -109,12 +115,12 @@ class DailyTests(ScheduleTestCase):
         self.assertEqual(commands(plan)[3:], [
             "settle --gameweek 4 --learn",
             "settle --gameweek 5 --learn",
-        ])
+        ] + TAIL)
 
     def test_nothing_to_grade_is_a_skip_with_a_reason_rather_than_silence(self):
         plan = self.due("daily")
         self.assertEqual(commands(plan), [
-            "snapshot --force", "snapshot --backfill-only", "project --horizon 3"])
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3"] + TAIL)
         self.assertTrue(any("grad" in skip.reason for skip in plan.skipped),
                         plan.skipped)
 
@@ -167,7 +173,7 @@ class DeadlineTests(ScheduleTestCase):
             "rivals",
             "recommend",
             "status",
-        ])
+        ] + TAIL)
 
     def test_the_hourly_job_skips_the_backfill_and_says_why(self):
         self.kickoff(5)
@@ -208,7 +214,7 @@ class AutoTests(ScheduleTestCase):
             "rivals",
             "recommend",
             "status",
-        ])
+        ] + TAIL)
 
     def test_out_of_the_window_it_is_the_daily_job(self):
         self.settleable_gameweek(4)
@@ -218,7 +224,7 @@ class AutoTests(ScheduleTestCase):
             "snapshot --backfill-only",
             "project --horizon 3",
             "settle --gameweek 4 --learn",
-        ])
+        ] + TAIL)
         self.assertTrue(any("rank" in skip.what or "rank" in skip.reason
                             for skip in plan.skipped), plan.skipped)
 
@@ -255,8 +261,8 @@ class ColdStartTests(unittest.TestCase):
         plan = self.due("daily")
         self.assertEqual(commands(plan)[0], "snapshot --force")
         self.assertTrue(plan.skipped)
-        self.assertTrue(all(str(self.path) in skip.reason for skip in plan.skipped),
-                        plan.skipped)
+        self.assertIn(str(self.path),
+                      [skip.reason for skip in plan.skipped if skip.what == "grading"][0])
         self.assertEqual(plan.exit_code, 0)
 
     def test_auto_captures_too(self):
@@ -317,7 +323,119 @@ class RenderTests(ScheduleTestCase):
     def test_the_one_line_says_how_much_is_due(self):
         self.kickoff(80)
         self.assertIn("nothing due", schedule.render(self.due("deadline"), one_line=True))
-        self.assertIn("3 steps due", schedule.render(self.due("daily"), one_line=True))
+        self.assertIn("4 steps due", schedule.render(self.due("daily"), one_line=True))
+
+
+class RecordingExecutor:
+    """A hand-written stand-in for the subprocess executor.
+
+    It records what it was asked to run, in order, and returns whatever exit code the
+    test scripted for that command - defaulting to success. Ordering is asserted from
+    inside the stub rather than reconstructed afterwards, which is how the notifier's
+    "record the fingerprint only after a successful send" test is built.
+    """
+
+    def __init__(self, codes: Optional[dict[str, int]] = None):
+        self.codes = codes or {}
+        self.ran: list[str] = []
+
+    def __call__(self, step: schedule.Step) -> int:
+        self.ran.append(step.invocation)
+        return self.codes.get(step.command, 0)
+
+
+class RunTests(ScheduleTestCase):
+    """The precedence rule, pinned. It was a comment in a shell script and a live bug."""
+
+    def plan(self, *steps: schedule.Step) -> schedule.Plan:
+        return schedule.Plan(job="daily", at=NOW, steps=steps)
+
+    def test_every_step_runs_in_order(self):
+        executor = RecordingExecutor()
+        outcome = schedule.run(self.due("daily"), executor)
+        self.assertEqual(executor.ran, commands(outcome.plan))
+        self.assertEqual(outcome.exit_code, 0)
+
+    def test_the_first_failure_is_reported_not_the_last(self):
+        # The live bug: a snapshot with no session (3) followed by a project that failed
+        # (1) reported 1 - the recoverable code for the irrecoverable failure.
+        outcome = schedule.run(self.due("daily"),
+                               RecordingExecutor({"snapshot": 3, "project": 1}))
+        self.assertEqual(outcome.exit_code, 3)
+
+    def test_a_failing_step_does_not_stop_the_steps_after_it(self):
+        executor = RecordingExecutor({"snapshot": 3})
+        outcome = schedule.run(self.due("daily"), executor)
+        self.assertEqual(executor.ran, commands(outcome.plan))
+        self.assertIn("brief", executor.ran)
+
+    def test_a_tolerated_failure_is_reported_when_nothing_else_failed(self):
+        outcome = schedule.run(self.plan(
+            schedule.Step("snapshot", (), "captures"),
+            schedule.Step("notify", (), "pushes", tolerated=True)),
+            RecordingExecutor({"notify": 8}))
+        self.assertEqual(outcome.exit_code, 8)
+
+    def test_a_tolerated_failure_never_masks_a_real_one(self):
+        # A dead ntfy server must not make a run that captured the market look like one
+        # that lost it.
+        outcome = schedule.run(self.plan(
+            schedule.Step("snapshot", (), "captures"),
+            schedule.Step("notify", (), "pushes", tolerated=True)),
+            RecordingExecutor({"snapshot": 3, "notify": 8}))
+        self.assertEqual(outcome.exit_code, 3)
+        self.assertEqual([r.step.command for r in outcome.masked], ["notify"])
+
+    def test_a_real_failure_after_a_tolerated_one_still_wins(self):
+        # Order must not decide it: the brief fails first, the settle after it.
+        outcome = schedule.run(self.plan(
+            schedule.Step("brief", (), "writes", tolerated=True),
+            schedule.Step("settle", (), "grades")),
+            RecordingExecutor({"brief": 1, "settle": 6}))
+        self.assertEqual(outcome.exit_code, 6)
+
+    def test_the_plans_own_code_stands_when_nothing_ran(self):
+        # The hourly job on a host whose warehouse will not open: 2, not 0.
+        plan = schedule.due("deadline", now=NOW,
+                            warehouse=schedule.Warehouse(problem="unreadable"),
+                            settings=schedule.Settings())
+        executor = RecordingExecutor()
+        outcome = schedule.run(plan, executor)
+        self.assertEqual(executor.ran, [])
+        self.assertEqual(outcome.exit_code, schedule.EXIT_UNREADABLE)
+
+    def test_the_masked_failure_is_named_in_the_report(self):
+        outcome = schedule.run(self.plan(
+            schedule.Step("snapshot", (), "captures"),
+            schedule.Step("notify", (), "pushes", tolerated=True)),
+            RecordingExecutor({"snapshot": 3, "notify": 8}))
+        text = schedule.render_outcome(outcome)
+        self.assertIn("exiting 3", text)
+        self.assertIn("masked by snapshot's 3", text)
+
+
+class ExecutorTests(unittest.TestCase):
+    """What the production executor would invoke, without invoking it."""
+
+    def test_it_calls_the_console_script_the_way_the_shell_does(self):
+        executor = schedule.SubprocessExecutor(agent=Path(".venv/bin/fpl-agent"))
+        self.assertEqual(
+            executor.argv(schedule.Step("settle", ("--gameweek", "3", "--learn"), "")),
+            [".venv/bin/fpl-agent", "settle", "--gameweek", "3", "--learn"])
+
+    def test_the_default_warehouse_is_not_named_on_the_command_line(self):
+        executor = schedule.SubprocessExecutor(agent=Path("fpl-agent"),
+                                               db=storage.DEFAULT_DB_PATH)
+        self.assertEqual(executor.argv(schedule.Step("rivals", (), "")),
+                         ["fpl-agent", "rivals"])
+
+    def test_a_warehouse_that_is_not_the_default_is_passed_to_every_step(self):
+        # The shell's own FPL_DB reached its queries and not the commands it ran, so a
+        # non-default warehouse was planned from one database and written to another.
+        executor = schedule.SubprocessExecutor(agent=Path("fpl-agent"),
+                                               db=Path("/tmp/other.db"))
+        self.assertEqual(executor.argv(schedule.Step("rivals", (), "")),
+                         ["fpl-agent", "rivals", "--db", "/tmp/other.db"])
 
 
 class CommandTests(ScheduleTestCase):
@@ -362,11 +480,20 @@ class CommandTests(ScheduleTestCase):
                                     "--db", str(Path(tmp) / "fpl.db")])
         self.assertEqual(code, schedule.EXIT_UNREADABLE)
 
-    def test_running_a_plan_is_not_wired_up_yet_and_says_so(self):
+    def test_a_dry_run_never_reaches_the_executor(self):
+        # Nothing in this file may run a step for real: the production executor launches
+        # `fpl-agent snapshot`, which talks to the FPL API and writes a warehouse.
+        class Exploding:
+            def __init__(self, **kwargs):
+                raise AssertionError("a dry run built an executor")
+
+        self.kickoff(5)
+        original = schedule.SubprocessExecutor
+        schedule.SubprocessExecutor = Exploding
+        self.addCleanup(setattr, schedule, "SubprocessExecutor", original)
         with tempfile.TemporaryDirectory() as tmp:
-            code, _, err = self._run(["daily", "--db", str(self._db(tmp))])
-        self.assertEqual(code, 64)
-        self.assertIn("--dry-run", err)
+            code, _, _ = self._run(["deadline", "--dry-run", "--db", str(self._db(tmp))])
+        self.assertEqual(code, 0)
 
     def test_an_unknown_job_is_a_usage_error(self):
         with self.assertRaises(SystemExit):

@@ -91,9 +91,26 @@ no readable warehouse: it plans nothing and exits 2, because *could not ask the 
 and *nothing is due* must never render the same. `daily` and `auto` still plan the
 capture there — that capture is what creates the warehouse on a new host.
 
-Running a Plan is not wired up yet: `fpl-agent schedule <job>` without `--dry-run` says
-so and exits 64 — the code `deploy/fpl-cron.sh` already uses for a job name it does not
-know, so the exit-code table above is unchanged. `deploy/fpl-cron.sh` still holds the execution and the exit-code
+Without `--dry-run` the same command runs the Plan and reports **the first non-zero exit
+code**, not the last. The shell assigned each step's code unconditionally, so a `snapshot`
+exiting 3 (no session) followed by a `project` exiting 1 reported 1 — the recoverable code
+standing in for the irrecoverable failure, which is the precise outcome the guard in the
+`auto` job exists to prevent. A failing step still does not stop the ones after it.
+
+The brief and the notifier are ordinary Steps carrying a tolerate-failure flag, rather
+than two special cases in the entry point's tail. A tolerated step's code is reported only
+when every other step succeeded, which is the old hand-written masking as general policy:
+a dead ntfy server can turn a 0 into an 8 and can never turn a 3 into one. Whether a topic
+is configured at all is `notify.target_from_env` — the engine, not a regex over
+`fpl-agent.ini`.
+
+The schedule adds no exit code of its own: it propagates the failing step's, and the table
+above is unchanged.
+
+Before any of the shell's decision logic is deleted, the two were diffed across the six
+states that can be enumerated — see [schedule-equivalence.md](schedule-equivalence.md) for
+the result and `tools/schedule-equivalence.sh` to re-run it. Fourteen of the eighteen
+comparisons agree exactly; the divergences are the three deliberate behaviour changes. `deploy/fpl-cron.sh` still holds the execution and the exit-code
 precedence, and the Plan is what will replace its decision half.
 
 ## `status` is the last line of a run
