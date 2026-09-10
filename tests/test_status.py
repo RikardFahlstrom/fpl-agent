@@ -635,6 +635,22 @@ class NextActionTests(StatusTestCase):
         self.assertNotIn("ready to grade", line)
 
 
+class UnreadableWarehouseTests(unittest.TestCase):
+    """A path that is not a warehouse must report, not raise."""
+
+    def test_a_file_that_is_not_a_database_exits_two_rather_than_raising(self):
+        # It opens - `connect_readonly` reads no page - and raises on the first query.
+        # A traceback is what the owner is mailed when cron runs this.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fpl.db"
+            path.write_text("not a database")
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                code = status.main(["--db", str(path)])
+        self.assertEqual(code, status.EXIT_UNREADABLE)
+        self.assertIn("could not read", err.getvalue())
+
+
 class HoursToDeadlineTests(StatusTestCase):
     """The rule `deploy/fpl-cron.sh` consumes. It stops projecting at the same distance
     this reports, so a wrong number here is a scheduler that projects at the wrong time."""

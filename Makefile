@@ -46,6 +46,11 @@ status:              ## check the warehouse agrees with itself (read-only; exits
 # the pipeline is one edit rather than three. `make deadline DRY=--dry-run` says what it
 # would do. It does nothing when no deadline is near, which is the correct answer and the
 # one the hourly job gives.
+#
+# Through the entry point rather than the console script, so a hand-run takes the same
+# lock cron does - the refresh token rotates, and two runs refreshing at once leave one
+# holding a dead credential. The cost is that this exits silently while a scheduled run
+# is in progress, which `make now` has always done for the same reason.
 deadline:            ## re-capture and rank, if a deadline is near
 	./deploy/fpl-cron.sh $(DRY) deadline
 

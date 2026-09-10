@@ -512,6 +512,15 @@ class SummariseTests(ScheduleTestCase):
         self.settleable_gameweek(5)
         self.assertIn("gameweeks 4, 5 ready to grade", self.summary())
 
+    def test_a_warehouse_that_could_not_be_read_never_reads_as_nothing_due(self):
+        # The capture is planned either way, so an absent settle step proves nothing here.
+        plan = schedule.due("auto", now=NOW,
+                            warehouse=schedule.Warehouse(problem="fpl.db is not a warehouse"),
+                            settings=schedule.Settings())
+        summary = schedule.summarise(plan)
+        self.assertIn("could not tell", summary)
+        self.assertNotIn("nothing due", summary)
+
     def test_it_never_promises_work_the_plan_does_not_hold(self):
         self.kickoff(10)
         plan = self.due("auto")
