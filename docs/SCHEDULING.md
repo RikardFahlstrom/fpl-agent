@@ -12,7 +12,10 @@ when its last fixture ends rather than on a weekday. Any crontab encoding that i
 wrong within weeks. `settle` already refuses a gameweek that has not finished, so
 attempting it every morning costs one process and answers correctly.
 
-`deploy/fpl-cron.sh` is that decision layer. Cron calls it; it calls the agent.
+`engine/schedule` is that decision layer, and `fpl-agent schedule` is how it is reached.
+`deploy/fpl-cron.sh` is what cron calls: a directory change, a `flock` re-exec, and one
+invocation of the schedule. It decides nothing, which is why it fits on one screen — the
+eight commits it took to get its three rules right are the reason those rules moved.
 
 ## What runs, and how often
 
@@ -291,8 +294,8 @@ job's code == 0  ->  exit notify's code (0, or 8 if a send failed)
 
 The snapshot is the irrecoverable asset; a notification is not. A dead ntfy server must
 never make a `daily` run that captured the market look like one that lost it. And if no
-topic is configured, `fpl-cron.sh` skips notify with a line saying so rather than
-mailing a failure every hour.
+topic is configured, the schedule skips notify with a line saying so rather than
+mailing a failure every hour — `notify.target_from_env` is what it asks.
 
 ## Exit codes
 

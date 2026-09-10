@@ -36,13 +36,14 @@ passphrase or an agent that has to survive reboots. The server only ever reads t
 The crontab examples below assume it is checked out at `/srv/fpl-agent`; anywhere the
 service user can write is fine, as long as the paths match.
 
-On a Linux box, two system packages first. `sqlite3` is the CLI, which is a separate
-package from python's `sqlite3` module — `deploy/fpl-cron.sh` uses the command to ask the
-warehouse what needs doing, and without it the scheduled jobs refuse to run rather than
-guessing. `flock` comes from `util-linux` and serialises those jobs.
+On a Linux box, one system package first: `flock`, from `util-linux`, which serialises
+the scheduled jobs. Nothing here needs the `sqlite3` *command* — python's `sqlite3`
+module is a different thing and is what the warehouse is read with. The scheduler used
+to require the CLI and refuse to start without it, long after the queries that needed it
+had moved into the engine.
 
 ```bash
-sudo apt install sqlite3 util-linux
+sudo apt install util-linux
 uv run playwright install-deps chromium    # needs root; Chromium's shared libraries
 ```
 
@@ -150,8 +151,8 @@ refresh token on every exchange, so two hosts sharing one would fight and both l
 ./deploy/fpl-cron.sh --dry-run deadline
 ```
 
-The dry runs cost ten seconds and are what catches a missing `sqlite3` before it becomes a
-week of jobs quietly doing nothing.
+The dry runs cost ten seconds and print what each job is due to do and why, which is what
+catches a misconfiguration before it becomes a week of jobs quietly doing nothing.
 
 **4. Schedule it.** Cron fires dumbly and often; the guards decide whether there is work.
 

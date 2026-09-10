@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 #
-# Diff what `engine/schedule` plans against what `deploy/fpl-cron.sh` decides, across the
-# six states that can be enumerated. The script has no tests, so "the new one behaves like
-# the old one" is otherwise unfalsifiable - and three of the changes in this rewrite alter
-# the behaviour of an unattended job that mails its owner on failure.
+# Diff what `deploy/fpl-cron.sh` does against what `engine/schedule` plans, across the six
+# states that can be enumerated.
+#
+# It was written while the script still made the decisions itself, to prove the module
+# equivalent before any of them were deleted - the script had no tests, so "the new one
+# behaves like the old one" was otherwise unfalsifiable. The script now passes its argv
+# to the module, so every row should read `same`: what it checks today is that the entry
+# point still maps each job name to the same work, which is the one thing a crontab on a
+# deployed server depends on. The historical comparison, taken while the two were
+# genuinely different implementations, is in docs/schedule-equivalence.md.
 #
 #   tools/schedule-equivalence.sh            # what each side would run, per state
 #
@@ -54,7 +60,11 @@ for state in no-deadline outside-window inside-window pending-grading no-warehou
         shell_out=$(FPL_DB="$db" FPL_AGENT_BIN="$AGENT" FPL_LOCK="$WORK/lock" \
                     ./deploy/fpl-cron.sh --dry-run "$job" 2>&1)
         shell_code=$?
+        # Two formats, because this ran against a version of the script that printed
+        # `would run:` lines of its own. Both are read, so the harness still works
+        # against the old script if you check one out to compare.
         shell_steps=$(printf '%s\n' "$shell_out" | sed -n "s|^would run: $AGENT ||p" | tr '\n' '|')
+        [ -z "$shell_steps" ] && shell_steps=$(printf '%s\n' "$shell_out" | steps_of_plan | tr '\n' '|')
         plan_out=$("$AGENT" schedule --dry-run "$job" --db "$db" 2>&1)
         plan_code=$?
         plan_steps=$(printf '%s\n' "$plan_out" | steps_of_plan | tr '\n' '|')

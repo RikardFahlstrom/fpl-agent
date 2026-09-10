@@ -87,6 +87,24 @@ fail the run. Taken literally, honouring both needs two kinds of tolerance and a
 case for the brief — which is the shape #37 set out to remove. The rule stays general, on
 the grounds that the only code the brief can return already means what it would mean here.
 
+## After the entry point was shrunk
+
+`deploy/fpl-cron.sh` now passes its argv to `fpl-agent schedule` and decides nothing, so
+`tools/schedule-equivalence.sh` reads `same` in all eighteen rows — what it checks from
+here is that the entry point still maps each job name to the same work, which is the one
+thing a crontab on a deployed server depends on.
+
+Two things were checked directly when the decisions came out of it, on 2026-09-10:
+
+- The plan column is byte-identical before and after the shrink, so the module did not
+  move while the shell was being cut down.
+- The entry point's own behaviour before and after differs in exactly the divergences
+  recorded above — the idle hourly run and the closing `status` — and in nothing else.
+
+And the guard the ticket was named for: on a host with no `sqlite3` command on `PATH`,
+the old script exited 2 for all three jobs and the new one exits 0 for all three. The
+binary had not been used by it since both of its queries moved into the engine.
+
 ## What is not compared
 
 The lock, which stays in the shell and is about the rotating credential rather than the
