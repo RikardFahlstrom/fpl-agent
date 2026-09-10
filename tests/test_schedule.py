@@ -45,6 +45,11 @@ class ScheduleTestCase(unittest.TestCase):
         self.w.projections(self.snapshot_id, 3)
         self.conn.commit()
 
+    #: What `hours_from_now` below is measured from. Every test that calls `due` passes
+    #: NOW in, so the fixed anchor and the injected clock agree. `CommandTests` is the
+    #: exception and overrides this: the command reads the real clock, deliberately.
+    anchor = NOW
+
     def fixtures(self, gameweek: int, *, finished: bool,
                  hours_from_now: Optional[float] = None, count: int = 2) -> None:
         """A round's fixtures, written the way a capture writes them.
@@ -54,7 +59,7 @@ class ScheduleTestCase(unittest.TestCase):
         is `...Z`, the one `datetime.fromisoformat` refuses before Python 3.11.
         """
         kickoff = None if hours_from_now is None else (
-            NOW + timedelta(hours=hours_from_now)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.anchor + timedelta(hours=hours_from_now)).strftime("%Y-%m-%dT%H:%M:%SZ")
         storage.upsert_fixtures(self.conn, [
             {"id": gameweek * 100 + i, "event": gameweek, "team_h": 1, "team_a": 2,
              "team_h_difficulty": 3, "team_a_difficulty": 3,
@@ -316,7 +321,18 @@ class RenderTests(ScheduleTestCase):
 
 
 class CommandTests(ScheduleTestCase):
-    """The entry point. A dry run writes nothing and says so."""
+    """The entry point. A dry run writes nothing and says so.
+
+    The one place the clock is not injected: `main` asks the real one, which is the whole
+    point of everything below it taking `now` as an argument. So the fixtures here are
+    anchored to the real clock too. Anchored to the fixed NOW instead, this file passed
+    all morning and failed by the evening - a deadline five hours after noon has gone by
+    18:30, and the plan correctly said so.
+    """
+
+    @property
+    def anchor(self) -> datetime:
+        return datetime.now(timezone.utc)
 
     def _db(self, tmp: str) -> Path:
         path = Path(tmp) / "fpl.db"
