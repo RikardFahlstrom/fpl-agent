@@ -106,11 +106,12 @@ the repo so far. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context: one root `CONTEXT.md` and `docs/adr/`, neither created yet. See
+Single-context: one root `CONTEXT.md`, which exists, and `docs/adr/`, which does not. See
 `docs/agents/domain.md`.
 
 ## Further reading
 
+- `CONTEXT.md` — the terms this project uses precisely: job, due, Plan, Step, capture.
 - `docs/FACTS.md` — per-subsystem facts and where they live. Read when working in `engine/`.
 - `docs/SCHEDULING.md` — the unattended setup, exit codes, and what cron decides.
 - `docs/schedule-equivalence.md` — how the schedule module was proved equivalent to the shell.

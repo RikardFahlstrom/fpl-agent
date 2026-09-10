@@ -13,10 +13,11 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 ## This repo
 
 **Single-context.** One `CONTEXT.md` and one `docs/adr/` at the repo root — no
-`CONTEXT-MAP.md`, no per-context directories. Neither exists yet; `/domain-modeling`
-creates them lazily, so proceed silently until then.
+`CONTEXT-MAP.md`, no per-context directories. `CONTEXT.md` exists and holds the terms the
+scheduling work resolved; `docs/adr/` does not, because nothing so far has reversed a
+recorded decision. `/domain-modeling` creates them lazily, so proceed silently until then.
 
-Until they do exist, the standing domain documentation lives in:
+The rest of the standing domain documentation:
 
 - `CLAUDE.md` — the stack, the map of `src/fpl_agent/`, the commands, and the invariants
   (read scoring weights from `game_config`; bump `MODEL_VERSION` when projections move;
