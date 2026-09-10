@@ -91,8 +91,30 @@ Code, `docs/`, and the reasoning trail: `learnings/` and `logs/actions.jsonl`. *
 commit what they leave behind. Do not commit a placeholder to make the directories
 appear: an empty `learnings/` claims a loop has run that has not.
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `RikardFahlstrom/fpl-agent` via the `gh` CLI — not the `upstream` fork
+source. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name; only `wontfix` exists on
+the repo so far. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `CONTEXT.md` and `docs/adr/`, neither created yet. See
+`docs/agents/domain.md`.
+
 ## Further reading
 
 - `docs/FACTS.md` — per-subsystem facts and where they live. Read when working in `engine/`.
 - `docs/SCHEDULING.md` — the unattended setup, exit codes, and what cron decides.
 - `docs/PLAN.md` — the roadmap.
+
+## Plan Mode
+
+- Make the plan extremely concise. Sacrifice grammar for the sake of concision.
+- At the end of each plan, give me a list of unresolved questions to answer, if any.
