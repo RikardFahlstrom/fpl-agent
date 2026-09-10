@@ -39,11 +39,14 @@ script consumes it, so the rule lives in exactly one place — `settle.settleabl
 the scheduler and the engine came to disagree in the first place.
 
 "When is the next deadline" is now asked the same way. It was the script's own SQL until
-it became `status.hours_to_deadline`, reached through `fpl-agent status
---hours-to-deadline`, because a scheduler and an engine that disagree about when to
-project will disagree quietly and on a matchday. The 26-hour cutoff is
-`status.RANK_WITHIN_HOURS`, and `status` reports its `next:` line against the same
-number the scheduler acts on.
+it became `storage.next_deadline` and `storage.hours_to_deadline`, which `status` re-exports
+and the schedule decides its window from, because a scheduler and an engine that disagree
+about when to project will disagree quietly and on a matchday. The hours are rounded
+*down*, so a deadline half an hour gone reads as past rather than as "0h away" — which
+every window that tests `hours < 0` would have let through. The 26-hour cutoff is
+`schedule.DEADLINE_WITHIN_HOURS` — the schedule owns the window because the schedule is
+what acts on it — and `status`'s `next:` line reads it from there, so the two cannot come
+to disagree.
 
 That cutoff gates *ranking*, not projecting. Every capture is projected, in every job,
 because the alternative is what the warehouse used to hold between Tuesday and Friday: a
@@ -70,6 +73,28 @@ lines worth interrupting someone for; the brief is the rest of the reasoning, an
 is tracked so that record survives. Note that this rewrites a tracked file, so a server's
 checkout will show it modified and `git pull` will refuse until those changes are
 committed or discarded.
+
+## What is due, as data
+
+`engine/schedule.py` answers what a job is due to do. `due(job, now=..., warehouse=...,
+settings=...)` returns a **Plan**: the ordered **Step**s, why each one is due, and every
+**Skipped** item with the reason it was skipped. It is produced by reads only — no
+writes, no subprocesses, and no clock of its own, so a deadline window is testable
+without waiting for one.
+
+```sh
+fpl-agent schedule --dry-run auto      # what is due, and what is not, and why
+```
+
+A dry run writes nothing and exits 0. The one exception is the hourly job on a host with
+no readable warehouse: it plans nothing and exits 2, because *could not ask the question*
+and *nothing is due* must never render the same. `daily` and `auto` still plan the
+capture there — that capture is what creates the warehouse on a new host.
+
+Running a Plan is not wired up yet: `fpl-agent schedule <job>` without `--dry-run` says
+so and exits 64 — the code `deploy/fpl-cron.sh` already uses for a job name it does not
+know, so the exit-code table above is unchanged. `deploy/fpl-cron.sh` still holds the execution and the exit-code
+precedence, and the Plan is what will replace its decision half.
 
 ## `status` is the last line of a run
 

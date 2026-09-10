@@ -17,3 +17,4 @@ standing rules are in [CLAUDE.md](../CLAUDE.md).
 | The sell-on fee returns only half of any profit, so budget grows slower than the market | `engine/pricing.py:9` |
 | The account service rotates the refresh token on every exchange, so two concurrent refreshes leave one caller holding a dead credential | `headless_auth.save_refreshed_session`, `headless_auth.py:140` |
 | Each recommendation is priced as the *next* transfer you would make, not as the nth move of a plan | `engine/recommend.transfer_price`, `recommend.py:131` |
+| The deadline is 90 minutes before the round's first kickoff, derived from stored fixtures because the warehouse does not keep `deadline_time`; a postponed opening fixture moves the kickoff but not the real deadline | `engine/storage.next_deadline` |
