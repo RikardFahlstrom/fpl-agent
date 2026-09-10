@@ -53,7 +53,8 @@ fi
 JOB="${1:-}"
 
 # The job names are checked here so that a typo in a crontab is a usage error from the
-# thing cron actually invoked, with the exit code this script has always used for it.
+# thing cron actually invoked, with the exit code this script has always used for it. They
+# are `schedule.JOBS`; a new job is added there and echoed here.
 case "$JOB" in
     daily|deadline|auto) ;;
     *) echo "usage: $0 [--dry-run] {daily|deadline|auto}" >&2; exit 64 ;;

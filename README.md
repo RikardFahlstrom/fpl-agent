@@ -37,10 +37,12 @@ The crontab examples below assume it is checked out at `/srv/fpl-agent`; anywher
 service user can write is fine, as long as the paths match.
 
 On a Linux box, one system package first: `flock`, from `util-linux`, which serialises
-the scheduled jobs. Nothing here needs the `sqlite3` *command* — python's `sqlite3`
-module is a different thing and is what the warehouse is read with. The scheduler used
-to require the CLI and refuse to start without it, long after the queries that needed it
-had moved into the engine.
+the scheduled jobs. The scheduled jobs do not need the `sqlite3` *command* — python's
+`sqlite3` module is a different thing, and is what the warehouse is read with. The
+scheduler used to require the CLI and refuse to start without it, long after the queries
+that needed it had moved into the engine. Install it anyway if you want the backup
+recipe in `docs/SCHEDULING.md` or the comparison harness in `tools/`; nothing that runs
+unattended does.
 
 ```bash
 sudo apt install util-linux
@@ -105,7 +107,8 @@ the list. `make record` logs the move you actually made; nothing records for you
 Snapshot daily. `bootstrap-static` serves current state only — prices, ownership and
 price forecasts are overwritten in place with no history endpoint — so a day not captured
 can never be recovered. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for the unattended
-setup: cron calls `deploy/fpl-cron.sh`, which decides whether there is anything to do.
+setup: cron calls `deploy/fpl-cron.sh`, which takes a lock and asks the engine's
+schedule what is due.
 
 Snapshotting **refuses to run** if it cannot capture your squad, because selling prices,
 bank and free transfers exist in no public endpoint. Pass `--allow-partial` to take the
@@ -151,7 +154,7 @@ refresh token on every exchange, so two hosts sharing one would fight and both l
 ./deploy/fpl-cron.sh --dry-run deadline
 ```
 
-The dry runs cost ten seconds and print what each job is due to do and why, which is what
+The dry runs are one read each and print what the job is due to do and why, which is what
 catches a misconfiguration before it becomes a week of jobs quietly doing nothing.
 
 **4. Schedule it.** Cron fires dumbly and often; the guards decide whether there is work.
