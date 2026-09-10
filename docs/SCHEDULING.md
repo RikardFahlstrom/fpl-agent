@@ -124,8 +124,9 @@ exchange - and answers in one block: is the latest snapshot complete, are projec
 attached to it under the current model, are the actuals current, which gameweek's
 lineups will `project` find, and will tonight's job need a browser. It fixes nothing.
 
-It is the natural last step of any scheduled run, and `make deadline` ends on it for
-that reason. Every command before it reports its own success; `status` is the one that
+It is the last step of the deadline plan that checks anything - only the brief and the
+push follow it - and `make deadline` runs that plan, so it is where a hand-run deadline
+job ends up too. Every command before it reports its own success; `status` is the one that
 checks the state they claim to have left behind - which is the whole lesson of this
 project's bug history. Adding it to the end of a `daily` job costs one process:
 

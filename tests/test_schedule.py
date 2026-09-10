@@ -477,6 +477,51 @@ class ExecutorTests(unittest.TestCase):
                          ["fpl-agent", "rivals", "--db", "/tmp/other.db"])
 
 
+class SummariseTests(ScheduleTestCase):
+    """The one line `status` ends its report on, which is a reader of the Plan.
+
+    The point of it living here is that the line and `make now` cannot disagree: both
+    come from the same plan. It used to be `status`'s own settle query and its own
+    deadline window - a fourth statement of the pipeline.
+    """
+
+    def summary(self, **kwargs) -> str:
+        return schedule.summarise(self.due("auto", **kwargs))
+
+    def test_the_routine_capture_is_not_worth_a_line(self):
+        # Every plan captures and projects. Saying so every time trains the reader to
+        # skip the line, so what it names is what changes about today.
+        self.kickoff(24 * 7)
+        self.assertIn("nothing due", self.summary())
+
+    def test_a_deadline_inside_the_window_is_named_with_its_hours(self):
+        self.kickoff(10)
+        self.assertIn("deadline in 8h", self.summary())
+
+    def test_a_gradeable_gameweek_outranks_a_deadline(self):
+        # Grading is the one that expires: the deadline comes round again, but a gameweek
+        # left ungraded is a projection never scored against its result.
+        self.kickoff(10)
+        self.settleable_gameweek(4)
+        summary = self.summary()
+        self.assertIn("gameweek 4 ready to grade", summary)
+        self.assertNotIn("deadline in", summary)
+
+    def test_several_gradeable_gameweeks_are_all_named(self):
+        self.settleable_gameweek(4)
+        self.settleable_gameweek(5)
+        self.assertIn("gameweeks 4, 5 ready to grade", self.summary())
+
+    def test_it_never_promises_work_the_plan_does_not_hold(self):
+        self.kickoff(10)
+        plan = self.due("auto")
+        summary = schedule.summarise(plan)
+        if "ready to grade" in summary:
+            self.assertTrue(any(step.command == "settle" for step in plan.steps))
+        if "deadline in" in summary:
+            self.assertTrue(any(step.command == "recommend" for step in plan.steps))
+
+
 class CommandTests(ScheduleTestCase):
     """The entry point. A dry run writes nothing and says so.
 

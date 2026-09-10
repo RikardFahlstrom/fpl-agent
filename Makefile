@@ -14,8 +14,8 @@ now:                 ## do whatever is due: capture, settle if ready, project if
 # --force is deliberate. Bare `snapshot` skips when one already exists for today, which
 # is a guard for a hand-run repeat; every scheduled caller wants the opposite. Prices
 # resolve nightly and predicted lineups firm up through matchday, so the second capture
-# of a day is a different market, not a duplicate. `deploy/fpl-cron.sh` forces for the
-# same reason. Drop --force here and `make deadline` projects over yesterday's market.
+# of a day is a different market, not a duplicate. The schedule forces for the same
+# reason, which is why this target and the plan's first step agree.
 snapshot:            ## capture market + squad (refuses if auth is not configured)
 	$(AGENT) snapshot --force
 
@@ -39,11 +39,15 @@ record:              ## log the top-ranked transfer as a decision: make record
 status:              ## check the warehouse agrees with itself (read-only; exits 7 if not)
 	$(AGENT) status
 
-# The order matters: actuals feed the projection's rates, and rivals must exist before
-# ownership can be judged. `status` runs last and is the point of the whole sequence:
-# every step above reports its own success, and this one checks the state they claim to
-# have left behind. It exits 7 on an inconsistency, so the target fails where cron sees it.
-deadline: snapshot backfill project rivals recommend status
+# The deadline half of what cron runs, and the same one: this used to be its own list of
+# steps and drifted from the shell's in both directions - it ran the backfill the hourly
+# job deliberately skips, and ended on a `status` the shell never ran. The order, and
+# which steps belong to this half at all, are `engine/schedule`'s answer now, so changing
+# the pipeline is one edit rather than three. `make deadline DRY=--dry-run` says what it
+# would do. It does nothing when no deadline is near, which is the correct answer and the
+# one the hourly job gives.
+deadline:            ## re-capture and rank, if a deadline is near
+	./deploy/fpl-cron.sh $(DRY) deadline
 
 settle:              ## grade a finished gameweek and draft a learning: make settle GW=3
 	$(AGENT) settle --gameweek $(GW) --learn
