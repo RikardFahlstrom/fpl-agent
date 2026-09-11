@@ -97,13 +97,22 @@ async def refresh_standings(conn: sqlite3.Connection, client: FPLClient, league:
     kept, so the picks capture can carry on from them.
     """
     league_id = league["id"]
-    conn.execute(
-        "INSERT OR REPLACE INTO league VALUES (?, ?, ?, ?, ?)",
-        (league_id, league.get("name"), league.get("league_type"),
-         league.get("rank_count"), _now()),
-    )
     standings = await client.get_league_standings(league_id)
     results = (standings.get("standings") or {}).get("results") or []
+    if not results:
+        # Nothing came back, so nothing is written - `captured_at` is the evidence
+        # `status` reads as "the table is current", and it must not say so of a table
+        # that was not refreshed.
+        logger.warning("league %s returned no standings; table left as it was", league_id)
+        return []
+    # The response knows the league's name and size; the caller may only know its id.
+    about = standings.get("league") or {}
+    conn.execute(
+        "INSERT OR REPLACE INTO league VALUES (?, ?, ?, ?, ?)",
+        (league_id, about.get("name") or league.get("name") or str(league_id),
+         league.get("league_type") or about.get("league_type"),
+         league.get("rank_count") or len(results), _now()),
+    )
     results = [r for r in results if r.get("entry") != own_entry][:max_rivals]
     if results:
         conn.executemany(
@@ -128,28 +137,34 @@ def recorded_entry_id(conn: sqlite3.Connection) -> Optional[int]:
 async def refresh_known_standings(conn: sqlite3.Connection, client: FPLClient,
                                   wanted: Optional[list[int]] = None,
                                   max_rivals: int = DEFAULT_MAX_RIVALS) -> int:
-    """Refresh the table of every league the warehouse already knows, or of `wanted`
-    among them. Returns how many leagues were refreshed.
+    """Refresh the table of the `wanted` leagues, or of every league the warehouse
+    already knows. Returns how many tables actually came back and were written.
 
     Needs no login. The first full `rivals` run recorded the league rows and the
     snapshot recorded your entry, and the standings endpoint is public - so a dead
-    refresh token cannot take the table stale with it.
+    refresh token cannot take the table stale with it. A `wanted` id the warehouse has
+    never seen is fetched anyway: the response carries the league's name.
     """
-    leagues = [dict(row) for row in conn.execute(
-        "SELECT id, name, league_type, entry_count AS rank_count FROM league ORDER BY id")]
     if wanted:
-        leagues = [lg for lg in leagues if lg["id"] in set(wanted)]
+        leagues = [{"id": league_id} for league_id in wanted]
+    else:
+        leagues = [dict(row) for row in conn.execute(
+            "SELECT id, name, league_type, entry_count AS rank_count FROM league "
+            "ORDER BY id")]
     if not leagues:
         return 0
     own_entry = recorded_entry_id(conn)
     if own_entry is None:
         logger.warning("no snapshot has recorded your own entry, so it cannot be told "
                        "apart from the rivals and is kept in the table")
+    refreshed = 0
     for league in leagues:
         results = await refresh_standings(conn, client, league, own_entry, max_rivals)
-        logger.info("league %s (%s): standings refreshed, %s rivals",
-                    league["id"], league.get("name"), len(results))
-    return len(leagues)
+        if results:
+            refreshed += 1
+            logger.info("league %s: standings refreshed, %s rivals",
+                        league["id"], len(results))
+    return refreshed
 
 
 async def capture_league(conn: sqlite3.Connection, client: FPLClient, league: dict,
@@ -250,8 +265,10 @@ async def _refresh_only(args) -> int:
         refreshed = await refresh_known_standings(
             conn, client, args.league or configured_league_ids(), args.max_rivals)
         if not refreshed:
-            logger.error("no league to refresh: the warehouse holds no league rows. Run "
-                         "`make rivals` once, inside a deadline window, to record them.")
+            logger.error("no table was refreshed: either no league is known - run "
+                         "`make rivals` once, inside a deadline window, to record them, "
+                         "or name one with --league - or the ones asked for returned "
+                         "no standings")
             return 1
         return 0
     finally:

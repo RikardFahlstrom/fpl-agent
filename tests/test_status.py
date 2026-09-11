@@ -495,6 +495,14 @@ class RivalTests(StatusTestCase):
         self.assertIn("make now", rivals.detail)
         self.assertClean()
 
+    def test_the_age_is_still_named_when_the_picks_are_behind(self):
+        """The ordinary mid-week state: picks a gameweek behind, table refreshed daily."""
+        self.conn.execute("UPDATE rival_squad SET gameweek = 1")
+        self.conn.commit()
+        rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.WARN)
+        self.assertRegex(rivals.detail, r"table \d+\.\dh old")
+
     def test_no_league_rows_adds_no_second_warning(self):
         self.conn.execute("DELETE FROM rival_squad")
         self.conn.execute("DELETE FROM rival")
