@@ -16,6 +16,8 @@ Makefile expects), SQLite at `data/fpl.db`. No framework, no CI; `make lint` is 
   One class: `PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests`.
 - `deploy/fpl-cron.sh` — the unattended entry point. `tools/` — the schedule-versus-shell
   equivalence harness; not shipped.
+- `learnings/`, `logs/` — the committed reasoning trail; `settle --learn` and
+  `recommend --record` write here, and what they leave is committed, not scratch.
 - `.claude/hooks/` — tests gate `git commit`; `fpl-agent status` gates the end of a turn.
 
 ## Commands
@@ -59,13 +61,6 @@ you wanted, not the exit code.
   about what they did, not a step in a plan.
 - **Credentials stay in `fpl-agent.ini`** (gitignored). Point at the file or the browser
   login flow; the values never enter the conversation.
-
-## What is committed
-
-Code, `docs/`, and the reasoning trail: `learnings/` and `logs/`. **Not** `data/fpl.db`
-(derived, re-fetchable) or `fpl-agent.ini`. `settle --learn` and `recommend --record`
-create their directories on first write; commit what they leave behind, never a
-placeholder — an empty `learnings/` claims a loop has run that has not.
 
 ## Further reading
 
