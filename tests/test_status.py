@@ -39,6 +39,13 @@ class WarehouseBuilder:
                 "INSERT OR REPLACE INTO my_squad VALUES (?,?,?,1,0,0,50,50)",
                 (snapshot_id, element_id, element_id))
 
+    def state(self, snapshot_id, entry_id=4242):
+        """The row only a logged-in capture writes: `record_my_team` stores it with the
+        squad, and a market-only capture has neither."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO my_state VALUES (?,?,100,1000,1,4,'[]')",
+            (snapshot_id, entry_id))
+
     def projections(self, snapshot_id, gameweek, n=3, model_version=MODEL_VERSION):
         for element_id in range(1, n + 1):
             self.conn.execute(

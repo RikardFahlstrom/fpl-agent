@@ -168,7 +168,7 @@ class Plan:
 
 
 @dataclass(frozen=True)
-class Warehouse:
+class Opened:
     """The warehouse as a value: an open connection, or the reason there is not one."""
     conn: Optional[sqlite3.Connection] = None
     problem: Optional[str] = None
@@ -178,7 +178,7 @@ class Warehouse:
         return self.conn is not None
 
 
-def open_warehouse(path: Path | str) -> Warehouse:
+def open_warehouse(path: Path | str) -> Opened:
     """Open the warehouse read-only, turning every failure into a reason rather than a
     raise.
 
@@ -190,28 +190,28 @@ def open_warehouse(path: Path | str) -> Warehouse:
     try:
         conn = storage.connect_readonly(path)
     except FileNotFoundError:
-        return Warehouse(problem=f"no warehouse at {path} - nothing has been captured yet")
+        return Opened(problem=f"no warehouse at {path} - nothing has been captured yet")
     except sqlite3.Error as e:
-        return Warehouse(problem=f"could not open {path}: {e}")
+        return Opened(problem=f"could not open {path}: {e}")
     try:
         present = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
     except sqlite3.DatabaseError as e:
         conn.close()
-        return Warehouse(problem=f"could not read {path}: {e}")
+        return Opened(problem=f"could not read {path}: {e}")
     absent = [table for table in REQUIRED_TABLES if table not in present]
     if absent:
         conn.close()
-        return Warehouse(problem=f"{path} is missing {', '.join(absent)}, so it is not "
+        return Opened(problem=f"{path} is missing {', '.join(absent)}, so it is not "
                                  f"an fpl-agent warehouse")
-    return Warehouse(conn=conn)
+    return Opened(conn=conn)
 
 
 # --------------------------------------------------------------------------
 # The steps, each named once
 # --------------------------------------------------------------------------
 
-def _capture(settings: Settings, warehouse: Warehouse, *,
+def _capture(settings: Settings, warehouse: Opened, *,
              backfill: bool) -> tuple[list[Step], list[Skipped]]:
     """Snapshot, optionally backfill, project - and always project - then refresh the
     league table.
@@ -243,7 +243,7 @@ def _capture(settings: Settings, warehouse: Warehouse, *,
     return steps + standings, not_standings
 
 
-def _standings_or_skip(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
+def _standings_or_skip(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
     """The league table refresh if there is a league to refresh, else why not."""
     what = "the standings refresh"
     if not warehouse.readable:
@@ -257,7 +257,7 @@ def _standings_or_skip(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]
                  "for want of a snapshot, it is stale because nothing asked")], []
 
 
-def _grading(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
+def _grading(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
     """Grade every gameweek that can be graded, oldest first.
 
     Which ones those are is asked of `settle.settleable_gameweeks` and never decided
@@ -294,7 +294,7 @@ def _ranking() -> list[Step]:
     ]
 
 
-def _ranking_or_skip(warehouse: Warehouse, hours: Optional[int],
+def _ranking_or_skip(warehouse: Opened, hours: Optional[int],
                      settings: Settings) -> tuple[list[Step], list[Skipped]]:
     """The ranking half if a deadline is near, else the reason it is not due."""
     what = "the ranking half"
@@ -345,7 +345,7 @@ def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
 # The jobs
 # --------------------------------------------------------------------------
 
-def due(job: str, *, now: datetime, warehouse: Warehouse,
+def due(job: str, *, now: datetime, warehouse: Opened,
         settings: Settings = Settings()) -> Plan:
     """What `job` would do at `now`, given this warehouse and these settings.
 
