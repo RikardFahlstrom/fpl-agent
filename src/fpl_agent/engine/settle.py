@@ -88,66 +88,22 @@ def settleable_gameweeks(conn: sqlite3.Connection,
     SQL for the highest gameweek with *any* finished fixture, which on the Saturday of
     gameweek 4 meant offering a round still being played, failing on it, and stepping
     over an ungraded gameweek 3 that then never got graded at all. Three statements of
-    one rule is two too many; this is the rule, and the others ask it.
+    one rule is two too many.
 
-    Three conditions, each of which is a refusal elsewhere in this file if broken:
-
-    - every fixture in the round played (`gameweek_is_finished`)
-    - no `outcome` rows under this model version - grading twice is not idempotent
-      bookkeeping, it is a second opinion recorded as a first
-    - a projection made from a snapshot *targeting* that gameweek, under this model
-      version. Rounds played before the warehouse existed have none and never can: the
-      prices, lineups and ownership are gone and `bootstrap-static` has no history.
-      Version matters too - after a `MODEL_VERSION` bump an old gameweek cannot be
-      re-projected (see `projection.SettledProjection`), so it is not settleable under
-      the new version either, and offering it would be advice that cannot be taken.
+    The rule itself now lives in `warehouse.GameweekLedger.settleable`, where `status`
+    and `schedule` read it as a value; this is the name `settle --list` and the scheduler
+    still call it by.
     """
-    graded = {row[0] for row in conn.execute(
-        "SELECT DISTINCT gameweek FROM outcome WHERE model_version = ?", (model_version,))}
-    projected = {row[0] for row in conn.execute(
-        """SELECT DISTINCT p.gameweek FROM projection p
-             JOIN snapshot s ON s.id = p.snapshot_id AND s.gameweek = p.gameweek
-            WHERE p.model_version = ?""", (model_version,))}
-    candidates = sorted(projected - graded)
-    return [gw for gw in candidates if gameweek_is_finished(conn, gw)]
-
-
-def gameweek_is_finished(conn: sqlite3.Connection, gameweek: int) -> bool:
-    """Whether every fixture in the gameweek has been played.
-
-    A gameweek with no fixtures recorded is not finished either - absence of fixtures is
-    absence of evidence, not a completed gameweek.
-    """
-    row = conn.execute(
-        "SELECT COUNT(*) AS total, SUM(finished) AS done FROM fixture WHERE event = ?",
-        (gameweek,),
-    ).fetchone()
-    return bool(row["total"]) and row["done"] == row["total"]
-
-
-def has_actuals(conn: sqlite3.Connection, gameweek: int) -> bool:
-    """Whether the round's actuals were ever fetched.
-
-    A finished gameweek with an empty player_gameweek is not a gameweek nobody played in;
-    it is a backfill that failed. The FPL API refuses requests intermittently, every
-    element-summary call then warns and returns nothing, and COALESCE turns 652 absent
-    rows into 652 zeroes - a confident +1.5 bias written to a learning file as fact.
-
-    Eleven players a side per finished fixture is a floor no real round comes near:
-    rounds 1 and 2 hold 610 and 626 rows against a threshold of 220. Zero rows never
-    passes, whatever the fixtures say.
-    """
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM player_gameweek WHERE round = ?", (gameweek,)).fetchone()[0]
-    fixtures = conn.execute(
-        "SELECT COUNT(*) FROM fixture WHERE event = ? AND finished = 1",
-        (gameweek,)).fetchone()[0]
-    return bool(rows) and rows >= 22 * fixtures
+    return warehouse.gameweeks(conn, model_version).settleable()
 
 
 def settle_gameweek(conn: sqlite3.Connection, gameweek: int,
                     model_version: str = MODEL_VERSION) -> int:
     """Join the decision-time projections for a gameweek against actuals.
+
+    Both refusals read the ledger: a round is finished only when every fixture is, and
+    its actuals exist only above the floor of eleven a side per played fixture (see
+    `warehouse.Gameweek`).
 
     The snapshot that counts is `warehouse.projected`: the latest one targeting the
     gameweek that actually projected it. The nightly capture keeps targeting N until the
@@ -156,11 +112,12 @@ def settle_gameweek(conn: sqlite3.Connection, gameweek: int,
     week. Where two snapshots targeting N both projected it - a re-run before the
     deadline - the later still wins; that is the one the decision was made on.
     """
-    if not gameweek_is_finished(conn, gameweek):
+    held = warehouse.gameweeks(conn, model_version).get(gameweek)
+    if not held.finished:
         raise GameweekNotFinished(
             f"gameweek {gameweek} has not finished; grading it now would score every "
             f"player against a zero that has not happened yet")
-    if not has_actuals(conn, gameweek):
+    if not held.has_actuals:
         raise ActualsMissing(
             f"gameweek {gameweek} has finished but almost none of its actuals were "
             f"fetched; grading it now would score every player against a zero that only "

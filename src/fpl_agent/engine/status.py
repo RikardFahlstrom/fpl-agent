@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import schedule, settle, storage, warehouse
+from . import schedule, storage, warehouse
 from .projection import MODEL_VERSION
 from .snapshot import SQUAD_SIZE
 
@@ -99,21 +99,6 @@ def missing_tables(conn: sqlite3.Connection) -> list[str]:
 # --------------------------------------------------------------------------
 # Reading the warehouse
 # --------------------------------------------------------------------------
-
-def finished_gameweeks(conn: sqlite3.Connection) -> list[int]:
-    """Every gameweek all of whose fixtures have been played, ascending.
-
-    The same test as `settle.gameweek_is_finished`, asked of every round at once: a
-    gameweek with no fixtures recorded is not finished, and one with a fixture still to
-    play is not finished either. Every check below that could otherwise mistake "not yet"
-    for "missing" is gated on this list - CLAUDE.md's "absence of a row is data" only
-    starts being true once the fixtures are played.
-    """
-    rows = conn.execute(
-        """SELECT event, COUNT(*) AS total, SUM(finished) AS done
-           FROM fixture WHERE event IS NOT NULL GROUP BY event ORDER BY event""").fetchall()
-    return [r["event"] for r in rows if r["total"] and r["done"] == r["total"]]
-
 
 # Over a day and a half: the daily capture has been missed at least once. Shared by the
 # snapshot and the league table, which the same capture refreshes.
@@ -275,7 +260,7 @@ def check_lineups(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Chec
                  f"`project` will use")
 
 
-def check_actuals(conn: sqlite3.Connection, finished: list[int]) -> Check:
+def check_actuals(ledger: warehouse.GameweekLedger) -> Check:
     """CLAUDE.md: "Absence of a row is data" - but only once the gameweek has finished.
 
     Before kickoff every player is missing a `player_gameweek` row and that is correct.
@@ -283,7 +268,8 @@ def check_actuals(conn: sqlite3.Connection, finished: list[int]) -> Check:
     settling over it grades real scores as zeroes. So the comparison is against the
     highest *finished* gameweek, never against the calendar.
     """
-    backfilled = conn.execute("SELECT MAX(round) FROM player_gameweek").fetchone()[0]
+    finished = ledger.finished()
+    backfilled = ledger.backfilled_through()
     if not finished:
         through = f"round {backfilled}" if backfilled else "no round"
         return Check("actuals", OK,
@@ -304,31 +290,30 @@ def check_actuals(conn: sqlite3.Connection, finished: list[int]) -> Check:
                  f"{latest}")
 
 
-def check_grading(conn: sqlite3.Connection, finished: list[int]) -> Check:
+def check_grading(ledger: warehouse.GameweekLedger) -> Check:
     """CLAUDE.md: "Never grade a gameweek that has not finished."
 
     Which cuts both ways here. An empty `outcome` table for an unfinished gameweek is the
     correct state and must never be reported as a fault, so only finished gameweeks are
     ever counted as ungraded - and even then it is a nudge to run `make settle`, not a
     warehouse that disagrees with itself.
+
+    Which of those settle would actually accept is the ledger's rule, not this module's.
+    Asking it here in slightly different SQL is how the scheduler and the engine came to
+    disagree once already; there is one definition and this is a reader of it.
     """
+    finished = ledger.finished()
     if not finished:
         return Check("grading", OK,
                      "no gameweek has finished yet - an empty outcome table is the right "
                      "state, not a gap")
-    graded = {r[0] for r in conn.execute(
-        "SELECT DISTINCT gameweek FROM outcome WHERE model_version = ?", (MODEL_VERSION,))}
-    ungraded = [gw for gw in finished if gw not in graded]
+    ungraded = [gw for gw in finished if not ledger.get(gw).graded]
     if not ungraded:
         return Check("grading", OK,
                      f"gameweek(s) {_gameweeks(finished)} finished and graded under "
-                     f"model {MODEL_VERSION}")
+                     f"model {ledger.model_version}")
 
-    # Which of those settle would actually accept is settle's question, not this module's.
-    # Asking it here in slightly different SQL is how the scheduler and the engine came to
-    # disagree once already; there is one definition and this is a caller of it.
-    settleable = [gw for gw in settle.settleable_gameweeks(conn, MODEL_VERSION)
-                  if gw in ungraded]
+    settleable = ledger.settleable()
     unreachable = [gw for gw in ungraded if gw not in settleable]
 
     if not settleable:
@@ -338,20 +323,25 @@ def check_grading(conn: sqlite3.Connection, finished: list[int]) -> Check:
                      f"graded - nothing to do, and nothing lost that is recoverable")
 
     detail = (f"gameweek(s) {_gameweeks(settleable)} have finished but carry no outcome "
-              f"rows under model {MODEL_VERSION} - run `make settle GW={settleable[-1]}`")
+              f"rows under model {ledger.model_version} - run `make settle "
+              f"GW={settleable[-1]}`")
     if unreachable:
         detail += (f" (gameweek(s) {_gameweeks(unreachable)} predate the warehouse and "
                    f"can never be graded)")
     return Check("grading", WARN, detail)
 
 
-def check_rivals(conn: sqlite3.Connection, finished: list[int]) -> Check:
+def check_rivals(conn: sqlite3.Connection, ledger: warehouse.GameweekLedger) -> Check:
     """CLAUDE.md: "Absence of a row is data" - a player in no rival squad is owned by 0%.
 
     That only holds if rival squads were captured at all. With none, every candidate has
     unknown ownership instead of zero, which is the bug that discarded 165 of 200
     candidates at exactly the point the edge lives.
+
+    Rival picks and the league table are not gameweek facts, so those two reads stay
+    here; the ledger supplies only which gameweek last finished.
     """
+    finished = ledger.finished()
     row = conn.execute(
         """SELECT gameweek, COUNT(DISTINCT entry_id) AS managers, COUNT(*) AS picks
            FROM rival_squad GROUP BY gameweek ORDER BY gameweek DESC LIMIT 1""").fetchone()
@@ -452,7 +442,10 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
                       f"fpl-agent warehouse, or its schema predates them")]
 
     snapshot = warehouse.latest(conn)
-    finished = finished_gameweeks(conn)
+    # One read of what every round holds; the checks below that could otherwise mistake
+    # "not yet" for "missing" are gated on its `finished` list - CLAUDE.md's "absence of
+    # a row is data" only starts being true once the fixtures are played.
+    ledger = warehouse.gameweeks(conn, MODEL_VERSION)
     checks = [check_snapshot(snapshot)]
     # Squad, projections and lineups all hang off one snapshot; with no usable snapshot
     # there is nothing for them to be measured against, and check_snapshot has failed.
@@ -460,9 +453,9 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
         checks += [check_squad(conn, snapshot),
                    check_projections(conn, snapshot),
                    check_lineups(conn, snapshot)]
-    checks += [check_actuals(conn, finished),
-               check_grading(conn, finished),
-               check_rivals(conn, finished),
+    checks += [check_actuals(ledger),
+               check_grading(ledger),
+               check_rivals(conn, ledger),
                check_decisions(conn)]
     if include_token:
         checks.append(check_token())

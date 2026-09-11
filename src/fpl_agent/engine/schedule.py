@@ -46,7 +46,9 @@ from typing import Callable, Optional
 
 from .. import config
 
-from . import settle, storage
+from . import storage
+from .projection import MODEL_VERSION
+from .warehouse import gameweeks as ledger_of
 
 JOBS = ("daily", "deadline", "auto")
 
@@ -260,15 +262,16 @@ def _standings_or_skip(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
 def _grading(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
     """Grade every gameweek that can be graded, oldest first.
 
-    Which ones those are is asked of `settle.settleable_gameweeks` and never decided
-    here. The scheduler asked its own SQL once and got it wrong twice over: it took the
-    highest gameweek with *any* finished fixture, so on the Saturday of gameweek 4 it
-    offered a round still being played and stepped over an ungraded gameweek 3 that would
-    then never have been graded at all.
+    Which ones those are is the ledger's rule (`warehouse.GameweekLedger.settleable`,
+    the same one `settle --list` prints) and never decided here. The scheduler asked its
+    own SQL once and got it wrong twice over: it took the highest gameweek with *any*
+    finished fixture, so on the Saturday of gameweek 4 it offered a round still being
+    played and stepped over an ungraded gameweek 3 that would then never have been
+    graded at all.
     """
     if not warehouse.readable:
         return [], [Skipped("grading", warehouse.problem)]
-    pending = settle.settleable_gameweeks(warehouse.conn)
+    pending = ledger_of(warehouse.conn, MODEL_VERSION).settleable()
     if not pending:
         return [], [Skipped("grading", "no finished gameweek is waiting to be graded")]
     return [Step("settle", ("--gameweek", str(gameweek), "--learn"),

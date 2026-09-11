@@ -100,6 +100,26 @@ answers, each a `Capture` value or None:
 
 Readers ask the module rather than the `snapshot` table, so that `status` and `lineups`
 agree on the lineup source by construction rather than by a comment saying they should.
+`engine/warehouse` is where "what the warehouse holds" lives; a reader that wants a fact
+about a capture or a gameweek asks it there, not the tables.
+
+## ledger
+
+What the warehouse holds for every gameweek, read once as a value:
+`warehouse.gameweeks(conn, model_version) -> GameweekLedger`. Per round — `fixtures`,
+`played`, `actuals`, `projected` (a capture *targeting* the round projected it under
+`model_version`), `graded` (outcome rows under `model_version`) — and derived from them
+*finished* (every fixture played; no fixtures recorded is not finished) and
+*has_actuals* (at least eleven a side per played fixture, and zero never passes). The
+ledger's `finished()` and `settleable()` (finished, projected, not graded; oldest first)
+are the one statement of "grade a gameweek only once it has finished".
+
+It is a value, not a seam: `settle` reads it for its two refusals and for `--list`,
+`status` reads it once in `gather` and hands it to the checks, and `schedule.due` reads it
+through `Opened.conn` to plan grading. None of them holds a rule of its own — the fourth
+copy, in `deploy/fpl-cron.sh`, is the one that offered a round still being played and
+stepped over an ungraded one. `model_version` is a parameter so that a bump can compare
+two ledgers.
 
 ## The seam
 
