@@ -275,8 +275,7 @@ The last two are tracked but not yet present: `fpl-agent settle --learn` and
 `fpl-agent recommend --record` create them on first write.
 
 `data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
-[CLAUDE.md](CLAUDE.md), the roadmap in [docs/PLAN.md](docs/PLAN.md), and a brief for
-handing the repo to an external reviewer in [docs/REVIEW-PROMPT.md](docs/REVIEW-PROMPT.md).
+[CLAUDE.md](CLAUDE.md) and the roadmap in [docs/PLAN.md](docs/PLAN.md).
 
 ## Credit
 
