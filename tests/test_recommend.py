@@ -432,7 +432,7 @@ class DecisionLogTests(unittest.TestCase):
 
         self.assertEqual(entry["kind"], "transfer")
         self.assertEqual(entry["urgency"], "tonight")
-        self.assertEqual(entry["status"], "proposed")
+        self.assertEqual(entry["status"], "made")   # --record is a claim you acted
         self.assertIn("New over Old", entry["rationale"])
         self.assertIn("rising", entry["rationale"])
         self.assertEqual(entry["payload"]["in"]["name"], "New")

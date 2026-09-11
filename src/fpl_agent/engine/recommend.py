@@ -17,7 +17,7 @@ file and its directory are created by the first --record run; until one has happ
 there is nothing to commit, which is why neither is in the checkout.
 
     fpl-agent recommend                 # show recommendations
-    fpl-agent recommend --record        # and log the top one as a decision
+    fpl-agent recommend --record        # and log the top one as the transfer you made
 """
 
 import argparse
@@ -397,7 +397,15 @@ def render(context: dict[str, Any], recommendations: list[dict[str, Any]],
 
 
 def record_decision(conn: sqlite3.Connection, recommendation: dict[str, Any],
-                    kind: str = "transfer", status: str = "proposed") -> int:
+                    kind: str = "transfer", status: str = "made") -> int:
+    """Write one decision row and return its id.
+
+    `status` is `made` by default because `--record` is a claim about what the user
+    did, not a step in a plan (see `make record`): a row is written when they say the
+    transfer happened. `proposed` is the column default and is left for a writer that
+    logs a recommendation nobody has acted on yet; nothing in the engine does that
+    today, which is why the CLI has no flag for it.
+    """
     # The `xp_delta` column keeps its meaning - gross gain - so existing rows stay
     # comparable; the net and the hit ride along in the payload JSON and are spelled
     # out in the rationale, which is the part a human reads back.
@@ -455,7 +463,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--weeks", type=int, default=HORIZON_GAMEWEEKS)
     parser.add_argument("--top", type=int, default=8)
     parser.add_argument("--record", action="store_true",
-                        help="log the top recommendation as a proposed decision")
+                        help="log the top recommendation as the transfer you made")
     parser.add_argument("--actions-log", type=Path, default=ACTIONS_LOG)
     args = parser.parse_args(argv)
 
