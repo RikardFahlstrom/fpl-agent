@@ -393,11 +393,13 @@ def check_decisions(conn: sqlite3.Connection) -> Check:
     """Informational, never a fault: an empty `decision` table is exactly what a
     warehouse that has proposed nothing yet looks like."""
     row = conn.execute(
-        "SELECT COUNT(*) AS n, MAX(created_at) AS last FROM decision").fetchone()
+        """SELECT COUNT(*) AS n, MAX(created_at) AS last,
+                  SUM(status = 'made') AS made FROM decision""").fetchone()
     if not row["n"]:
         return Check("decisions", OK,
                      "none recorded - `recommend --record` is what writes them")
-    return Check("decisions", OK, f"{row['n']} recorded, latest {row['last']}")
+    return Check("decisions", OK,
+                 f"{row['n']} recorded, {row['made'] or 0} made, latest {row['last']}")
 
 
 def check_token(now: Optional[float] = None) -> Check:
