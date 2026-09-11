@@ -1,24 +1,9 @@
 # fpl-agent
 
-An FPL decision engine. The MCP server is one interface onto it; the warehouse,
-projections and learning loop are the substance.
-
-## Stack
-
-Python 3.10+, `uv` for the virtualenv and lockfile (`uv sync` creates the `.venv` the
-Makefile expects), SQLite at `data/fpl.db`. No framework, no CI; `make lint` is on demand.
-
-## Map
-
-- `src/fpl_agent/engine/` — the real work: snapshot, projection, scoring, settle, schedule…
-- `src/fpl_agent/mcp/` — inherited fork surface; the MCP server over the engine.
-- `tests/` — one `test_<module>.py` per engine module; not a package, hence `-t tests`.
-  One class: `PYTHONPATH=src:tests .venv/bin/python -m unittest test_settle.SettleTests`.
-- `deploy/fpl-cron.sh` — the unattended entry point. `tools/` — the schedule-versus-shell
-  equivalence harness; not shipped.
-- `learnings/`, `logs/` — the committed reasoning trail; `settle --learn` and
-  `recommend --record` write here, and what they leave is committed, not scratch.
-- `.claude/hooks/` — tests gate `git commit`; `fpl-agent status` gates the end of a turn.
+An FPL decision engine; `README.md` covers install and use. `src/fpl_agent/engine/` is
+the real work and `mcp/` the inherited fork surface over it. `learnings/` and `logs/` are
+the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
+is committed, not scratch.
 
 ## Commands
 
