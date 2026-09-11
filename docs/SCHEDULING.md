@@ -55,8 +55,16 @@ That cutoff gates *ranking*, not projecting. Every capture is projected, in ever
 because the alternative is what the warehouse used to hold between Tuesday and Friday: a
 snapshot with no projections, which `status` calls an inconsistency and exits 7 for, and
 which the brief pushed `status_failed` about every morning. Projecting is cheap and reads
-only what the capture just stored; `rivals` and `recommend` are the expensive half and the
-half that is actually deadline-shaped.
+only what the capture just stored; the rival *picks* and `recommend` are the expensive half
+and the half that is actually deadline-shaped.
+
+The league table is not. `rivals` captures two things at different prices - the standings,
+one public request that is always current, and the picks, five calls that FPL hides until
+the gameweek starts - and the standings used to ride along behind the window that exists
+for the picks, which is how the table sat five days stale before a decision. Every capture
+now ends on `rivals --standings-only`, which needs no session, once the warehouse holds a
+league to refresh; until a first full `rivals` run has recorded one, the plan skips it and
+says so.
 
 A gameweek qualifies on three counts, and each was a bug before it was a condition:
 

@@ -66,7 +66,7 @@ EXIT_OK = 0
 EXIT_UNREADABLE = 2
 # Tables a Plan is decided from. A file without them is not this project's warehouse, and
 # saying so beats "no such table: projection" arriving from three lines deeper.
-REQUIRED_TABLES = ("snapshot", "projection", "outcome", "fixture")
+REQUIRED_TABLES = ("snapshot", "projection", "outcome", "fixture", "league")
 
 
 @dataclass(frozen=True)
@@ -211,15 +211,22 @@ def open_warehouse(path: Path | str) -> Warehouse:
 # The steps, each named once
 # --------------------------------------------------------------------------
 
-def _capture(settings: Settings, *, backfill: bool) -> list[Step]:
-    """Snapshot, optionally backfill, project - and always project.
+def _capture(settings: Settings, warehouse: Warehouse, *,
+             backfill: bool) -> tuple[list[Step], list[Skipped]]:
+    """Snapshot, optionally backfill, project - and always project - then refresh the
+    league table.
 
     These used to be gated separately, so the ordinary state of the warehouse between
     Tuesday and Friday was a snapshot with no projections: the thing `status` calls an
     inconsistency and exits 7 for, produced nightly. Projecting is cheap and reads only
     what the capture just stored, so a capture is not finished until it has been
-    projected. The window below gates `rivals` and `recommend`, which is where the cost
-    and the decisions are.
+    projected. The window below gates the rival *picks* and `recommend`, which is where
+    the cost and the decisions are.
+
+    The standings are the other half of `rivals` and rode along behind that window,
+    which is how the table sat five days stale before a decision (issue #49). They are
+    one public request and never gated on a deadline, so they belong here - once a
+    league is known to refresh, which the first full `rivals` run records.
     """
     steps = [Step("snapshot", ("--force",),
                   "prices, ownership and the squad are current-state only; a day not "
@@ -232,7 +239,22 @@ def _capture(settings: Settings, *, backfill: bool) -> list[Step]:
     steps.append(Step("project", ("--horizon", str(settings.horizon)),
                       "a capture with no projection is an inconsistency `status` exits "
                       "7 for, and projecting is cheap"))
-    return steps
+    standings, not_standings = _standings_or_skip(warehouse)
+    return steps + standings, not_standings
+
+
+def _standings_or_skip(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
+    """The league table refresh if there is a league to refresh, else why not."""
+    what = "the standings refresh"
+    if not warehouse.readable:
+        return [], [Skipped(what, warehouse.problem)]
+    known = warehouse.conn.execute("SELECT COUNT(*) FROM league").fetchone()[0]
+    if not known:
+        return [], [Skipped(what, "no league is known yet; a first `make rivals` inside "
+                                  "a deadline window records them")]
+    return [Step("rivals", ("--standings-only",),
+                 "the league table is public and one request; a stale one is not stale "
+                 "for want of a snapshot, it is stale because nothing asked")], []
 
 
 def _grading(warehouse: Warehouse) -> tuple[list[Step], list[Skipped]]:
@@ -341,7 +363,9 @@ def due(job: str, *, now: datetime, warehouse: Warehouse,
     if job in ("daily", "auto"):
         # The capture is due whatever the warehouse says - on a host that has none, it is
         # what creates one, and refusing to bootstrap is how a new server stays empty.
-        steps += _capture(settings, backfill=True)
+        captured, not_captured = _capture(settings, warehouse, backfill=True)
+        steps += captured
+        skipped += not_captured
         graded, not_graded = _grading(warehouse)
         steps += graded
         skipped += not_graded
@@ -352,7 +376,9 @@ def due(job: str, *, now: datetime, warehouse: Warehouse,
             # The hourly job re-captures rather than ranking over a stale market:
             # RotoWire firms predicted lineups up through matchday, so a projection built
             # 24 hours out and one built 3 hours out are different answers.
-            steps += _capture(settings, backfill=False)
+            captured, not_captured = _capture(settings, warehouse, backfill=False)
+            steps += captured
+            skipped += not_captured
             skipped.append(Skipped(
                 "the backfill", "the hourly job refreshes a market, not a result; "
                                 "re-fetching a season of actuals twelve times a day "

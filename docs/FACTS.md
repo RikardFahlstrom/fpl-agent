@@ -13,6 +13,7 @@ standing rules are in [CLAUDE.md](../CLAUDE.md).
 | Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from the 622 played appearances, not the 1236 stored rows | `engine/scoring.py` |
 | `/me/` carries no league membership - leagues are on `entry/{id}/` | `sessions.get_user_leagues`, `sessions.py:90` |
 | `league_type` `x` is a private league, `s` is global and unusable ("Overall" has ~9.9M entries) | `engine/rivals.py` |
+| League standings (`leagues-classic/{id}/standings/`) are public and always current; a session is needed only to learn membership from `/me/`, and picks are hidden until the gameweek starts | `engine/rivals.refresh_standings`, `rivals --standings-only` |
 | Per-90 rates from tiny samples must be shrunk toward a prior | `engine/projection.shrink` |
 | The sell-on fee returns only half of any profit, so budget grows slower than the market | `engine/pricing.py:9` |
 | The account service rotates the refresh token on every exchange, so two concurrent refreshes leave one caller holding a dead credential | `headless_auth.save_refreshed_session`, `headless_auth.py:140` |

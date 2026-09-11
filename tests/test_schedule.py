@@ -257,6 +257,72 @@ class AutoTests(ScheduleTestCase):
                             for skip in plan.skipped), plan.skipped)
 
 
+class StandingsTests(ScheduleTestCase):
+    """The league table is part of the capture, not of the ranking half (issue #49).
+
+    It went five days stale because `rivals` - standings and picks together - sat behind
+    the deadline window that exists for the picks. The table is public and one request,
+    so every capture refreshes it, as long as there is a league to refresh.
+    """
+
+    STEP = "rivals --standings-only"
+
+    def known_league(self):
+        self.w.rivals(2)
+        self.conn.commit()
+
+    def test_the_daily_capture_refreshes_the_table_after_projecting(self):
+        self.known_league()
+        self.assertEqual(commands(self.due("daily"))[:4], [
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3",
+            self.STEP])
+
+    def test_the_hourly_recapture_refreshes_it_too(self):
+        self.known_league()
+        self.kickoff(5)
+        self.assertEqual(commands(self.due("deadline"))[:3], [
+            "snapshot --force", "project --horizon 3", self.STEP])
+
+    def test_auto_refreshes_it_once(self):
+        self.known_league()
+        self.kickoff(5)
+        self.assertEqual(commands(self.due("auto")).count(self.STEP), 1)
+
+    def test_it_is_not_tolerated_and_carries_a_reason(self):
+        self.known_league()
+        step = [s for s in self.due("daily").steps if s.invocation == self.STEP][0]
+        self.assertFalse(step.tolerated)
+        self.assertTrue(step.reason)
+
+    def test_no_known_league_is_a_skip_that_says_what_records_one(self):
+        plan = self.due("daily")
+        self.assertNotIn(self.STEP, commands(plan))
+        skip = [s for s in plan.skipped if "standings" in s.what][0]
+        self.assertIn("make rivals", skip.reason)
+
+    def test_an_unreadable_warehouse_skips_it_with_the_warehouses_reason(self):
+        plan = schedule.due("daily", now=NOW, settings=schedule.Settings(),
+                            warehouse=schedule.Warehouse(problem="no warehouse at x"))
+        self.assertNotIn(self.STEP, commands(plan))
+        skip = [s for s in plan.skipped if "standings" in s.what][0]
+        self.assertEqual(skip.reason, "no warehouse at x")
+
+    def test_the_summary_does_not_mention_it(self):
+        self.known_league()
+        self.kickoff(24 * 7)
+        self.assertIn("nothing due", schedule.summarise(self.due("auto")))
+
+    def test_its_failure_reports_after_the_snapshots_never_before(self):
+        self.known_league()
+        executor = RecordingExecutor({"snapshot": 3, "rivals": 1})
+        outcome = schedule.run(self.due("daily"), executor)
+        self.assertEqual(outcome.exit_code, 3)
+        self.assertIn(self.STEP, executor.ran)
+        alone = schedule.run(self.due("daily"), RecordingExecutor({"rivals": 1}))
+        self.assertEqual(alone.exit_code, 1)
+        self.assertEqual(alone.reported.step.invocation, self.STEP)
+
+
 class ReadOnlyTests(ScheduleTestCase):
     """Producing a Plan is a read. Nothing about it may touch the warehouse."""
 

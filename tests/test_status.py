@@ -75,7 +75,8 @@ class WarehouseBuilder:
                 (element_id, gameweek))
 
     def rivals(self, gameweek, managers=5):
-        self.conn.execute("INSERT OR REPLACE INTO league VALUES (1,'L','x',10,'t')")
+        self.conn.execute("INSERT OR REPLACE INTO league VALUES (1,'L','x',10,?)",
+                          (datetime.now(timezone.utc).isoformat(),))
         for entry_id in range(1, managers + 1):
             self.conn.execute("INSERT OR REPLACE INTO rival VALUES (?,1,'p','e',1,10)",
                               (entry_id,))
@@ -477,6 +478,40 @@ class RivalTests(StatusTestCase):
 
     def test_the_clean_line_counts_managers(self):
         self.assertIn("5 managers", self.by_label()["rivals"].detail)
+
+    def test_the_clean_line_names_the_tables_age(self):
+        rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.OK)
+        self.assertRegex(rivals.detail, r"table \d+\.\dh old")
+
+    def test_a_stale_table_warns_and_names_the_fix(self):
+        """Issue #49: the table sat five days stale and nothing said so. A stale table
+        is one request from current, so it is a warning and never an inconsistency."""
+        self.conn.execute("UPDATE league SET captured_at = '2020-01-01T00:00:00+00:00'")
+        self.conn.commit()
+        rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.WARN)
+        self.assertIn("table", rivals.detail)
+        self.assertIn("make now", rivals.detail)
+        self.assertClean()
+
+    def test_the_age_is_still_named_when_the_picks_are_behind(self):
+        """The ordinary mid-week state: picks a gameweek behind, table refreshed daily."""
+        self.conn.execute("UPDATE rival_squad SET gameweek = 1")
+        self.conn.commit()
+        rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.WARN)
+        self.assertRegex(rivals.detail, r"table \d+\.\dh old")
+
+    def test_no_league_rows_adds_no_second_warning(self):
+        self.conn.execute("DELETE FROM rival_squad")
+        self.conn.execute("DELETE FROM rival")
+        self.conn.execute("DELETE FROM league")
+        self.conn.commit()
+        rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.WARN)
+        self.assertIn("no rival squads captured", rivals.detail)
+        self.assertNotIn("table", rivals.detail)
 
 
 class DecisionTests(StatusTestCase):

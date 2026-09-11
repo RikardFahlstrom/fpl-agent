@@ -26,6 +26,7 @@ from .. import config
 from . import storage
 from ..client import FPLClient
 from ..headless_auth import authenticated_client
+from ..reference import reference
 from ..sessions import sessions
 
 logger = logging.getLogger("fpl_rivals")
@@ -83,28 +84,97 @@ def capturable_leagues(leagues: list[dict], max_rivals: int = DEFAULT_MAX_RIVALS
     return keep
 
 
+async def refresh_standings(conn: sqlite3.Connection, client: FPLClient, league: dict,
+                            own_entry: Optional[int] = None,
+                            max_rivals: int = DEFAULT_MAX_RIVALS) -> list[dict]:
+    """Bring one league's table up to date: the `league` row and every rival's rank and
+    total, and nothing about their picks.
+
+    The cheap half of a rival capture, and the only writer of standings. Standings are
+    public and never gated on a deadline - a table five days stale is not stale for want
+    of a snapshot, it is stale because nothing asked - so this runs as part of every
+    capture, while the picks below stay behind the deadline window. Returns the rows
+    kept, so the picks capture can carry on from them.
+    """
+    league_id = league["id"]
+    standings = await client.get_league_standings(league_id)
+    results = (standings.get("standings") or {}).get("results") or []
+    if not results:
+        # Nothing came back, so nothing is written - `captured_at` is the evidence
+        # `status` reads as "the table is current", and it must not say so of a table
+        # that was not refreshed.
+        logger.warning("league %s returned no standings; table left as it was", league_id)
+        return []
+    # The response knows the league's name and size; the caller may only know its id.
+    about = standings.get("league") or {}
+    conn.execute(
+        "INSERT OR REPLACE INTO league VALUES (?, ?, ?, ?, ?)",
+        (league_id, about.get("name") or league.get("name") or str(league_id),
+         league.get("league_type") or about.get("league_type"),
+         league.get("rank_count") or len(results), _now()),
+    )
+    results = [r for r in results if r.get("entry") != own_entry][:max_rivals]
+    if results:
+        conn.executemany(
+            "INSERT OR REPLACE INTO rival VALUES (?, ?, ?, ?, ?, ?)",
+            [(r["entry"], league_id, r.get("player_name"), r.get("entry_name"),
+              r.get("rank"), r.get("total")) for r in results],
+        )
+    conn.commit()
+    return results
+
+
+def recorded_entry_id(conn: sqlite3.Connection) -> Optional[int]:
+    """Your entry id as the latest snapshot recorded it, or None if no squad was ever
+    captured. Read from the warehouse so the standings can be refreshed without a
+    session; `/me/` is only needed to learn which leagues you are in."""
+    row = conn.execute(
+        "SELECT entry_id FROM my_state WHERE entry_id IS NOT NULL "
+        "ORDER BY snapshot_id DESC LIMIT 1").fetchone()
+    return row["entry_id"] if row else None
+
+
+async def refresh_known_standings(conn: sqlite3.Connection, client: FPLClient,
+                                  wanted: Optional[list[int]] = None,
+                                  max_rivals: int = DEFAULT_MAX_RIVALS) -> int:
+    """Refresh the table of the `wanted` leagues, or of every league the warehouse
+    already knows. Returns how many tables actually came back and were written.
+
+    Needs no login. The first full `rivals` run recorded the league rows and the
+    snapshot recorded your entry, and the standings endpoint is public - so a dead
+    refresh token cannot take the table stale with it. A `wanted` id the warehouse has
+    never seen is fetched anyway: the response carries the league's name.
+    """
+    if wanted:
+        leagues = [{"id": league_id} for league_id in wanted]
+    else:
+        leagues = [dict(row) for row in conn.execute(
+            "SELECT id, name, league_type, entry_count AS rank_count FROM league "
+            "ORDER BY id")]
+    if not leagues:
+        return 0
+    own_entry = recorded_entry_id(conn)
+    if own_entry is None:
+        logger.warning("no snapshot has recorded your own entry, so it cannot be told "
+                       "apart from the rivals and is kept in the table")
+    refreshed = 0
+    for league in leagues:
+        results = await refresh_standings(conn, client, league, own_entry, max_rivals)
+        if results:
+            refreshed += 1
+            logger.info("league %s: standings refreshed, %s rivals",
+                        league["id"], len(results))
+    return refreshed
+
+
 async def capture_league(conn: sqlite3.Connection, client: FPLClient, league: dict,
                          gameweek: int, max_rivals: int = DEFAULT_MAX_RIVALS,
                          own_entry: Optional[int] = None) -> int:
     """Record a league's members and their squads for the gameweek."""
     league_id = league["id"]
-    conn.execute(
-        "INSERT OR REPLACE INTO league VALUES (?, ?, ?, ?, ?)",
-        (league_id, league.get("name"), league.get("league_type"),
-         league.get("rank_count"), _now()),
-    )
-
-    standings = await client.get_league_standings(league_id)
-    results = (standings.get("standings") or {}).get("results") or []
-    results = [r for r in results if r.get("entry") != own_entry][:max_rivals]
+    results = await refresh_standings(conn, client, league, own_entry, max_rivals)
     if not results:
         return 0
-
-    conn.executemany(
-        "INSERT OR REPLACE INTO rival VALUES (?, ?, ?, ?, ?, ?)",
-        [(r["entry"], league_id, r.get("player_name"), r.get("entry_name"),
-          r.get("rank"), r.get("total")) for r in results],
-    )
 
     semaphore = asyncio.Semaphore(RIVAL_CONCURRENCY)
 
@@ -182,7 +252,33 @@ def league_ownership(conn: sqlite3.Connection, gameweek: int,
     return ownership
 
 
+async def _refresh_only(args) -> int:
+    """`--standings-only`: the table, from a bare client, and nothing else.
+
+    Exits 1 when no league is known, the way `settle` exits 1 with nothing to grade:
+    the schedule only plans this step once a league row exists, so from cron a 1 here
+    means something real rather than a host that has never run `rivals`.
+    """
+    conn = storage.connect(args.db)
+    client = FPLClient(reference=reference)
+    try:
+        refreshed = await refresh_known_standings(
+            conn, client, args.league or configured_league_ids(), args.max_rivals)
+        if not refreshed:
+            logger.error("no table was refreshed: either no league is known - run "
+                         "`make rivals` once, inside a deadline window, to record them, "
+                         "or name one with --league - or the ones asked for returned "
+                         "no standings")
+            return 1
+        return 0
+    finally:
+        await client.close()
+        conn.close()
+
+
 async def _run(args) -> int:
+    if args.standings_only:
+        return await _refresh_only(args)
     conn = storage.connect(args.db)
     client, authenticated = await authenticated_client()
     try:
@@ -232,6 +328,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                              f"(default: ${RIVAL_LEAGUES_ENV}, else all capturable)")
     parser.add_argument("--include-global", action="store_true",
                         help="also consider FPL's global leagues (usually far too large)")
+    parser.add_argument("--standings-only", action="store_true",
+                        help="refresh the league table only - no login, no picks; the "
+                             "leagues are the ones the warehouse already knows")
     args = parser.parse_args(argv)
 
     config.load()

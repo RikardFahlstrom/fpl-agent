@@ -121,6 +121,11 @@ def finished_gameweeks(conn: sqlite3.Connection) -> list[int]:
     return [r["event"] for r in rows if r["total"] and r["done"] == r["total"]]
 
 
+# Over a day and a half: the daily capture has been missed at least once. Shared by the
+# snapshot and the league table, which the same capture refreshes.
+STALE_AFTER_HOURS = 36
+
+
 def _age_hours(captured_at: Optional[str]) -> Optional[float]:
     """Hours since an ISO timestamp, or None if it cannot be read."""
     if not captured_at:
@@ -162,7 +167,7 @@ def check_snapshot(snapshot: Optional[sqlite3.Row]) -> Check:
         return Check("snapshot", FAIL,
                      detail + " - no target gameweek was recorded, so no projection can "
                               "be tied to the decision it was made for")
-    stale = hours is not None and hours > 36
+    stale = hours is not None and hours > STALE_AFTER_HOURS
     return Check("snapshot", WARN if stale else OK,
                  detail + (" - over a day and a half old; prices, ownership and news "
                            "have moved since" if stale else ""))
@@ -364,10 +369,23 @@ def check_rivals(conn: sqlite3.Connection, finished: list[int]) -> Check:
                      "than zero for every candidate. Run `make rivals`.")
     detail = (f"{row['managers']} managers, {row['picks']} picks for gameweek "
               f"{row['gameweek']}")
+    # The table is the cheap half and has its own age: it is refreshed by every capture,
+    # not only by the picks capture behind the deadline window, so a stale one is one
+    # request from current. A warning, never a fault - see issue #49 for the five days
+    # it sat wrong with nothing saying so.
+    table = conn.execute("SELECT MIN(captured_at) AS captured_at FROM league").fetchone()
+    hours = _age_hours(table["captured_at"]) if table else None
+    if hours is not None:
+        detail += f"; table {hours:.1f}h old"
     if finished and row["gameweek"] < finished[-1]:
         return Check("rivals", WARN,
                      detail + f" - behind the last finished gameweek ({finished[-1]}), "
                               f"so effective ownership is stale")
+    if hours is not None and hours > STALE_AFTER_HOURS:
+        return Check("rivals", WARN,
+                     detail + " - the league standings are over a day and a half old; "
+                              "`make now` refreshes them (or `fpl-agent rivals "
+                              "--standings-only`)")
     return Check("rivals", OK, detail)
 
 

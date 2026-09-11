@@ -213,5 +213,118 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(ownership_profile(0.0), "differential")
 
 
+def standings(*rows):
+    """A league standings page as the API returns it: (entry, name, team, rank, total)."""
+    return {"standings": {"results": [
+        {"entry": e, "player_name": n, "entry_name": t, "rank": r, "total": p}
+        for e, n, t, r, p in rows]}}
+
+
+class _StandingsClient:
+    def __init__(self, pages: dict[int, dict]):
+        self.pages = pages
+        self.picks_calls = 0
+
+    async def get_league_standings(self, league_id):
+        return self.pages[league_id]
+
+    async def get_manager_gameweek_picks(self, entry_id, gameweek):
+        self.picks_calls += 1
+        return {"picks": []}
+
+
+class StandingsRefreshTests(unittest.IsolatedAsyncioTestCase):
+    """The cheap half of `rivals`: the table, refreshed without touching the picks."""
+
+    def setUp(self):
+        self.conn = storage.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.conn.execute("INSERT INTO league VALUES (?,?,?,?,?)",
+                          (100, "Mini", "x", 6, "2026-09-05T02:30:00+00:00"))
+        self.conn.executemany(
+            "INSERT INTO rival VALUES (?,?,?,?,?,?)",
+            [(1, 100, "Emil", "E FC", 1, 188), (2, 100, "Mattias", "M FC", 3, 186),
+             (3, 100, "Christoffer", "C FC", 2, 186)])
+        self.conn.executemany(
+            "INSERT INTO rival_squad VALUES (?,?,?,?,?,?,?)",
+            [(1, 3, 500, 1, 2, 1, 0), (2, 3, 500, 1, 1, 0, 0), (3, 3, 600, 1, 1, 0, 0)])
+        self.conn.commit()
+
+    async def test_ranks_and_totals_move_and_the_picks_do_not(self):
+        """The GW4 table from issue #49: ranks 2 and 3 transposed, every total moved."""
+        before = self.conn.execute("SELECT * FROM rival_squad ORDER BY 1,2,3").fetchall()
+        client = _StandingsClient({100: standings(
+            (1, "Emil", "E FC", 1, 210), (2, "Mattias", "M FC", 2, 194),
+            (3, "Christoffer", "C FC", 3, 191), (4, "Joachim", "J FC", 4, 174),
+            (9, "Me", "Own FC", 6, 140))})
+        await rivals.refresh_standings(self.conn, client, league(100), own_entry=9)
+        rows = {r["entry_id"]: (r["rank"], r["total_points"]) for r in
+                self.conn.execute("SELECT * FROM rival WHERE league_id = 100")}
+        self.assertEqual(rows, {1: (1, 210), 2: (2, 194), 3: (3, 191), 4: (4, 174)},
+                         "entry 4 is a new entrant and entry 9 is you")
+        captured = self.conn.execute("SELECT captured_at FROM league").fetchone()[0]
+        self.assertGreater(captured, "2026-09-05T02:30:00+00:00")
+        after = self.conn.execute("SELECT * FROM rival_squad ORDER BY 1,2,3").fetchall()
+        self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+        self.assertEqual(client.picks_calls, 0)
+
+    async def test_leagues_come_from_the_warehouse_and_the_own_entry_from_my_state(self):
+        """No login: the ids were recorded by the first full run, the entry by snapshot."""
+        self.conn.execute("INSERT INTO snapshot (id, captured_at) VALUES (1, 'now')")
+        self.conn.execute("INSERT INTO my_state (snapshot_id, entry_id) VALUES (1, 9)")
+        self.conn.commit()
+        client = _StandingsClient({100: standings(
+            (1, "Emil", "E FC", 1, 210), (9, "Me", "Own FC", 6, 140))})
+        refreshed = await rivals.refresh_known_standings(self.conn, client)
+        self.assertEqual(refreshed, 1)
+        entries = {r[0] for r in self.conn.execute("SELECT entry_id FROM rival")}
+        self.assertNotIn(9, entries, "your own entry is not a rival")
+        self.assertIn(1, entries)
+
+    async def test_wanted_ids_narrow_the_warehouse_set(self):
+        self.conn.execute("INSERT INTO league VALUES (?,?,?,?,?)", (200, "Other", "x", 4, "old"))
+        self.conn.commit()
+        client = _StandingsClient({100: standings((1, "Emil", "E FC", 1, 210)),
+                                   200: standings((7, "X", "X FC", 1, 1))})
+        self.assertEqual(await rivals.refresh_known_standings(self.conn, client, [200]), 1)
+        ages = dict(self.conn.execute("SELECT id, captured_at FROM league"))
+        self.assertEqual(ages[100], "2026-09-05T02:30:00+00:00", "league 100 was not asked for")
+        self.assertNotEqual(ages[200], "old")
+
+    async def test_without_a_recorded_entry_nobody_is_excluded_and_it_says_so(self):
+        client = _StandingsClient({100: standings(
+            (1, "Emil", "E FC", 1, 210), (9, "Me", "Own FC", 6, 140))})
+        with self.assertLogs("fpl_rivals", level="WARNING") as logs:
+            await rivals.refresh_known_standings(self.conn, client)
+        self.assertIn(9, {r[0] for r in self.conn.execute("SELECT entry_id FROM rival")})
+        self.assertTrue(any("own entry" in line for line in logs.output), logs.output)
+
+    async def test_no_known_league_refreshes_nothing(self):
+        self.conn.execute("DELETE FROM rival")
+        self.conn.execute("DELETE FROM league")
+        self.conn.commit()
+        self.assertEqual(await rivals.refresh_known_standings(self.conn, _StandingsClient({})), 0)
+
+    async def test_a_wanted_league_the_warehouse_has_never_seen_is_fetched(self):
+        client = _StandingsClient({300: {
+            "league": {"name": "Work", "league_type": "x"},
+            **standings((21, "A", "A FC", 1, 50))}})
+        self.assertEqual(await rivals.refresh_known_standings(self.conn, client, [300]), 1)
+        row = self.conn.execute("SELECT name, entry_count FROM league WHERE id = 300").fetchone()
+        self.assertEqual((row["name"], row["entry_count"]), ("Work", 1))
+
+    async def test_an_empty_response_leaves_the_table_and_its_age_alone(self):
+        """`captured_at` is what `status` reads as "current"; it must not move for a
+        refresh that brought nothing back."""
+        client = _StandingsClient({100: {"standings": {"results": []}}})
+        with self.assertLogs("fpl_rivals", level="WARNING"):
+            refreshed = await rivals.refresh_known_standings(self.conn, client)
+        self.assertEqual(refreshed, 0)
+        captured = self.conn.execute("SELECT captured_at FROM league").fetchone()[0]
+        self.assertEqual(captured, "2026-09-05T02:30:00+00:00")
+        self.assertEqual(self.conn.execute("SELECT total_points FROM rival WHERE entry_id = 1")
+                         .fetchone()[0], 188)
+
+
 if __name__ == "__main__":
     unittest.main()
