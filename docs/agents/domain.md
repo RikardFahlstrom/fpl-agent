@@ -17,15 +17,9 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 scheduling work resolved; `docs/adr/` does not, because nothing so far has reversed a
 recorded decision. `/domain-modeling` creates them lazily, so proceed silently until then.
 
-The rest of the standing domain documentation:
+The rest of the standing domain documentation is what `CLAUDE.md` points at; it is loaded
+every session, so the pointers there are the index. One entry it does not carry:
 
-- `CLAUDE.md` — the stack, the map of `src/fpl_agent/`, the commands, and the invariants
-  (read scoring weights from `game_config`; bump `MODEL_VERSION` when projections move;
-  never grade or re-project a gameweek out of order). Treat the invariants as binding.
-- `docs/FACTS.md` — per-subsystem facts and where they live. **Read before working in
-  `engine/`.**
-- `docs/SCHEDULING.md` — the unattended cron setup, exit codes, and what cron decides.
-- `docs/PLAN.md` — the roadmap.
 - `learnings/` and `logs/actions.jsonl` — the committed reasoning trail: what the model
   believed, what happened, and what was concluded. Prior art for any projection question.
 
