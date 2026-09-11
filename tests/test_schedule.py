@@ -89,7 +89,7 @@ class ScheduleTestCase(unittest.TestCase):
         self.conn.commit()
 
     def due(self, job: str, *, now: datetime = NOW, conn=None) -> schedule.Plan:
-        warehouse = schedule.Warehouse(self.conn if conn is None else conn)
+        warehouse = schedule.Opened(self.conn if conn is None else conn)
         return schedule.due(job, now=now, warehouse=warehouse, settings=schedule.Settings())
 
 
@@ -140,14 +140,14 @@ class TailTests(ScheduleTestCase):
 
     def test_both_tolerate_failure(self):
         settings = schedule.Settings(notifications_configured=True)
-        plan = schedule.due("daily", now=NOW, warehouse=schedule.Warehouse(self.conn),
+        plan = schedule.due("daily", now=NOW, warehouse=schedule.Opened(self.conn),
                             settings=settings)
         tail = [step for step in plan.steps if step.command in ("brief", "notify")]
         self.assertEqual([step.command for step in tail], ["brief", "notify"])
         self.assertTrue(all(step.tolerated for step in tail))
 
     def test_they_come_last_so_they_describe_what_the_run_left_behind(self):
-        plan = schedule.due("daily", now=NOW, warehouse=schedule.Warehouse(self.conn),
+        plan = schedule.due("daily", now=NOW, warehouse=schedule.Opened(self.conn),
                             settings=schedule.Settings(notifications_configured=True))
         self.assertEqual(commands(plan)[-2:], ["brief", "notify"])
 
@@ -212,7 +212,7 @@ class DeadlineTests(ScheduleTestCase):
 
     def test_the_window_is_a_setting_not_a_number_buried_in_the_decision(self):
         self.kickoff(20)
-        warehouse = schedule.Warehouse(self.conn)
+        warehouse = schedule.Opened(self.conn)
         narrow = schedule.due("deadline", now=NOW, warehouse=warehouse,
                               settings=schedule.Settings(deadline_within_hours=4))
         self.assertEqual(narrow.steps, ())
@@ -302,7 +302,7 @@ class StandingsTests(ScheduleTestCase):
 
     def test_an_unreadable_warehouse_skips_it_with_the_warehouses_reason(self):
         plan = schedule.due("daily", now=NOW, settings=schedule.Settings(),
-                            warehouse=schedule.Warehouse(problem="no warehouse at x"))
+                            warehouse=schedule.Opened(problem="no warehouse at x"))
         self.assertNotIn(self.STEP, commands(plan))
         skip = [s for s in plan.skipped if "standings" in s.what][0]
         self.assertEqual(skip.reason, "no warehouse at x")
@@ -491,7 +491,7 @@ class RunTests(ScheduleTestCase):
     def test_the_plans_own_code_stands_when_nothing_ran(self):
         # The hourly job on a host whose warehouse will not open: 2, not 0.
         plan = schedule.due("deadline", now=NOW,
-                            warehouse=schedule.Warehouse(problem="unreadable"),
+                            warehouse=schedule.Opened(problem="unreadable"),
                             settings=schedule.Settings())
         executor = RecordingExecutor()
         outcome = schedule.run(plan, executor)
@@ -581,7 +581,7 @@ class SummariseTests(ScheduleTestCase):
     def test_a_warehouse_that_could_not_be_read_never_reads_as_nothing_due(self):
         # The capture is planned either way, so an absent settle step proves nothing here.
         plan = schedule.due("auto", now=NOW,
-                            warehouse=schedule.Warehouse(problem="fpl.db is not a warehouse"),
+                            warehouse=schedule.Opened(problem="fpl.db is not a warehouse"),
                             settings=schedule.Settings())
         summary = schedule.summarise(plan)
         self.assertIn("could not tell", summary)

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import pricing, rivals, storage
+from . import pricing, rivals, storage, warehouse
 from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
                          stored_horizon)
 
@@ -153,11 +153,10 @@ def transfer_price(free_transfers: Optional[int], transfer_cost: Optional[int],
 
 def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
     """The transfer budget the latest snapshot's recommendations are priced against."""
-    snapshot = conn.execute(
-        "SELECT id FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
-    if not snapshot:
+    capture = warehouse.latest(conn)
+    if not capture:
         raise LookupError("no snapshot captured yet")
-    state = _state(conn, snapshot["id"])
+    state = _state(conn, capture.id)
     free = state["free_transfers"] if state else None
     cost = state["transfer_cost"] if state else None
     chip = active_transfer_chip(state["chips"] if state else None)
@@ -187,26 +186,25 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     loan) project to zero anyway and are excluded outright, so the whitelist stays
     explicit rather than trusting a status code FPL has not invented yet.
     """
-    snapshot = conn.execute(
-        "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
-    if not snapshot:
+    capture = warehouse.latest(conn)
+    if not capture:
         raise LookupError("no snapshot captured yet")
 
-    if snapshot["gameweek"] is None:
+    if capture.gameweek is None:
         raise LookupError("no target gameweek on the latest snapshot; the season may be over")
 
-    squad = _squad(conn, snapshot["id"])
+    squad = _squad(conn, capture.id)
     if not squad:
         raise LookupError(
             "no squad captured; an authenticated snapshot is needed to recommend transfers")
-    state = _state(conn, snapshot["id"])
+    state = _state(conn, capture.id)
     bank = (state["bank"] if state and state["bank"] is not None else 0)
 
     context = transfer_context(conn)
     hit_cost, chip = context["hit_cost"], context["chip"]
 
-    totals = stored_horizon(conn, snapshot["id"], snapshot["gameweek"], weeks)
-    outlooks = pricing.price_outlooks(conn, snapshot["id"])
+    totals = stored_horizon(conn, capture.id, capture.gameweek, weeks)
+    outlooks = pricing.price_outlooks(conn, capture.id)
     team_limit = _team_limit(conn)
 
     # Ownership comes from the most recent gameweek rivals were captured for; squads are
@@ -232,7 +230,7 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
            JOIN player p ON p.element_id = ps.element_id
            JOIN team t ON t.id = p.team_id
            WHERE ps.snapshot_id = ? AND ps.status IN ('a', 'd')""",
-        (snapshot["id"],),
+        (capture.id,),
     ).fetchall()
 
     recommendations = []
@@ -284,7 +282,7 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
             out_eo = eo(out_row["element_id"])
 
             recommendations.append({
-                "gameweek": snapshot["gameweek"],
+                "gameweek": capture.gameweek,
                 "horizon": weeks,
                 "out": {"element_id": out_row["element_id"], "name": out_row["web_name"],
                         "selling_price": selling, "xp": round(out_xp, 2),

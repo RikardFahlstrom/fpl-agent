@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import schedule, settle, storage
+from . import schedule, settle, storage, warehouse
 from .projection import MODEL_VERSION
 from .snapshot import SQUAD_SIZE
 
@@ -100,12 +100,6 @@ def missing_tables(conn: sqlite3.Connection) -> list[str]:
 # Reading the warehouse
 # --------------------------------------------------------------------------
 
-def latest_snapshot(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        "SELECT id, captured_at, gameweek, kind FROM snapshot ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-
-
 def finished_gameweeks(conn: sqlite3.Connection) -> list[int]:
     """Every gameweek all of whose fixtures have been played, ascending.
 
@@ -147,7 +141,7 @@ def _gameweeks(gameweeks: list[int]) -> str:
 # The checks. Each names the invariant it defends.
 # --------------------------------------------------------------------------
 
-def check_snapshot(snapshot: Optional[sqlite3.Row]) -> Check:
+def check_snapshot(snapshot: Optional[warehouse.Capture]) -> Check:
     """CLAUDE.md: "Snapshot before deciding."
 
     `bootstrap-static` is current-state only, so a gameweek without a snapshot can never
@@ -159,11 +153,11 @@ def check_snapshot(snapshot: Optional[sqlite3.Row]) -> Check:
         return Check("snapshot", FAIL,
                      "none - the warehouse has never been captured, so nothing below can "
                      "be judged. Run `make snapshot`.")
-    hours = _age_hours(snapshot["captured_at"])
+    hours = _age_hours(snapshot.captured_at)
     age = "age unknown" if hours is None else f"{hours:.1f}h old"
-    detail = (f"{snapshot['id']} captured {snapshot['captured_at']} ({age}), "
-              f"targeting gameweek {snapshot['gameweek']}")
-    if snapshot["gameweek"] is None:
+    detail = (f"{snapshot.id} captured {snapshot.captured_at} ({age}), "
+              f"targeting gameweek {snapshot.gameweek}")
+    if snapshot.gameweek is None:
         return Check("snapshot", FAIL,
                      detail + " - no target gameweek was recorded, so no projection can "
                               "be tied to the decision it was made for")
@@ -173,7 +167,7 @@ def check_snapshot(snapshot: Optional[sqlite3.Row]) -> Check:
                            "have moved since" if stale else ""))
 
 
-def check_squad(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> Check:
+def check_squad(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Check:
     """The bug that used to exit 0: the preflight promised a squad and captured none.
 
     Selling prices, bank and free transfers for a past moment exist in no public
@@ -181,21 +175,21 @@ def check_squad(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> Check:
     outright with "no squad captured". 15 is the only right answer.
     """
     rows = conn.execute("SELECT COUNT(*) FROM my_squad WHERE snapshot_id = ?",
-                        (snapshot["id"],)).fetchone()[0]
+                        (snapshot.id,)).fetchone()[0]
     if rows == SQUAD_SIZE:
         return Check("squad", OK,
-                     f"{rows} of {SQUAD_SIZE} rows for snapshot {snapshot['id']}")
+                     f"{rows} of {SQUAD_SIZE} rows for snapshot {snapshot.id}")
     if rows == 0:
         return Check("squad", FAIL,
-                     f"absent for snapshot {snapshot['id']} - no my_squad rows at all. "
+                     f"absent for snapshot {snapshot.id} - no my_squad rows at all. "
                      f"Either the login failed or the run was market-only; `recommend` "
                      f"will refuse, and the selling prices for this moment are gone.")
     return Check("squad", FAIL,
-                 f"{rows} of {SQUAD_SIZE} rows for snapshot {snapshot['id']} - a partial "
+                 f"{rows} of {SQUAD_SIZE} rows for snapshot {snapshot.id} - a partial "
                  f"squad, so budget and bench order are both wrong")
 
 
-def check_projections(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> Check:
+def check_projections(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Check:
     """CLAUDE.md: "Bump MODEL_VERSION on any change that moves projections."
 
     Both versions then sit in the warehouse, which means the presence of *a* projection
@@ -203,36 +197,36 @@ def check_projections(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> Check:
     a snapshot `project` never re-ran over, and `recommend` reads the current version -
     so the check is for the current version, on the snapshot's own target gameweek.
     """
-    gameweek = snapshot["gameweek"]
+    gameweek = snapshot.gameweek
     rows = conn.execute(
         """SELECT model_version, COUNT(*) AS n FROM projection
            WHERE snapshot_id = ? AND gameweek = ? GROUP BY model_version
-           ORDER BY model_version""", (snapshot["id"], gameweek)).fetchall()
+           ORDER BY model_version""", (snapshot.id, gameweek)).fetchall()
     by_version = {r["model_version"]: r["n"] for r in rows}
 
     if not by_version:
         return Check("projections", FAIL,
-                     f"none for gameweek {gameweek} on snapshot {snapshot['id']} - the "
+                     f"none for gameweek {gameweek} on snapshot {snapshot.id} - the "
                      f"snapshot was captured but never projected. Run `make project`.")
     if MODEL_VERSION not in by_version:
         stored = ", ".join(f"{v} ({n})" for v, n in sorted(by_version.items()))
         return Check("projections", FAIL,
                      f"none under model {MODEL_VERSION} for gameweek {gameweek} on "
-                     f"snapshot {snapshot['id']}; only {stored}. The model moved after "
+                     f"snapshot {snapshot.id}; only {stored}. The model moved after "
                      f"this snapshot was projected - re-run `make project`.")
     horizon = conn.execute(
         """SELECT COUNT(DISTINCT gameweek) FROM projection
            WHERE snapshot_id = ? AND model_version = ?""",
-        (snapshot["id"], MODEL_VERSION)).fetchone()[0]
+        (snapshot.id, MODEL_VERSION)).fetchone()[0]
     others = ", ".join(f"{v} ({n})" for v, n in sorted(by_version.items())
                        if v != MODEL_VERSION)
     detail = (f"{by_version[MODEL_VERSION]} for gameweek {gameweek} under model "
-              f"{MODEL_VERSION}, {horizon}-gameweek horizon, snapshot {snapshot['id']}")
+              f"{MODEL_VERSION}, {horizon}-gameweek horizon, snapshot {snapshot.id}")
     return Check("projections", OK,
                  detail + (f"; also stored: {others}" if others else ""))
 
 
-def check_lineups(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> Check:
+def check_lineups(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Check:
     """Which gameweek's lineups `project` will actually find.
 
     Filing is decided per fixture, not per snapshot: `lineups.record_lineups` asks the
@@ -248,37 +242,35 @@ def check_lineups(conn: sqlite3.Connection, snapshot: sqlite3.Row) -> Check:
     to historical start rates, which is a real degradation and not an error - RotoWire
     publishes near matchday, so a Tuesday snapshot legitimately has none.
     """
-    target = snapshot["gameweek"]
+    target = snapshot.gameweek
     rows = conn.execute(
         """SELECT gameweek, COUNT(*) AS n FROM predicted_lineup
            WHERE snapshot_id = ? GROUP BY gameweek ORDER BY gameweek""",
-        (snapshot["id"],)).fetchall()
+        (snapshot.id,)).fetchall()
     filed = (", ".join(f"{r['n']} for gameweek {r['gameweek']}" for r in rows)
              if rows else "none")
-    # The same row lineup_start_rates picks: the most recent snapshot holding lineups
-    # for the gameweek being projected, whichever snapshot that turns out to be.
-    source = conn.execute(
-        "SELECT MAX(snapshot_id) AS id FROM predicted_lineup WHERE gameweek = ?",
-        (target,)).fetchone()["id"]
+    # The same capture lineup_start_rates reads, by construction.
+    holder = warehouse.with_lineups(conn, target)
+    source = holder.id if holder else None
 
     if source is None:
         return Check("lineups", WARN,
-                     f"snapshot {snapshot['id']} filed {filed}, and no snapshot holds "
+                     f"snapshot {snapshot.id} filed {filed}, and no snapshot holds "
                      f"any for gameweek {target} - projections for it fall back to "
                      f"historical start rates. Normal until RotoWire publishes.")
     used = conn.execute(
         "SELECT COUNT(*) FROM predicted_lineup WHERE snapshot_id = ? AND gameweek = ?",
         (source, target)).fetchone()[0]
-    if source == snapshot["id"]:
+    if source == snapshot.id:
         if len(rows) == 1:
             return Check("lineups", OK,
-                         f"{filed}, snapshot {snapshot['id']} - what `project` will use")
+                         f"{filed}, snapshot {snapshot.id} - what `project` will use")
         # Two rounds under one snapshot is the changeover case, so name which half wins.
         return Check("lineups", OK,
-                     f"{filed}, snapshot {snapshot['id']} - the {used} for gameweek "
+                     f"{filed}, snapshot {snapshot.id} - the {used} for gameweek "
                      f"{target} are what `project` will use")
     return Check("lineups", WARN,
-                 f"snapshot {snapshot['id']} filed {filed}; gameweek {target}'s lineups "
+                 f"snapshot {snapshot.id} filed {filed}; gameweek {target}'s lineups "
                  f"come from the older snapshot {source} ({used} rows), which is what "
                  f"`project` will use")
 
@@ -459,12 +451,12 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
                       f"missing table(s): {', '.join(absent)} - this file is not an "
                       f"fpl-agent warehouse, or its schema predates them")]
 
-    snapshot = latest_snapshot(conn)
+    snapshot = warehouse.latest(conn)
     finished = finished_gameweeks(conn)
     checks = [check_snapshot(snapshot)]
     # Squad, projections and lineups all hang off one snapshot; with no usable snapshot
     # there is nothing for them to be measured against, and check_snapshot has failed.
-    if snapshot is not None and snapshot["gameweek"] is not None:
+    if snapshot is not None and snapshot.gameweek is not None:
         checks += [check_squad(conn, snapshot),
                    check_projections(conn, snapshot),
                    check_lineups(conn, snapshot)]
@@ -512,7 +504,7 @@ def next_action(conn: sqlite3.Connection,
     # will not do.
     try:
         plan = schedule.due("auto", now=datetime.now(timezone.utc),
-                            warehouse=schedule.Warehouse(conn),
+                            warehouse=schedule.Opened(conn),
                             settings=schedule.Settings())
     except sqlite3.Error:
         return "next: could not tell - the warehouse would not answer"

@@ -42,6 +42,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from . import warehouse
+
 # FPL's documented rule: Predicted Progress over 100% is "Very Likely" to change.
 VERY_LIKELY_PROGRESS = 100.0
 # Below that, a change is plausible at the following tick rather than this one. 95 is
@@ -155,8 +157,8 @@ def price_outlooks(conn: sqlite3.Connection, snapshot_id: Optional[int] = None,
     """
     now = now or datetime.now(timezone.utc)
     if snapshot_id is None:
-        row = conn.execute("SELECT MAX(id) AS id FROM snapshot").fetchone()
-        snapshot_id = row["id"] if row else None
+        capture = warehouse.latest(conn)
+        snapshot_id = capture.id if capture else None
     if snapshot_id is None:
         return {}
 

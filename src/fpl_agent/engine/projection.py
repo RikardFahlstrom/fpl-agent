@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import lineups, storage
+from . import lineups, storage, warehouse
 from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
@@ -418,19 +418,18 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     a graded projection is the record of what the model believed *at decision time*,
     and rewriting it under today's code turns the learning loop into a tautology.
     """
-    snapshot = conn.execute(
-        "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
+    snapshot = warehouse.latest(conn)
     if not snapshot:
         raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
-    gameweek = gameweek or snapshot["gameweek"]
+    gameweek = gameweek or snapshot.gameweek
     if gameweek is None:
         raise LookupError("no target gameweek; the season may be over")
 
-    graded = graded_projections(conn, snapshot["id"], gameweek, model_version)
+    graded = graded_projections(conn, snapshot.id, gameweek, model_version)
     if graded:
         raise SettledProjection(
             f"gameweek {gameweek} has been settled: {graded} of snapshot "
-            f"{snapshot['id']}'s projections under model {model_version} are already "
+            f"{snapshot.id}'s projections under model {model_version} are already "
             f"graded against actuals. Re-projecting would rewrite what the model "
             f"believed before the gameweek was played, and the calibration would then "
             f"be scoring today's code against a result it can see. Bump MODEL_VERSION "
@@ -439,8 +438,8 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     scoring = Scoring.from_db(conn)
     history = _player_history(conn)
     fixtures = _fixtures_by_team(conn, gameweek)
-    priors = positional_priors(conn, snapshot["id"])
-    team_conceded = team_conceded_rates(conn, snapshot["id"])
+    priors = positional_priors(conn, snapshot.id)
+    team_conceded = team_conceded_rates(conn, snapshot.id)
     played = conn.execute("SELECT MAX(round) AS r FROM player_gameweek").fetchone()["r"]
     season_started = bool(played)
     # Lineups are published for the next round only, so later horizon gameweeks fall
@@ -459,7 +458,7 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
         FROM player_snapshot ps JOIN player p ON p.element_id = ps.element_id
         WHERE ps.snapshot_id = ?
     """
-    for snap in conn.execute(query, (snapshot["id"],)):
+    for snap in conn.execute(query, (snapshot.id,)):
         position = POSITIONS.get(snap["element_type"], "MID")
         result = project_player(
             snap, position, fixtures.get(snap["team_id"], []),
@@ -469,7 +468,7 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
             season_started,
             lineup_rates.get(snap["element_id"]),
         )
-        rows.append((snapshot["id"], gameweek, snap["element_id"], model_version,
+        rows.append((snapshot.id, gameweek, snap["element_id"], model_version,
                      result["expected_points"], result["p_start"],
                      result["expected_minutes"], result["fixture_count"],
                      json.dumps(result["components"], sort_keys=True),
@@ -547,11 +546,10 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
 
     This writes. Callers that only need the numbers read `stored_horizon` instead.
     """
-    snapshot = conn.execute(
-        "SELECT id, gameweek FROM snapshot ORDER BY id DESC LIMIT 1").fetchone()
+    snapshot = warehouse.latest(conn)
     if not snapshot:
         raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
-    start = start_gameweek or snapshot["gameweek"]
+    start = start_gameweek or snapshot.gameweek
     if start is None:
         raise LookupError("no target gameweek; the season may be over")
 
@@ -559,7 +557,7 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
         project_gameweek(conn, gameweek, model_version)
 
     logger.info("horizon: gameweeks %s-%s", start, start + weeks - 1)
-    return stored_horizon(conn, snapshot["id"], start, weeks, model_version)
+    return stored_horizon(conn, snapshot.id, start, weeks, model_version)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -581,7 +579,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             project_horizon(conn, args.gameweek, weeks=args.horizon)
         else:
             project_gameweek(conn, args.gameweek)
-        # One row per player over the whole horizon, not one per gameweek.
+        # One row per player over the whole horizon, not one per gameweek. The latest
+        # capture is the one project_* just wrote to, so it cannot be None here.
+        latest = warehouse.latest(conn)
         rows = conn.execute(
             """SELECT p.web_name, t.short_name AS team, ps.now_cost,
                       SUM(pr.expected_points) AS xp, AVG(pr.p_start) AS p_start,
@@ -593,10 +593,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                JOIN player_snapshot ps ON ps.snapshot_id = pr.snapshot_id
                                       AND ps.element_id = pr.element_id
                WHERE pr.model_version = ?
-                 AND pr.snapshot_id = (SELECT MAX(id) FROM snapshot)
+                 AND pr.snapshot_id = ?
                GROUP BY pr.element_id
                ORDER BY xp DESC LIMIT ?""",
-            (MODEL_VERSION, args.top),
+            (MODEL_VERSION, latest.id, args.top),
         ).fetchall()
         span = rows[0]["gameweeks"] if rows else 0
         label = f"xP({span}gw)" if span > 1 else "xP"

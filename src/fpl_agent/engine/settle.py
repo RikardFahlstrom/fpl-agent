@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import storage
+from . import storage, warehouse
 from ..client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
@@ -149,12 +149,12 @@ def settle_gameweek(conn: sqlite3.Connection, gameweek: int,
                     model_version: str = MODEL_VERSION) -> int:
     """Join the decision-time projections for a gameweek against actuals.
 
-    The snapshot that counts is the latest one targeting the gameweek that actually
-    projected it. The nightly capture keeps targeting N until the deadline passes, so
-    plain MAX(snapshot.id) lands on a snapshot taken hours after the decision with no
-    projections on it, and settle reports "nothing to grade" every week. Where two
-    snapshots targeting N both projected it - a re-run before the deadline - the later
-    still wins; that is the one the decision was made on.
+    The snapshot that counts is `warehouse.projected`: the latest one targeting the
+    gameweek that actually projected it. The nightly capture keeps targeting N until the
+    deadline passes, so plain MAX(snapshot.id) lands on a snapshot taken hours after the
+    decision with no projections on it, and settle reports "nothing to grade" every
+    week. Where two snapshots targeting N both projected it - a re-run before the
+    deadline - the later still wins; that is the one the decision was made on.
     """
     if not gameweek_is_finished(conn, gameweek):
         raise GameweekNotFinished(
@@ -165,25 +165,19 @@ def settle_gameweek(conn: sqlite3.Connection, gameweek: int,
             f"gameweek {gameweek} has finished but almost none of its actuals were "
             f"fetched; grading it now would score every player against a zero that only "
             f"means the backfill failed. Re-run the backfill, then settle")
-    rows = conn.execute(
+    source = warehouse.projected(conn, gameweek, model_version)
+    rows = [] if source is None else conn.execute(
         """SELECT pr.id, pr.element_id, pr.expected_points, pr.p_start,
                   p.element_type, ps.now_cost,
                   COALESCE(pg.total_points, 0) AS actual
            FROM projection pr
-           JOIN snapshot s ON s.id = pr.snapshot_id
            JOIN player p ON p.element_id = pr.element_id
            JOIN player_snapshot ps ON ps.snapshot_id = pr.snapshot_id
                                   AND ps.element_id = pr.element_id
            LEFT JOIN player_gameweek pg ON pg.element_id = pr.element_id
                                        AND pg.round = pr.gameweek
-           WHERE pr.gameweek = ? AND pr.model_version = ?
-             AND s.gameweek = pr.gameweek
-             AND s.id = (SELECT MAX(s2.id) FROM snapshot s2
-                           JOIN projection p2 ON p2.snapshot_id = s2.id
-                                             AND p2.gameweek = s2.gameweek
-                                             AND p2.model_version = ?
-                         WHERE s2.gameweek = ?)""",
-        (gameweek, model_version, model_version, gameweek),
+           WHERE pr.gameweek = ? AND pr.model_version = ? AND pr.snapshot_id = ?""",
+        (gameweek, model_version, source.id),
     ).fetchall()
 
     now = datetime.now(timezone.utc).isoformat()

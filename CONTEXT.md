@@ -83,12 +83,23 @@ and Friday, which `status` calls an inconsistency and exits 7 for. The table ref
 in the group for the mirror reason: gated with the rival picks behind the deadline
 window, it sat five days stale between deadlines.
 
-**Still unsettled, deliberately.** *Which* capture a later reader means is derived
-independently in six modules (`brief`, `lineups`, `pricing`, `projection`, `recommend`,
-`status`), and those derivations do not all ask the same question — the latest snapshot,
-the latest holding lineups for a gameweek, the one targeting a gameweek, and "the latest
-unless told otherwise" are four different things. Naming that properly is its own piece of work with its own spec. This entry is
-vocabulary; it moves no code.
+*Which* capture a later reader means is `engine/warehouse`'s question, and it has four
+answers, each a `Capture` value or None:
+
+- `latest` — the one the pipeline is *in*: what `recommend` prices against, `brief`
+  describes, `status` checks, `project` writes to. "The latest unless told otherwise"
+  (`pricing.price_outlooks`) is this with an override.
+- `with_lineups(n)` — the most recent capture holding predicted lineups for gameweek
+  `n`, which is often older than `latest` and need not target `n`, because lineups are
+  filed per fixture and RotoWire publishes near matchday.
+- `with_squad` — the most recent capture that logged in; a market-only capture has no
+  `my_state` row and no entry id.
+- `projected(n, version)` — the most recent capture *targeting* `n` with projections of
+  it under `version`: the decision-time record `settle` grades. A projection of `n`
+  made from a capture targeting `n - 1` is a horizon row, not that record.
+
+Readers ask the module rather than the `snapshot` table, so that `status` and `lineups`
+agree on the lineup source by construction rather than by a comment saying they should.
 
 ## The seam
 

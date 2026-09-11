@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import storage
+from . import storage, warehouse
 from ..client import FPLClient
 from ..headless_auth import authenticated_client
 from ..reference import reference
@@ -128,9 +128,11 @@ def recorded_entry_id(conn: sqlite3.Connection) -> Optional[int]:
     """Your entry id as the latest snapshot recorded it, or None if no squad was ever
     captured. Read from the warehouse so the standings can be refreshed without a
     session; `/me/` is only needed to learn which leagues you are in."""
-    row = conn.execute(
-        "SELECT entry_id FROM my_state WHERE entry_id IS NOT NULL "
-        "ORDER BY snapshot_id DESC LIMIT 1").fetchone()
+    capture = warehouse.with_squad(conn)
+    if capture is None:
+        return None
+    row = conn.execute("SELECT entry_id FROM my_state WHERE snapshot_id = ?",
+                       (capture.id,)).fetchone()
     return row["entry_id"] if row else None
 
 

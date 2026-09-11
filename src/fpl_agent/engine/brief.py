@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import lineups, pricing, recommend, settle, status, storage
+from . import lineups, pricing, recommend, settle, status, storage, warehouse
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing
 
 logger = logging.getLogger("fpl_brief")
@@ -180,7 +180,7 @@ class Evaluation:
     triggers: list[Trigger]
     silent: dict[str, str]          # trigger name -> why it stayed silent
     checks: list[status.Check]
-    snapshot: Optional[sqlite3.Row]
+    capture: Optional[warehouse.Capture]
     squad: list[dict[str, Any]]
     state: dict[str, Any]
     deadline: Optional[datetime]
@@ -231,12 +231,6 @@ def brief_path(gameweek: int, root: Path = Path("logs")) -> Path:
     return Path(root) / f"gw{int(gameweek):02d}.md"
 
 
-def latest_snapshot(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        "SELECT id, captured_at, gameweek, kind FROM snapshot ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-
-
 def default_gameweek(conn: sqlite3.Connection) -> Optional[int]:
     """The gameweek a brief is about when nobody says: the latest snapshot's target.
 
@@ -244,8 +238,8 @@ def default_gameweek(conn: sqlite3.Connection) -> Optional[int]:
     `--gameweek` describes the state the rest of the pipeline is in rather than a
     calendar the warehouse may not have caught up with.
     """
-    snapshot = latest_snapshot(conn)
-    return snapshot["gameweek"] if snapshot else None
+    capture = warehouse.latest(conn)
+    return capture.gameweek if capture else None
 
 
 def _parse_utc(stamp: Optional[str]) -> Optional[datetime]:
@@ -286,15 +280,13 @@ def squad_availability(conn: sqlite3.Connection, snapshot_id: int,
     news; the predicted lineup catches rotation, which FPL's flag never reports. A player
     can be `a` in FPL and OUT on RotoWire, and that is the case worth knowing about.
 
-    The lineup row is read from whichever snapshot `lineup_start_rates` would read - the
-    most recent one holding lineups for this gameweek, which is not necessarily the
-    snapshot the squad came from. Reading it from the squad's own snapshot would report
-    "no lineup published" for a gameweek whose lineups arrived an hour later.
+    The lineup row is read from whichever capture `lineup_start_rates` would read -
+    `warehouse.with_lineups`, which is not necessarily the snapshot the squad came from.
+    Reading it from the squad's own snapshot would report "no lineup published" for a
+    gameweek whose lineups arrived an hour later.
     """
-    source = conn.execute(
-        "SELECT MAX(snapshot_id) AS id FROM predicted_lineup WHERE gameweek = ?",
-        (gameweek,)).fetchone()
-    lineup_snapshot = source["id"] if source else None
+    source = warehouse.with_lineups(conn, gameweek)
+    lineup_snapshot = source.id if source else None
 
     rows = conn.execute(
         """SELECT ms.position, ms.element_id, ms.multiplier, p.web_name,
@@ -490,11 +482,11 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             + (f"; {len(warned)} warn ({', '.join(c.label for c in warned)}), which is "
                f"not an inconsistency" if warned else ""))
 
-    snapshot = latest_snapshot(conn)
+    capture = warehouse.latest(conn)
     state = transfer_state(conn)
     deadline = gameweek_deadline(conn, gameweek)
     remaining = None if deadline is None else deadline - now
-    squad = squad_availability(conn, snapshot["id"], gameweek) if snapshot else []
+    squad = squad_availability(conn, capture.id, gameweek) if capture else []
     listing = ranked_transfers(conn)
     moves = listing["moves"]
     top = moves[0] if moves else None
@@ -632,7 +624,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
 
     return Evaluation(gameweek=gameweek, now=now, threshold=threshold,
                       triggers=triggers, silent=silent, checks=checks,
-                      snapshot=snapshot, squad=squad, state=state,
+                      capture=capture, squad=squad, state=state,
                       deadline=deadline, listing=listing)
 
 
@@ -677,7 +669,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
         evaluation = evaluate(conn, gameweek, now=now, include_token=include_token)
     now = evaluation.now
     triggers = evaluation.triggers
-    snapshot = evaluation.snapshot
+    capture = evaluation.capture
     state = evaluation.state
     deadline = evaluation.deadline
     remaining = None if deadline is None else deadline - now
@@ -688,8 +680,8 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
     lines = [f"# Gameweek {gameweek} brief",
              "",
              f"_{now.isoformat(timespec='minutes')} · model {MODEL_VERSION} · "
-             + (f"snapshot {snapshot['id']} captured {snapshot['captured_at']}_"
-                if snapshot else "no snapshot captured_"),
+             + (f"snapshot {capture.id} captured {capture.captured_at}_"
+                if capture else "no snapshot captured_"),
              ""]
 
     # The banner. First thing on the page, because it re-reads everything under it.
@@ -781,8 +773,8 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
 
     # 4. Price watch. Not a trigger, and the brief says why.
     lines += ["## Price watch", ""]
-    falling = (falling_holdings(conn, snapshot["id"], squad, now)
-               if snapshot and squad else [])
+    falling = (falling_holdings(conn, capture.id, squad, now)
+               if capture and squad else [])
     if falling:
         lines += _table(["player", "price", "predicted progress", "net transfers"],
                         ["---", "---:", "---:", "---:"],

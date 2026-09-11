@@ -22,6 +22,7 @@ from difflib import SequenceMatcher
 from typing import Iterable, Optional
 
 from ..rotowire_scraper import INJURY_STATUS, MatchLineup
+from . import warehouse
 
 logger = logging.getLogger("fpl_lineups")
 
@@ -247,13 +248,10 @@ def lineup_start_rates(conn: sqlite3.Connection, gameweek: int,
     for players nobody named, reading as benched *and* injured. Doubtful and not named is
     the omitted rate, like any other player left out.
     """
-    row = conn.execute(
-        "SELECT MAX(snapshot_id) AS id FROM predicted_lineup WHERE gameweek = ?",
-        (gameweek,),
-    ).fetchone()
-    if not row or row["id"] is None:
+    source = warehouse.with_lineups(conn, gameweek)
+    if source is None:
         return {}
-    snapshot_id = row["id"]
+    snapshot_id = source.id
 
     listed: dict[int, float] = {}
     teams_with_lineups: set[str] = set()
