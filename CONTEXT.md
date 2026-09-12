@@ -23,15 +23,30 @@ the three is safe to ask on a day when the answer is nothing, which is most days
 ## due
 
 The question `schedule.due(job, *, now, warehouse, settings)` answers: what would this job
-do, at this moment, given this warehouse.
+do, at this moment, given this *reading* of the warehouse.
 
-Answering it **reads and nothing else** — no writes, no subprocesses, and no clock of its
-own. The time, the warehouse and the settings are arguments, which is what makes "what
-would run tonight" an assertion in a test rather than a dry run against a live database.
-`due` never decides what is gradeable or when a deadline falls: it asks the *ledger*
-(`warehouse.gameweeks(...).settleable()`) and `storage.hours_to_deadline`, because those
-rules already exist and a second statement of one is how the scheduler and the engine
-came to disagree.
+Answering it is **a function of its arguments** — no writes, no subprocesses, no queries,
+and no clock of its own. The time, the reading and the settings are arguments, which is
+what makes "what would run tonight" an assertion in a test rather than a dry run against
+a live database. `due` never decides what is gradeable or when a deadline falls: the
+reading carries the *ledger*'s answer (`settleable`) and `storage.next_deadline`'s, and
+`due` applies `storage.hours_until` to the latter with the `now` it was given, because
+those rules already exist and a second statement of one is how the scheduler and the
+engine came to disagree.
+
+## reading
+
+What the warehouse said when asked the three questions a Plan is decided from, or the
+reason it could not be asked: `schedule.Reading` — `problem`, `next_deadline`,
+`settleable`, `league_known`. `schedule.read(conn)` produces one from an open
+connection, through the owner of each fact; `schedule.read_warehouse(path)` opens the
+file read-only, reads, and closes it before returning, turning a missing or foreign file
+into a `problem` rather than a raise.
+
+A reading is a value, not a seam. It carries the deadline as a moment rather than as
+hours so that it does not depend on when it was taken: `due` is the one place the window
+is decided, from the one clock it was handed. A test hands `due` a `Reading` directly;
+the SQLite-backed tests are there to prove `read` asks the right questions.
 
 ## Plan
 
@@ -116,8 +131,8 @@ ledger's `finished()` and `settleable()` (finished, projected, not graded; oldes
 are the one statement of "grade a gameweek only once it has finished".
 
 It is a value, not a seam: `settle` reads it for its two refusals and for `--list`,
-`status` reads it once in `gather` and hands it to the checks, and `schedule.due` reads it
-through `Opened.conn` to plan grading. None of them holds a rule of its own — the fourth
+`status` reads it once in `gather` and hands it to the checks, and `schedule.read` asks
+it for `settleable` on the way to a *reading*. None of them holds a rule of its own — the fourth
 copy, in `deploy/fpl-cron.sh`, is the one that offered a round still being played and
 stepped over an ungraded one. `model_version` is a parameter so that a bump can compare
 two ledgers.
@@ -128,9 +143,11 @@ two ledgers.
 `Step` and returning its exit code. `SubprocessExecutor` in production, a recording class
 in the tests that captures the invocations and returns scripted codes.
 
-That is the seam, and it is the only one. The rule about which failure a run reports — the
-first non-zero, with a tolerated step's code counting only when nothing else failed — has
-no test surface without it. That rule was a live bug in the shell this came from: it
+That is the seam, and it is the only one: the only place a test substitutes behaviour for
+the real thing. Deciding a Plan needs no seam, because `due` takes values — a *reading*, a
+time, the settings — and a value is handed over, not stood in for. The rule about which
+failure a run reports — the first non-zero, with a tolerated step's code counting only
+when nothing else failed — has no test surface without the executor. That rule was a live bug in the shell this came from: it
 assigned each step's code unconditionally, so a lost snapshot arrived in the cron mail
 wearing the code of whatever recoverable thing failed after it.
 

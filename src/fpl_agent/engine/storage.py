@@ -386,9 +386,8 @@ def next_deadline(conn: sqlite3.Connection) -> Optional[datetime]:
     return when - DEADLINE_BEFORE_KICKOFF
 
 
-def hours_to_deadline(conn: sqlite3.Connection,
-                      now: Optional[datetime] = None) -> Optional[int]:
-    """Hours from `now` until the next deadline, or None when no fixture is unplayed.
+def hours_until(deadline: Optional[datetime], now: datetime) -> Optional[int]:
+    """Whole hours from `now` until `deadline`, or None when there is no deadline.
 
     Negative is a real answer rather than an error: a round whose deadline has passed but
     whose fixtures FPL has not confirmed finished sits there for hours.
@@ -398,15 +397,23 @@ def hours_to_deadline(conn: sqlite3.Connection,
     0`, so a scheduler would re-capture and rank for a deadline nobody can act on any
     more. Flooring makes the first minute past the deadline read as past it.
 
-    `now` is injectable because the schedule decides a window from this and a window is
-    worth testing at its edges. It lives here for the same reason `next_deadline` does:
-    `status` reports the number and `schedule` acts on it, and two conversions agreeing
-    today is how they came to disagree last time.
+    Pure, so that `schedule.due` can apply it to a deadline it was handed as a value:
+    the schedule decides a window from this and a window is worth testing at its edges.
     """
-    deadline = next_deadline(conn)
     if deadline is None:
         return None
-    return math.floor((deadline - (now or datetime.now(timezone.utc))).total_seconds() / 3600)
+    return math.floor((deadline - now).total_seconds() / 3600)
+
+
+def hours_to_deadline(conn: sqlite3.Connection,
+                      now: Optional[datetime] = None) -> Optional[int]:
+    """Hours from `now` until the next deadline, or None when no fixture is unplayed.
+
+    `next_deadline` and `hours_until`, composed. It lives here for the same reason
+    `next_deadline` does: `status` reports the number and `schedule` acts on it, and two
+    conversions agreeing today is how they came to disagree last time.
+    """
+    return hours_until(next_deadline(conn), now or datetime.now(timezone.utc))
 
 
 def target_gameweek(bootstrap: dict) -> Optional[int]:

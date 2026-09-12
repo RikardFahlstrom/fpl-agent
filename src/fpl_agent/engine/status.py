@@ -497,7 +497,7 @@ def next_action(conn: sqlite3.Connection,
     # will not do.
     try:
         plan = schedule.due("auto", now=datetime.now(timezone.utc),
-                            warehouse=schedule.Opened(conn),
+                            warehouse=schedule.read(conn),
                             settings=schedule.Settings())
     except sqlite3.Error:
         return "next: could not tell - the warehouse would not answer"
