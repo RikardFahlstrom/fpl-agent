@@ -265,7 +265,10 @@ src/fpl_agent/
                      reference, rotowire_scraper, cli, main
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify,
                      /claude-md-review
-deploy/              fpl-cron.sh, the unattended entry point
+deploy/              fpl-cron.sh, the unattended entry point; a crontab names it by
+                     path, so it does not move
+tools/               the schedule comparison harness; run by hand, and nothing
+                     deployed depends on it
 docs/                PLAN.md, SCHEDULING.md, FACTS.md
 learnings/           what the model learned, as markdown with frontmatter
 logs/actions.jsonl   decisions taken, append-only
