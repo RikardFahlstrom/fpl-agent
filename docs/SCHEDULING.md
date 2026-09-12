@@ -412,6 +412,7 @@ the scheduler currently believes.
 | Path | Tracked | Why |
 | --- | --- | --- |
 | `src/`, `tests/`, `deploy/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
+| `tools/` | yes | the comparison harness in `docs/schedule-equivalence.md`, kept re-runnable rather than becoming a claim in a document; a developer runs it by hand and nothing deployed names it, which is why it is not in `deploy/` |
 | `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/` | yes | shared: the workflow, the command allowlist, and the pre-commit test hook |
 | `.claude/settings.local.json` | no | personal, and globally gitignored on this machine |
 | `learnings/*.md` | yes, once written | the reasoning, which is not re-derivable |
