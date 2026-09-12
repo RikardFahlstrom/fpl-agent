@@ -2,14 +2,13 @@
 
 A Fantasy Premier League decision engine. It captures the market daily, projects expected
 points for every player, ranks transfers against your own league's ownership, and grades
-its own projections once a gameweek finishes. An MCP server exposes the same data to
-Claude.
+its own projections once a gameweek finishes.
 
 **No AI subscription is required to run it.** The engine is plain Python and calls no
 language model: `make deadline`, `make settle` and the unattended cron jobs need no Claude
-subscription, no API key and no AI tool of any kind. Claude is one optional interface onto
-the results, and the section below on [using it from Claude Code](#use-from-claude-code) is
-the only part that needs one.
+subscription, no API key and no AI tool of any kind. The `.claude/skills/` directory adds
+judgement on top for anyone who runs it from Claude Code, and is the only part that needs
+one.
 
 ## Install
 
@@ -64,7 +63,6 @@ chmod 600 fpl-agent.ini              # it holds a password in plaintext
 auto_login = true
 email = you@example.com
 password = ...
-read_only = true          ; refuse make_transfers; analyse and report only
 
 [rivals]
 leagues = 920863          ; measure ownership against these leagues only
@@ -76,7 +74,7 @@ ntfy_topic =              ; a long random string; see "Run it on a server"
 
 Every setting is also an environment variable (`FPL_AUTO_LOGIN`, `FPL_EMAIL`, …) and
 **the environment wins**, so a scheduled run can override the file. `*.ini` is gitignored.
-After the first login a token is cached in `~/.config/fpl-mcp/session.json`, and
+After the first login a token is cached in `~/.config/fpl-agent/session.json`, and
 credentials are no longer needed.
 
 ## Run
@@ -121,8 +119,9 @@ market alone.
 ## Run it on a server
 
 The intended deployment: cron, no human present, and **no automated transfers**. The agent
-captures, projects and recommends; you read the brief and make the move. `read_only = true`
-is what enforces that, and it is the reason a bearer token can sit on a remote host at all.
+captures, projects and recommends; you read the brief and make the move. There is no code
+path that executes a transfer, and that is the reason a bearer token can sit on a remote
+host at all.
 
 After Install and Configure above, on the server itself:
 
@@ -214,32 +213,11 @@ notification failed. The full table, the trigger set and the reasoning are in
 
 ## Use from Claude Code
 
-Optional, and the only part of this project that needs a Claude subscription. Register the
-MCP server once, replacing the path:
-
-```bash
-claude mcp add fpl --scope user \
-  -e PYTHONPATH=/ABSOLUTE/PATH/TO/fpl-agent/src \
-  -- uv --directory /ABSOLUTE/PATH/TO/fpl-agent run python -m fpl_agent.main
-```
-
-`--scope user` makes it available in every session; `--scope project` writes `.mcp.json`
-into the checkout instead, and the default `local` is this machine and this project only.
-Confirm with `/mcp` inside Claude Code.
-
-`--directory` is doing two jobs and neither is optional: it is where `uv` resolves the
-project from, and it is what puts `fpl-agent.ini` within reach, since the config is looked
-up relative to the process's working directory.
-
-Claude Code also loads the skills in `.claude/skills/` in a session started here. The
-`/fpl-*` ones — `/fpl-deadline`, `/fpl-settle`, `/fpl-verify` — wrap the same `make` targets
-with what to check and when not to act; `ls .claude/skills/` is the current list.
-
-The server exposes 32 tools, 17 resources (`fpl://…`) and 7 prompts. Ask in names, not
-ids: *"compare Salah and Haaland"*, *"who should I transfer out?"* Most of them are a
-browsing view of the live FPL API and need a session; `recommend_transfers` is the
-exception — it reads the warehouse `make deadline` left behind, so it answers offline
-and gives the same ranking as `fpl-agent recommend` rather than a second opinion.
+Optional. A session started in this checkout loads the skills in `.claude/skills/`: the
+`/fpl-*` ones — `/fpl-deadline`, `/fpl-settle`, `/fpl-verify` — wrap the `make` targets
+with what to check and when not to act; `ls .claude/skills/` is the current list. The
+skills read the same warehouse and logs the commands write, so what Claude sees is what
+`make status` sees, not a second opinion.
 
 ## How it works
 
@@ -258,18 +236,18 @@ version on the same gameweeks rather than silently replacing it.
 
 ```
 src/fpl_agent/
+  api/               the FPL side of the wire: client, auth, headless_auth,
+                     sessions; and rotowire_scraper, the one other source
   engine/            snapshot, actuals, lineups, projection, scoring, pricing,
                      rivals, recommend, settle, status, brief, notify, storage
-  mcp/               server: tools/, resources, prompts, web
-  (root)             auth, headless_auth, sessions, client, config, models,
-                     reference, rotowire_scraper, cli, main
+  config, cli        settings from fpl-agent.ini; the `fpl-agent` command
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify,
                      /claude-md-review
 deploy/              fpl-cron.sh, the unattended entry point; a crontab names it by
                      path, so it does not move
 tools/               the schedule comparison harness; run by hand, and nothing
                      deployed depends on it
-docs/                PLAN.md, SCHEDULING.md, FACTS.md
+docs/                PLAN.md, SCHEDULING.md, FACTS.md, adr/
 learnings/           what the model learned, as markdown with frontmatter
 logs/actions.jsonl   decisions taken, append-only
 ```
@@ -280,10 +258,8 @@ The last two are tracked but not yet present: `fpl-agent settle --learn` and
 `data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
 [CLAUDE.md](CLAUDE.md) and the roadmap in [docs/PLAN.md](docs/PLAN.md).
 
-## Credit
-
-Forked from [lewis-king/fpl-mcp-server](https://github.com/lewis-king/fpl-mcp-server).
-
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The FPL API client and browser login in `api/` derive
+from [lewis-king/fpl-mcp-server](https://github.com/lewis-king/fpl-mcp-server), also
+MIT; its notice is in [LICENSE-THIRD-PARTY](LICENSE-THIRD-PARTY).

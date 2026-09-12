@@ -28,7 +28,6 @@ MAPPING: dict[tuple[str, str], str] = {
     ("auth", "auto_login"): "FPL_AUTO_LOGIN",
     ("auth", "email"): "FPL_EMAIL",
     ("auth", "password"): "FPL_PASSWORD",
-    ("auth", "read_only"): "FPL_READ_ONLY",
     ("auth", "token_cache"): "FPL_TOKEN_CACHE",
     ("auth", "token_endpoint"): "FPL_TOKEN_ENDPOINT",
     ("auth", "client_id"): "FPL_OAUTH_CLIENT_ID",
@@ -38,11 +37,6 @@ MAPPING: dict[tuple[str, str], str] = {
     # to read every message posted to it. Hence its place in SECRET_ENV below.
     ("notify", "ntfy_server"): "FPL_NTFY_SERVER",
     ("notify", "ntfy_topic"): "FPL_NTFY_TOPIC",
-    ("server", "transport"): "FPL_MCP_TRANSPORT",
-    ("server", "host"): "FPL_MCP_HOST",
-    ("server", "port"): "FPL_MCP_PORT",
-    ("server", "auth_port"): "FPL_AUTH_PORT",
-    ("server", "auth_base_url"): "FPL_AUTH_BASE_URL",
 }
 
 SECRET_ENV = {"FPL_PASSWORD", "FPL_EMAIL", "FPL_NTFY_TOPIC"}

@@ -345,9 +345,8 @@ def render(context: dict[str, Any], recommendations: list[dict[str, Any]],
            weeks: int = HORIZON_GAMEWEEKS) -> str:
     """The banner and the ranked list, as text.
 
-    One renderer, because there is one recommendation. The CLI prints this and the
-    MCP tool returns it; neither formats a list of its own, so the two interfaces
-    cannot drift into giving the same warehouse two different answers.
+    One renderer, because there is one recommendation: whoever asks gets this text, so
+    no second caller can format the same warehouse into a different answer.
     """
     lines = ["", banner(context)]
 

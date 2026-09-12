@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from ..client import FPLClient
+from ..api.client import FPLClient
 from . import storage
 
 logger = logging.getLogger("fpl_actuals")

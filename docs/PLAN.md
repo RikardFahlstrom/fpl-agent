@@ -2,7 +2,8 @@
 
 Turning this repo from an MCP server that reads FPL into a decision engine that
 projects points, recommends actions, records what it decided, and measures itself
-against what actually happened.
+against what actually happened. The server itself is gone as of 2026-09-12
+(`docs/adr/0001-no-mcp-server.md`).
 
 Section numbers are the original brief's and are kept stable so references to them stay
 valid; §1 (detaching the fork) and §9 (open questions) were finished and removed, which
@@ -214,8 +215,8 @@ Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
 That list has since grown; `CLAUDE.md` is the authority, not this section.
 
 The scheduled half is built: `deploy/fpl-cron.sh` runs the nightly snapshot and the
-deadline cycle unattended, guarded by `FPL_AUTO_LOGIN` and `FPL_READ_ONLY`. It never
-executes a transfer. See `docs/SCHEDULING.md`.
+deadline cycle unattended, guarded by `FPL_AUTO_LOGIN`. It never executes a transfer;
+nothing in the codebase can. See `docs/SCHEDULING.md`.
 
 ## 7. Phasing
 
@@ -240,5 +241,5 @@ in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
 ## 8. Assumptions
 
 Single manager, not multi-tenant. Python with stdlib `sqlite3`, no ORM. Projections one
-gameweek ahead initially; multi-gameweek horizon later. `make_transfers` stays manual —
-the engine recommends, a human executes. `FPL_READ_ONLY` stays set for scheduled runs.
+gameweek ahead initially; multi-gameweek horizon later. Transfers stay manual — the engine
+recommends, a human executes; there is no transfer-executing code to guard.

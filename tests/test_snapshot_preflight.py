@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent import headless_auth
+from fpl_agent.api import headless_auth
 from fpl_agent.engine import actuals, snapshot, storage
 
 

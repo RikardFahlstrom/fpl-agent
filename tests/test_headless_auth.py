@@ -10,10 +10,9 @@ from unittest import mock
 
 import httpx
 
-from fpl_agent import headless_auth
-from fpl_agent.mcp import tools
-from fpl_agent.client import FPLClient
-from fpl_agent.sessions import sessions
+from fpl_agent.api import headless_auth
+from fpl_agent.api.client import FPLClient
+from fpl_agent.api.sessions import sessions
 
 
 class _FakeResponse:
@@ -85,7 +84,7 @@ class _NoBrowser:
 class _AcceptingClient:
     """An FPLClient that accepts whatever token it is given."""
 
-    def __init__(self, reference=None):
+    def __init__(self):
         self.api_token = None
         self.user_info = None
 
@@ -137,6 +136,54 @@ class CredentialTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("FPL_PASSWORD", message)
         self.assertNotIn("FPL_EMAIL", message)
+
+
+class CachePathMigrationTests(unittest.TestCase):
+    """The cache moved from the fork's directory to the project's, once, by rename."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmp.name)
+        self.legacy = self.home / ".config" / "fpl-mcp" / "session.json"
+        self.current = self.home / ".config" / "fpl-agent" / "session.json"
+        self._patches = [
+            mock.patch.dict(os.environ, {"FPL_TOKEN_CACHE": ""}),
+            mock.patch.object(Path, "home", return_value=self.home),
+        ]
+        for patch in self._patches:
+            patch.start()
+
+    def tearDown(self) -> None:
+        for patch in self._patches:
+            patch.stop()
+        self._tmp.cleanup()
+
+    def _write(self, path: Path, body: str) -> None:
+        path.parent.mkdir(parents=True)
+        path.write_text(body)
+
+    def test_a_legacy_cache_is_moved_not_copied(self) -> None:
+        self._write(self.legacy, '{"api_token": "old"}')
+        self.assertEqual(headless_auth.cache_path(), self.current)
+        self.assertEqual(self.current.read_text(), '{"api_token": "old"}')
+        self.assertFalse(self.legacy.exists(), "a rotating token must exist in one place")
+
+    def test_an_existing_cache_is_never_overwritten_by_the_legacy_one(self) -> None:
+        self._write(self.legacy, '{"api_token": "old"}')
+        self._write(self.current, '{"api_token": "new"}')
+        headless_auth.cache_path()
+        self.assertEqual(self.current.read_text(), '{"api_token": "new"}')
+        self.assertTrue(self.legacy.exists())
+
+    def test_no_cache_anywhere_names_the_new_path(self) -> None:
+        self.assertEqual(headless_auth.cache_path(), self.current)
+        self.assertFalse(self.current.parent.exists(), "asking must not create anything")
+
+    def test_a_configured_path_is_left_alone(self) -> None:
+        self._write(self.legacy, '{"api_token": "old"}')
+        with mock.patch.dict(os.environ, {"FPL_TOKEN_CACHE": str(self.home / "elsewhere.json")}):
+            self.assertEqual(headless_auth.cache_path(), self.home / "elsewhere.json")
+        self.assertTrue(self.legacy.exists())
 
 
 class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
@@ -198,7 +245,7 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
         """A token the API no longer accepts must not be left on disk."""
 
         class _RejectedClient:
-            def __init__(self, reference=None):
+            def __init__(self):
                 self.api_token = None
                 self.user_info = None
 
@@ -227,7 +274,7 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_cached_token_restores_a_session(self) -> None:
         class _AcceptedClient:
-            def __init__(self, reference=None):
+            def __init__(self):
                 self.api_token = None
                 self.user_info = None
 
@@ -531,34 +578,6 @@ class ReauthOnExpiryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await client.get_me()
         self.assertEqual(session.calls, 1)
-
-
-class ReadOnlyGuardTests(unittest.IsolatedAsyncioTestCase):
-    async def test_read_only_blocks_transfers_before_touching_the_account(self) -> None:
-        previous = tools.get_active_session()
-        # No session is registered, so if the guard fails to fire the tool would
-        # report an authentication error instead of a read-only refusal.
-        tools.set_active_session(None)
-        try:
-            with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "true"}):
-                result = await tools.make_transfers(["Salah"], ["Haaland"])
-        finally:
-            tools.set_active_session(previous)
-
-        self.assertIn("read-only", result)
-        self.assertIn("FPL_READ_ONLY", result)
-
-    async def test_transfers_are_allowed_when_not_read_only(self) -> None:
-        previous = tools.get_active_session()
-        tools.set_active_session(None)
-        try:
-            with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "false"}):
-                result = await tools.make_transfers(["Salah"], ["Haaland"])
-        finally:
-            tools.set_active_session(previous)
-
-        # Falls through the guard to the normal authentication check.
-        self.assertIn("Not authenticated", result)
 
 
 if __name__ == "__main__":

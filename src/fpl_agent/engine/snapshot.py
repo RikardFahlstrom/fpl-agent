@@ -36,10 +36,10 @@ from typing import Optional
 from .. import config
 from . import lineups, storage
 from .actuals import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
-from ..client import FPLClient
-from ..headless_auth import authenticated_client, cache_path, env_flag
-from ..rotowire_scraper import RotoWireLineupScraper
-from ..sessions import sessions
+from ..api.client import FPLClient
+from ..api.headless_auth import authenticated_client, cache_path, env_flag
+from ..api.rotowire_scraper import RotoWireLineupScraper
+from ..api.sessions import sessions
 
 logger = logging.getLogger("fpl_snapshot")
 

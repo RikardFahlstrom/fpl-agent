@@ -1,15 +1,11 @@
 """Credential-based authentication for unattended (scheduled) runs.
 
-The interactive flow in `web.py` asks a human to submit a form. Everything after
-that submit is identical for an unattended run, so the shared part lives here in
-`establish_session` and both callers use it.
-
 The browser is the last resort, not the first move. A cached access token lives
 eight hours and the scheduled run comes round every twenty-four, so the order is
 always: a live cached token, then the OAuth refresh grant, then Chromium.
 
-Nothing in this module is used unless `FPL_AUTO_LOGIN` is enabled, so the
-existing interactive behaviour is unchanged by default.
+Nothing in this module logs in unless `FPL_AUTO_LOGIN` is enabled; without it the
+engine reads the public market with a bare client.
 """
 
 import json
@@ -24,7 +20,6 @@ import httpx
 
 from .auth import FPLAutomation
 from .client import FPLClient
-from .reference import reference
 from .sessions import sessions
 
 logger = logging.getLogger("fpl_headless_auth")
@@ -85,11 +80,29 @@ def load_credentials() -> tuple[str, str]:
 # sensitive as the password itself.
 
 
+# The cache lived under the fork's name until 2026-09-12. The rotating refresh token in
+# it is the one thing a server cannot get back without a browser, so the old location
+# is moved rather than abandoned: once, the first time the new one is asked for and
+# does not exist. Nothing is copied, because two copies of a rotating token fight.
+_LEGACY_CACHE_DIR = "fpl-mcp"
+
+
 def cache_path() -> Path:
     configured = os.environ.get("FPL_TOKEN_CACHE", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".config" / "fpl-mcp" / "session.json"
+    path = Path.home() / ".config" / "fpl-agent" / "session.json"
+    legacy = Path.home() / ".config" / _LEGACY_CACHE_DIR / "session.json"
+    if not path.exists() and legacy.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(legacy, path)
+            logger.info("Moved the FPL token cache from %s to %s", legacy, path)
+        except OSError as error:
+            logger.warning("Could not move the FPL token cache from %s (%s).",
+                           legacy, error)
+            return legacy
+    return path
 
 
 def _write_cache(payload: dict[str, Any]) -> None:
@@ -287,7 +300,7 @@ async def _refresh_cached_token(data: dict) -> Optional[dict]:
 
 async def _session_from_cache(data: dict) -> Optional[str]:
     """Register a session for a cached token, or None if /me rejects it."""
-    client = FPLClient(reference=reference)
+    client = FPLClient()
     client.set_api_token(data["api_token"])
     client.set_reauth_hook(reauth_hook)
     try:
@@ -299,8 +312,8 @@ async def _session_from_cache(data: dict) -> Optional[str]:
 
     session_id = str(uuid.uuid4())
     sessions.active_sessions[session_id] = client
-    # Match the interactive path: dispose this loop's pool so the MCP loop can
-    # lazily create its own without tripping the loop-boundary guard in FPLClient.
+    # Match the login path: dispose this loop's pool so a caller on another loop
+    # does not trip the loop-boundary guard in FPLClient.
     await client.close()
     return session_id
 
@@ -380,7 +393,7 @@ async def establish_session(
         return None, failure
 
     session_id = str(uuid.uuid4())
-    client = FPLClient(reference=reference)
+    client = FPLClient()
     client.set_api_token(token)
     client.set_reauth_hook(reauth_hook)
     # Fetches /me, stores user_info, and closes this loop's HTTP pool.
@@ -457,7 +470,7 @@ async def reauth_hook(client: FPLClient) -> bool:
     refreshed = sessions.get_client(session_id)
     if not refreshed or not refreshed.api_token:
         return False
-    # Mutate the client the tools already hold rather than swapping it out.
+    # Mutate the client the caller already holds rather than swapping it out.
     client.set_api_token(refreshed.api_token)
     client.user_info = refreshed.user_info
     sessions.active_session_id = session_id
@@ -474,25 +487,25 @@ async def authenticated_client() -> tuple[FPLClient, bool]:
     the public market.
     """
     if not env_flag("FPL_AUTO_LOGIN"):
-        return FPLClient(reference=reference), False
+        return FPLClient(), False
 
     try:
         session_id = await bootstrap_session()
     except Exception as e:
         logger.error("could not establish a session: %s", e)
-        return FPLClient(reference=reference), False
+        return FPLClient(), False
 
     if not session_id:
         logger.error(
             "login did not produce a session. The credential path drives a headless "
             "browser, so check `uv run playwright install chromium` has been run and "
             "that FPL_EMAIL / FPL_PASSWORD are correct.")
-        return FPLClient(reference=reference), False
+        return FPLClient(), False
 
     client = sessions.get_client(session_id)
     if client is None:
         logger.error("session %s established but no client was registered", session_id)
-        return FPLClient(reference=reference), False
+        return FPLClient(), False
 
     logger.info("session established")
     return client, True

@@ -3,7 +3,7 @@ import os
 import unittest
 
 from fpl_agent.engine import rivals, storage
-from fpl_agent.sessions import SessionRegistry
+from fpl_agent.api.sessions import SessionRegistry
 
 
 def storage_store():
@@ -78,12 +78,6 @@ class LeagueSourceTests(unittest.IsolatedAsyncioTestCase):
         await isolated.get_user_leagues(client)
         await isolated.get_user_leagues(client)
         self.assertEqual(client.entry_calls, 1, "entry/{id}/ should not be refetched")
-
-    async def test_find_league_by_name_uses_it(self):
-        isolated = storage_store()
-        found = await isolated.find_league_by_name(self._Client(), "The inner")
-        self.assertIsNotNone(found)
-        self.assertEqual(found["id"], 920863)
 
     async def test_no_entry_id_yields_no_leagues(self):
         class _Anonymous:

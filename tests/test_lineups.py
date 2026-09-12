@@ -1,10 +1,10 @@
 """Resolving RotoWire lineups to FPL players, and feeding them into projections."""
 import unittest
 
-from fpl_agent import rotowire_scraper
+from fpl_agent.api import rotowire_scraper
 from fpl_agent.engine import lineups, storage
 from fpl_agent.engine.lineups import fold, resolve_element_id, squad_index
-from fpl_agent.rotowire_scraper import LineupPlayer, MatchLineup
+from fpl_agent.api.rotowire_scraper import LineupPlayer, MatchLineup
 
 BOOTSTRAP = {
     "teams": [{"id": 1, "short_name": "LIV"}, {"id": 2, "short_name": "MCI"}],

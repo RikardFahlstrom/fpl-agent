@@ -19,10 +19,11 @@ Two things to know when consuming this:
   separator rather than on a count keeps that distinction, and a count would silently
   turn an injury list into a bench if the page ever listed twelve.
 """
+# Derived from lewis-king/fpl-mcp-server (MIT); see LICENSE-THIRD-PARTY.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import httpx
 from bs4 import BeautifulSoup
@@ -34,7 +35,7 @@ TEAM_ALIASES = {"NOT": "NFO"}
 
 STARTING_XI = 11
 
-# RotoWire injury shorthand -> the status the FPL tools expect.
+# RotoWire injury shorthand -> the status the lineup capture stores.
 INJURY_STATUS = {
     "OUT": "OUT",
     "QUES": "DOUBTFUL",
@@ -42,16 +43,6 @@ INJURY_STATUS = {
     "GTD": "DOUBTFUL",
     "SUSP": "OUT",
 }
-
-
-@dataclass
-class PlayerLineupStatus:
-    """Player lineup status from RotoWire."""
-    player_name: str
-    team: str
-    status: str  # OUT, DOUBTFUL, EXPECTED, CONFIRMED
-    reason: str
-    confidence: float
 
 
 @dataclass
@@ -132,23 +123,6 @@ class RotoWireLineupScraper:
         )
         return matches
 
-    async def scrape_premier_league_lineups(self) -> List[PlayerLineupStatus]:
-        """Flat player statuses, as the FPL tools consume them.
-
-        Derived from the lineups rather than from injury flags alone, so players now
-        carry their real team and expected starters populate the EXPECTED bucket, which
-        was previously always empty.
-        """
-        matches = await self.scrape_match_lineups()
-        statuses = [status for match in matches for status in self.to_statuses(match)]
-        counts: Dict[str, int] = {}
-        for entry in statuses:
-            counts[entry.status] = counts.get(entry.status, 0) + 1
-        logger.info("Player statuses: %s", counts or "none")
-        return statuses
-
-    # -- parsing ---------------------------------------------------------------------
-
     @staticmethod
     def normalise_team(code: str) -> str:
         code = (code or "").strip().upper()
@@ -226,29 +200,3 @@ class RotoWireLineupScraper:
 
         return lineup, unavailable, confirmed
 
-    @staticmethod
-    def to_statuses(match: MatchLineup) -> List[PlayerLineupStatus]:
-        """Flatten one fixture into the status records the FPL tools expect."""
-        statuses: List[PlayerLineupStatus] = []
-        # The injury list first, so a doubtful starter - who appears on both sides of the
-        # separator - is reported as doubtful rather than as an expected starter.
-        seen: set = set()
-        for player in match.injuries + match.players:
-            if (player.name, player.team) in seen:
-                continue
-            seen.add((player.name, player.team))
-            if player.injury:
-                status = INJURY_STATUS.get(player.injury, "DOUBTFUL")
-                reason = f"Listed as {player.injury} on RotoWire"
-                confidence = 0.95 if status == "OUT" else 0.6
-            elif player.is_starter:
-                status = "CONFIRMED" if match.confirmed else "EXPECTED"
-                reason = (f"{'Confirmed' if match.confirmed else 'Predicted'} to start "
-                          f"({player.position})")
-                confidence = 0.95 if match.confirmed else 0.75
-            else:
-                continue          # a fit substitute is not a prediction worth reporting
-            statuses.append(PlayerLineupStatus(
-                player_name=player.name, team=player.team,
-                status=status, reason=reason, confidence=confidence))
-        return statuses

@@ -1,6 +1,12 @@
+The FPL API client (src/fpl_agent/api/client.py), the browser login
+(src/fpl_agent/api/auth.py), the session registry (src/fpl_agent/api/sessions.py)
+and the RotoWire scraper (src/fpl_agent/api/rotowire_scraper.py) derive from
+lewis-king/fpl-mcp-server, https://github.com/lewis-king/fpl-mcp-server, and
+carry its licence:
+
 MIT License
 
-Copyright (c) 2026 Rikard Fahlstrom
+Copyright (c) 2024 Lewis King
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

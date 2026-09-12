@@ -4,7 +4,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from fpl_agent.rotowire_scraper import RotoWireLineupScraper
+from fpl_agent.api.rotowire_scraper import RotoWireLineupScraper
 
 FIXTURE = Path(__file__).parent / "fixtures" / "rotowire_lineups.html"
 
@@ -66,43 +66,3 @@ class LineupParsingTests(unittest.TestCase):
         match = self._match("IPS", "LIV")
         self.assertFalse(match.confirmed)
         self.assertEqual(match.status, "PREDICTED")
-
-
-class StatusFlatteningTests(unittest.TestCase):
-    def setUp(self):
-        self.scraper = RotoWireLineupScraper()
-        soup = BeautifulSoup(FIXTURE.read_text(), "html.parser")
-        self.matches = self.scraper.parse_match_lineups(soup)
-        self.statuses = [s for m in self.matches
-                         for s in RotoWireLineupScraper.to_statuses(m)]
-
-    def test_no_player_is_reported_twice(self):
-        seen = [(s.player_name, s.team) for s in self.statuses]
-        self.assertEqual(len(seen), len(set(seen)))
-
-    def test_a_doubtful_starter_is_reported_doubtful_not_expected(self):
-        """The injury flag has to win, or a doubtful player reads as a safe start."""
-        doubtful = {s.player_name for s in self.statuses if s.status == "DOUBTFUL"}
-        expected = {s.player_name for s in self.statuses if s.status == "EXPECTED"}
-        self.assertTrue(doubtful)
-        self.assertFalse(doubtful & expected)
-
-    def test_expected_starters_are_populated(self):
-        """Regression: the EXPECTED bucket was always empty."""
-        expected = [s for s in self.statuses if s.status == "EXPECTED"]
-        self.assertGreater(len(expected), 15)
-        self.assertTrue(all(s.team != "Unknown" for s in expected))
-
-    def test_out_outranks_doubtful_in_confidence(self):
-        out = next(s for s in self.statuses if s.status == "OUT")
-        doubtful = next(s for s in self.statuses if s.status == "DOUBTFUL")
-        self.assertGreater(out.confidence, doubtful.confidence)
-
-    def test_fit_substitutes_are_not_reported(self):
-        """RotoWire publishes no bench here, so nothing should claim one."""
-        for status in self.statuses:
-            self.assertIn(status.status, {"OUT", "DOUBTFUL", "EXPECTED", "CONFIRMED"})
-
-
-if __name__ == "__main__":
-    unittest.main()

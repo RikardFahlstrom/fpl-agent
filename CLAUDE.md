@@ -1,8 +1,8 @@
 # fpl-agent
 
 An FPL decision engine; `README.md` covers install and use. `src/fpl_agent/engine/` is
-the real work and `mcp/` the inherited fork surface over it. `learnings/` and `logs/` are
-the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
+the real work and `api/` the FPL side of the wire it reads through.
+`learnings/` and `logs/` are the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
 is committed, not scratch.
 
 ## Commands
@@ -55,7 +55,7 @@ you wanted, not the exit code.
 - `docs/schedule-equivalence.md` — before changing `engine/schedule.py`.
 - `docs/PLAN.md` — the roadmap; before picking up new work.
 - `docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md` — before filing,
-  labelling or triaging on GitHub (`origin`, never `upstream`), or looking for ADRs.
+  labelling or triaging on GitHub, or looking for ADRs.
 
 ## Plan Mode
 

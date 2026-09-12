@@ -13,9 +13,9 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 ## This repo
 
 **Single-context.** One `CONTEXT.md` and one `docs/adr/` at the repo root — no
-`CONTEXT-MAP.md`, no per-context directories. `CONTEXT.md` exists and holds the terms the
-scheduling work resolved; `docs/adr/` does not, because nothing so far has reversed a
-recorded decision. `/domain-modeling` creates them lazily, so proceed silently until then.
+`CONTEXT-MAP.md`, no per-context directories. `CONTEXT.md` holds the terms the scheduling
+work resolved; `docs/adr/` holds the decisions that were hard to reverse and would
+surprise without context, starting with `0001-no-mcp-server.md`.
 
 The rest of the standing domain documentation is what `CLAUDE.md` points at; it is loaded
 every session, so the pointers there are the index. One entry it does not carry:

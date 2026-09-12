@@ -658,13 +658,6 @@ class AllTriggersTests(BriefTestCase):
                 self.assertNotIn("2026", trigger.fingerprint)
                 self.assertNotIn(f"snapshot{snapshot_id}", trigger.fingerprint)
 
-    def test_evaluate_triggers_is_the_documented_seam(self):
-        self.all_four()
-        triggers = brief.evaluate_triggers(self.conn, GAMEWEEK, now=NOW)
-        self.assertEqual(triggers, self.evaluate().triggers)
-        self.assertIsInstance(triggers, list)
-        self.assertIsInstance(triggers[0], brief.Trigger)
-
     def test_every_trigger_either_fires_or_records_why_it_did_not(self):
         """The point of the whole thing: silence has to be accountable."""
         self.warehouse.healthy()
