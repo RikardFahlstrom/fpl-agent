@@ -74,7 +74,7 @@ ntfy_topic =              ; a long random string; see "Run it on a server"
 
 Every setting is also an environment variable (`FPL_AUTO_LOGIN`, `FPL_EMAIL`, …) and
 **the environment wins**, so a scheduled run can override the file. `*.ini` is gitignored.
-After the first login a token is cached in `~/.config/fpl-mcp/session.json`, and
+After the first login a token is cached in `~/.config/fpl-agent/session.json`, and
 credentials are no longer needed.
 
 ## Run
@@ -237,8 +237,7 @@ version on the same gameweeks rather than silently replacing it.
 ```
 src/fpl_agent/
   api/               the FPL side of the wire: client, auth, headless_auth,
-                     sessions; and rotowire_scraper, the
-                     one other source
+                     sessions; and rotowire_scraper, the one other source
   engine/            snapshot, actuals, lineups, projection, scoring, pricing,
                      rivals, recommend, settle, status, brief, notify, storage
   config, cli        settings from fpl-agent.ini; the `fpl-agent` command
@@ -248,7 +247,7 @@ deploy/              fpl-cron.sh, the unattended entry point; a crontab names it
                      path, so it does not move
 tools/               the schedule comparison harness; run by hand, and nothing
                      deployed depends on it
-docs/                PLAN.md, SCHEDULING.md, FACTS.md
+docs/                PLAN.md, SCHEDULING.md, FACTS.md, adr/
 learnings/           what the model learned, as markdown with frontmatter
 logs/actions.jsonl   decisions taken, append-only
 ```
@@ -259,10 +258,8 @@ The last two are tracked but not yet present: `fpl-agent settle --learn` and
 `data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
 [CLAUDE.md](CLAUDE.md) and the roadmap in [docs/PLAN.md](docs/PLAN.md).
 
-## Credit
-
-Forked from [lewis-king/fpl-mcp-server](https://github.com/lewis-king/fpl-mcp-server).
-
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The FPL API client and browser login in `api/` derive
+from [lewis-king/fpl-mcp-server](https://github.com/lewis-king/fpl-mcp-server), also
+MIT; its notice is in [LICENSE-THIRD-PARTY](LICENSE-THIRD-PARTY).

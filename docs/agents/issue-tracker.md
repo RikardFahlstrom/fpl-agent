@@ -15,10 +15,9 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 
 ## This repo
 
-- Issues live on **`RikardFahlstrom/fpl-agent`** (the `origin` remote). There is also an
-  `upstream` remote pointing at `lewis-king/fpl-mcp-server`, the project this was forked
-  from — never file, read or label anything there. `gh` resolves to `origin` by default;
-  pass `--repo RikardFahlstrom/fpl-agent` if a command ever picks the wrong one.
+- Issues live on **`RikardFahlstrom/fpl-agent`** (the `origin` remote, the only one).
+  `gh` resolves to it by default; pass `--repo RikardFahlstrom/fpl-agent` if a command
+  ever picks anything else.
 - Issues were disabled on the repo until 2026-09-10 and the tracker starts empty, so
   history before that date lives in commits, PRs and `docs/`, not in issues.
 - Work has been tracked through pull requests so far. Issues and PRs share one number

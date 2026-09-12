@@ -55,7 +55,7 @@ you wanted, not the exit code.
 - `docs/schedule-equivalence.md` — before changing `engine/schedule.py`.
 - `docs/PLAN.md` — the roadmap; before picking up new work.
 - `docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md` — before filing,
-  labelling or triaging on GitHub (`origin`, never `upstream`), or looking for ADRs.
+  labelling or triaging on GitHub, or looking for ADRs.
 
 ## Plan Mode
 

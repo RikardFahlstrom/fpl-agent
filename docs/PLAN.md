@@ -2,7 +2,8 @@
 
 Turning this repo from an MCP server that reads FPL into a decision engine that
 projects points, recommends actions, records what it decided, and measures itself
-against what actually happened.
+against what actually happened. The server itself is gone as of 2026-09-12
+(`docs/adr/0001-no-mcp-server.md`).
 
 Section numbers are the original brief's and are kept stable so references to them stay
 valid; §1 (detaching the fork) and §9 (open questions) were finished and removed, which

@@ -19,6 +19,7 @@ Two things to know when consuming this:
   separator rather than on a count keeps that distinction, and a count would silently
   turn an injury list into a bench if the page ever listed twelve.
 """
+# Derived from lewis-king/fpl-mcp-server (MIT); see LICENSE-THIRD-PARTY.
 
 import logging
 from dataclasses import dataclass, field

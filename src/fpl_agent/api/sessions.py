@@ -2,6 +2,7 @@
 
 Holds who is logged in and the leagues that can be looked up on their behalf.
 """
+# Derived from lewis-king/fpl-mcp-server (MIT); see LICENSE-THIRD-PARTY.
 
 import logging
 import time

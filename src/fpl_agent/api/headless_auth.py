@@ -1,15 +1,11 @@
 """Credential-based authentication for unattended (scheduled) runs.
 
-The interactive flow in `web.py` asks a human to submit a form. Everything after
-that submit is identical for an unattended run, so the shared part lives here in
-`establish_session` and both callers use it.
-
 The browser is the last resort, not the first move. A cached access token lives
 eight hours and the scheduled run comes round every twenty-four, so the order is
 always: a live cached token, then the OAuth refresh grant, then Chromium.
 
-Nothing in this module is used unless `FPL_AUTO_LOGIN` is enabled, so the
-existing interactive behaviour is unchanged by default.
+Nothing in this module logs in unless `FPL_AUTO_LOGIN` is enabled; without it the
+engine reads the public market with a bare client.
 """
 
 import json
@@ -84,11 +80,29 @@ def load_credentials() -> tuple[str, str]:
 # sensitive as the password itself.
 
 
+# The cache lived under the fork's name until 2026-09-12. The rotating refresh token in
+# it is the one thing a server cannot get back without a browser, so the old location
+# is moved rather than abandoned: once, the first time the new one is asked for and
+# does not exist. Nothing is copied, because two copies of a rotating token fight.
+_LEGACY_CACHE_DIR = "fpl-mcp"
+
+
 def cache_path() -> Path:
     configured = os.environ.get("FPL_TOKEN_CACHE", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path.home() / ".config" / "fpl-mcp" / "session.json"
+    path = Path.home() / ".config" / "fpl-agent" / "session.json"
+    legacy = Path.home() / ".config" / _LEGACY_CACHE_DIR / "session.json"
+    if not path.exists() and legacy.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(legacy, path)
+            logger.info("Moved the FPL token cache from %s to %s", legacy, path)
+        except OSError as error:
+            logger.warning("Could not move the FPL token cache from %s (%s).",
+                           legacy, error)
+            return legacy
+    return path
 
 
 def _write_cache(payload: dict[str, Any]) -> None:

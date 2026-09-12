@@ -387,7 +387,7 @@ token_cache = /srv/fpl-agent/state/session.json
   file is readable by anyone else.
 - Put `token_cache` somewhere persistent and backed up *as a location*, not as
   content - the file rotates constantly, so a restored old copy is a dead token.
-  The default is `~/.config/fpl-mcp/session.json`, which is fine if the service user
+  The default is `~/.config/fpl-agent/session.json`, which is fine if the service user
   has a stable home directory.
 - The cached token is a bearer credential that could execute transfers on your account
   if anything asked it to. Nothing here does, but on a remote host it is still the crown

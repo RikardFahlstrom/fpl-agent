@@ -1,3 +1,4 @@
+# Derived from lewis-king/fpl-mcp-server (MIT); see LICENSE-THIRD-PARTY.
 import asyncio
 import logging
 from typing import Any, Dict, List, Optional
