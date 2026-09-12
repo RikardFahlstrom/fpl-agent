@@ -12,7 +12,6 @@ import httpx
 
 from fpl_agent.api import headless_auth
 from fpl_agent.api.client import FPLClient
-from fpl_agent.api.sessions import sessions
 
 
 class _FakeResponse:
@@ -265,9 +264,9 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
             headless_auth.save_cached_session(self._client(), expires_in=3600)
             self.assertTrue(self.cache_file.exists())
             with mock.patch.object(headless_auth, "FPLClient", _RejectedClient):
-                session_id = await headless_auth.load_cached_session()
+                client = await headless_auth.load_cached_session()
 
-        self.assertIsNone(session_id)
+        self.assertIsNone(client)
         self.assertFalse(
             self.cache_file.exists(), "a rejected token must be removed from disk"
         )
@@ -293,15 +292,11 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.dict(os.environ, {"FPL_TOKEN_CACHE": str(self.cache_file)}):
             headless_auth.save_cached_session(self._client(), expires_in=3600)
             with mock.patch.object(headless_auth, "FPLClient", _AcceptedClient):
-                session_id = await headless_auth.load_cached_session()
+                restored = await headless_auth.load_cached_session()
 
-        try:
-            self.assertIsNotNone(session_id)
-            restored = sessions.get_client(session_id)
-            self.assertEqual(restored.api_token, "Bearer test-token")
-            self.assertTrue(self.cache_file.exists(), "a working token stays cached")
-        finally:
-            sessions.active_sessions.pop(session_id, None)
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.api_token, "Bearer test-token")
+        self.assertTrue(self.cache_file.exists(), "a working token stays cached")
 
 
 class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
@@ -350,12 +345,9 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
             _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
         )
 
-        session_id = await self._load(endpoint)
-        try:
-            self.assertIsNotNone(session_id, "the refresh grant should restore a session")
-            self.assertEqual(sessions.get_client(session_id).api_token, "Bearer fresh-token")
-        finally:
-            sessions.active_sessions.pop(session_id, None)
+        client = await self._load(endpoint)
+        self.assertIsNotNone(client, "the refresh grant should restore a session")
+        self.assertEqual(client.api_token, "Bearer fresh-token")
 
         self.assertEqual(len(endpoint.requests), 1)
         request = endpoint.requests[0]
@@ -386,8 +378,7 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
         )
-        session_id = await self._load(endpoint)
-        sessions.active_sessions.pop(session_id, None)
+        await self._load(endpoint)
 
         self.assertEqual(self._cached()["refresh_token"], "refresh-2")
 
@@ -397,8 +388,7 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
         endpoint = _FakeTokenEndpoint(
             _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
         )
-        session_id = await self._load(endpoint)
-        sessions.active_sessions.pop(session_id, None)
+        await self._load(endpoint)
 
         self.assertEqual(self._cached()["refresh_token"], "refresh-1")
 
@@ -408,8 +398,7 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
         endpoint = _FakeTokenEndpoint(
             _FakeResponse(200, {"access_token": "fresh-token", "expires_in": 28800})
         )
-        session_id = await self._load(endpoint)
-        sessions.active_sessions.pop(session_id, None)
+        await self._load(endpoint)
 
         cached = self._cached()
         self.assertEqual(cached["entry_id"], 431892)
@@ -420,9 +409,9 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
         self._write_expired_cache()
         endpoint = _FakeTokenEndpoint(_FakeResponse(400, {"error": "invalid_grant"}))
 
-        session_id = await self._load(endpoint)
+        client = await self._load(endpoint)
 
-        self.assertIsNone(session_id, "a refused refresh must fall back, not fake a session")
+        self.assertIsNone(client, "a refused refresh must fall back, not fake a session")
         self.assertEqual(self._cached()["refresh_token"], "refresh-1")
 
     async def test_an_unreachable_token_endpoint_falls_back_without_raising(self) -> None:
@@ -430,9 +419,9 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
         self._write_expired_cache()
         endpoint = _FakeTokenEndpoint(error=httpx.ConnectError("no route to host"))
 
-        session_id = await self._load(endpoint)
+        client = await self._load(endpoint)
 
-        self.assertIsNone(session_id)
+        self.assertIsNone(client)
         self.assertTrue(
             self.cache_file.exists(),
             "a transient failure must not discard the refresh token",
@@ -442,9 +431,9 @@ class RefreshGrantTests(unittest.IsolatedAsyncioTestCase):
         self._write_expired_cache(refresh_token=None)
         endpoint = _FakeTokenEndpoint(_FakeResponse(200, {"access_token": "unused"}))
 
-        session_id = await self._load(endpoint)
+        client = await self._load(endpoint)
 
-        self.assertIsNone(session_id)
+        self.assertIsNone(client)
         self.assertEqual(endpoint.requests, [])
 
     async def test_reauth_hook_refreshes_before_reaching_for_a_browser(self) -> None:
@@ -486,16 +475,19 @@ class InteractiveLoginPersistenceTests(unittest.IsolatedAsyncioTestCase):
             async def login_and_get_token(self):
                 return "Bearer interactive-token"
 
-        async def _set_login_success(request_id, session_id, client):
-            client.user_info = {"player": {"entry": 1}}
+        class _Accepting:
+            def __init__(self): self.leagues = None
+            def set_api_token(self, token): self.api_token = token
+            def set_reauth_hook(self, hook): pass
+            async def get_me(self): return {"player": {"entry": 1}}
+            async def close(self): pass
 
         with mock.patch.object(headless_auth, "FPLAutomation", _Automation), \
-             mock.patch.object(headless_auth.sessions, "set_login_success", _set_login_success):
-            session_id, error = await headless_auth.establish_session("a@b.c", "pw")
+             mock.patch.object(headless_auth, "FPLClient", _Accepting):
+            client, error = await headless_auth.establish_session("a@b.c", "pw")
 
         self.assertIsNone(error)
-        self.assertIsNotNone(session_id)
-        headless_auth.sessions.active_sessions.pop(session_id, None)
+        self.assertIsNotNone(client)
 
     async def test_interactive_login_does_not_cache_the_token(self) -> None:
         with mock.patch.dict(
