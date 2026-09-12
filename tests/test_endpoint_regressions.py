@@ -1,21 +1,14 @@
-"""Regression tests for the MCP endpoint bugs found by auditing every tool/resource/prompt.
+"""Regression tests for the FPL API layer: client, reference data and sessions.
 
-Each test pins one previously-broken endpoint path. All fixtures are local: no test
+Each test pins one previously-broken path. All fixtures are local: no test
 here reaches the FPL API.
 """
-import inspect
-import re
 import unittest
-from datetime import datetime, timedelta, timezone
 
-# Importing these registers the prompts and resources on the shared server.
-from fpl_agent.mcp import prompts, resources, tools  # noqa: F401
 from fpl_agent.client import FPLClient
-from fpl_agent.mcp.tools import injuries, mcp
-from fpl_agent.models import BootstrapData, FixtureData
+from fpl_agent.models import BootstrapData
 from fpl_agent.reference import ReferenceData, reference
-from fpl_agent.rotowire_scraper import PlayerLineupStatus, RotoWireLineupScraper
-from fpl_agent.sessions import SessionRegistry, sessions
+from fpl_agent.sessions import SessionRegistry
 
 
 def _event(event_id: int, *, current=False, next_=False, finished=False, deadline=None):
@@ -119,36 +112,6 @@ class _FakeClient:
         return await FPLClient(reference=reference).get_players()
 
 
-class _StoreFixture(unittest.IsolatedAsyncioTestCase):
-    """Loads the shared store with local data and restores it afterwards."""
-
-    def setUp(self):
-        self._saved = (reference.bootstrap_data, reference.fixtures_data,
-                       dict(reference.player_name_map), dict(reference.player_id_map),
-                       tools.get_active_session())
-        reference.bootstrap_data = BootstrapData(**_bootstrap())
-        reference._build_player_indices()
-        reference.fixtures_data = [FixtureData(**f) for f in
-                               [_fixture(1, 2, 1, 2, True), _fixture(2, 3, 2, 1, False),
-                                _fixture(3, 4, 1, 2, False), _fixture(4, 5, 2, 1, False)]]
-
-    def tearDown(self):
-        (reference.bootstrap_data, reference.fixtures_data,
-         reference.player_name_map, reference.player_id_map, session) = self._saved
-        tools.set_active_session(session)
-
-    def activate(self, client):
-        sessions.active_sessions["regression"] = client
-        tools.set_active_session("regression")
-        self.addCleanup(sessions.active_sessions.pop, "regression", None)
-
-    async def call_tool(self, name, args=None):
-        result = await mcp.call_tool(name, args or {})
-        content = result[0] if isinstance(result, tuple) else result
-        return "".join(getattr(c, "text", str(c))
-                       for c in (content if isinstance(content, list) else [content]))
-
-
 class BootstrapLoadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_ensure_bootstrap_data_uses_the_real_client_method(self):
         """ensure_bootstrap_data called a non-existent get_bootstrap_static()."""
@@ -231,165 +194,6 @@ class PlayerModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(player.status, "a")
             self.assertEqual(player.minutes, 540)
             self.assertEqual(player.total_points, 30)
-
-
-class CurrentGameweekTests(_StoreFixture):
-    async def test_deadline_comparison_is_timezone_aware(self):
-        """utcnow() is naive; the deadline is aware, so the compare raised TypeError."""
-        future = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        bootstrap = _bootstrap()
-        bootstrap["events"] = [_event(2, current=True, deadline=future), _event(3, next_=True)]
-        reference.bootstrap_data = BootstrapData(**bootstrap)
-        reference._build_player_indices()
-        self.activate(_FakeClient())
-
-        output = await self.call_tool("get_current_gameweek")
-
-        self.assertNotIn("offset-naive", output)
-        self.assertIn("Current Gameweek: Gameweek 2", output)
-
-    async def test_falls_through_to_next_gameweek_after_the_deadline(self):
-        past = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        bootstrap = _bootstrap()
-        bootstrap["events"] = [_event(2, current=True, deadline=past), _event(3, next_=True)]
-        reference.bootstrap_data = BootstrapData(**bootstrap)
-        reference._build_player_indices()
-        self.activate(_FakeClient())
-
-        output = await self.call_tool("get_current_gameweek")
-
-        self.assertNotIn("offset-naive", output)
-        self.assertIn("Upcoming Gameweek: Gameweek 3", output)
-
-
-class FixtureWindowTests(_StoreFixture):
-    async def test_requesting_n_gameweeks_returns_n_upcoming_fixtures(self):
-        """The window started at the finished current GW, so N returned N-1 fixtures.
-
-        A second case used to assert the same thing through the old MCP
-        `recommend_transfers`, which listed each candidate's next three fixtures.
-        That tool re-derived its advice from the live API and has been replaced by an
-        adapter over the engine, so the fixture list it printed is gone - but the
-        window is `reference.upcoming_fixtures`, and both callers always shared it.
-        The negative assertion moved here rather than being dropped: GW2 is the
-        current gameweek and is already played, so it must not appear.
-        """
-        self.activate(_FakeClient())
-
-        output = await self.call_tool(
-            "analyze_team_fixtures", {"team_name": "Test United", "num_gameweeks": 2}
-        )
-
-        self.assertIn("Next 2 Fixtures", output)
-        self.assertNotIn("GW2:", output)
-        self.assertIn("GW3", output)
-        self.assertIn("GW4", output)
-
-
-class SquadAnalysisTests(_StoreFixture):
-    async def test_player_without_history_does_not_raise_keyerror(self):
-        """The 'No data' branch omitted transfers_balance, which the formatter indexed."""
-        class _NoHistoryClient(_FakeClient):
-            async def get_my_team(self, entry_id):
-                return {
-                    "picks": [{"element": 1, "position": 1, "multiplier": 1,
-                               "is_captain": True, "is_vice_captain": False,
-                               "selling_price": 50, "purchase_price": 50}],
-                    "chips": [],
-                    "transfers": {"bank": 5, "value": 1000, "limit": 1,
-                                  "made": 0, "cost": 4},
-                }
-
-        self.activate(_NoHistoryClient(history=[]))
-
-        output = await self.call_tool("analyze_squad_recent_performance", {"num_gameweeks": 3})
-
-        self.assertNotIn("transfers_balance", output)
-        self.assertNotIn("Error analyzing squad performance", output)
-        self.assertIn("Squad Performance Analysis", output)
-
-
-class InjuryEndpointTests(_StoreFixture):
-    """get_players_to_avoid called scraper.convert_to_ai_format, which never existed.
-
-    Both the tool and the fpl://injuries/avoid resource returned
-    "... has no attribute 'convert_to_ai_format'" for every caller. They are gone;
-    get_injury_and_lineup_predictions already lists OUT and DOUBTFUL with the same
-    reason and confidence, so nothing was lost with them.
-    """
-
-    def _stub_scraper(self, statuses):
-        """Answer the scrape from local data - no test here reaches RotoWire."""
-        async def scrape(_self):
-            return statuses
-
-        original = RotoWireLineupScraper.scrape_premier_league_lineups
-        RotoWireLineupScraper.scrape_premier_league_lineups = scrape
-        self.addCleanup(
-            setattr, RotoWireLineupScraper, "scrape_premier_league_lineups", original
-        )
-
-    async def test_predictions_report_out_and_doubtful_without_an_attribute_error(self):
-        self._stub_scraper([
-            PlayerLineupStatus("Alpha", "TSU", "OUT", "Hamstring", 0.9),
-            PlayerLineupStatus("Bravo", "TSC", "DOUBTFUL", "Knock", 0.6),
-        ])
-        self.activate(_FakeClient())
-
-        output = await self.call_tool("get_injury_and_lineup_predictions")
-
-        self.assertNotIn("no attribute", output)
-        self.assertNotIn("Error fetching", output)
-        # The coverage the deleted get_players_to_avoid claimed to add.
-        self.assertIn("OUT (1 players)", output)
-        self.assertIn("Alpha (TSU) - Hamstring", output)
-        self.assertIn("DOUBTFUL (1 players)", output)
-        self.assertIn("Bravo (TSC) - Knock", output)
-
-    async def test_every_scraper_call_in_the_injuries_module_exists(self):
-        """The check that would have caught the bug: no call to a method that is not there."""
-        source = inspect.getsource(injuries)
-        called = set(re.findall(r"\bscraper\.(\w+)", source))
-
-        self.assertTrue(called, "expected the tools to call the scraper at all")
-        missing = sorted(m for m in called if not hasattr(RotoWireLineupScraper, m))
-        self.assertEqual(missing, [])
-
-    async def test_the_dead_endpoints_are_not_registered(self):
-        tool_names = {tool.name for tool in await mcp.list_tools()}
-        resource_uris = {str(resource.uri) for resource in await mcp.list_resources()}
-
-        self.assertNotIn("get_players_to_avoid", tool_names)
-        self.assertNotIn("fpl://injuries/avoid", resource_uris)
-        self.assertIn("get_injury_and_lineup_predictions", tool_names)
-        self.assertIn("fpl://injuries", resource_uris)
-
-
-class PromptTests(unittest.IsolatedAsyncioTestCase):
-    async def test_compare_players_prompt_renders(self):
-        """*args made the prompt impossible to satisfy through FastMCP."""
-        result = await mcp.get_prompt("compare_players", {"player_names": "Haaland, Palmer"})
-        text = " ".join(m.content.text for m in result.messages)
-
-        self.assertIn("Haaland, Palmer", text)
-        self.assertIn("(2 players)", text)
-
-    async def test_compare_players_prompt_renders_without_arguments(self):
-        result = await mcp.get_prompt("compare_players", {})
-        text = " ".join(m.content.text for m in result.messages)
-
-        self.assertIn("{player1}", text)
-
-    async def test_compare_managers_prompt_renders(self):
-        result = await mcp.get_prompt(
-            "compare_managers",
-            {"league_name": "Work League", "gameweek": "5", "manager_names": "Ana, Bo"},
-        )
-        text = " ".join(m.content.text for m in result.messages)
-
-        self.assertIn("Work League", text)
-        self.assertIn("Ana, Bo", text)
-        self.assertIn("2 managers", text)
 
 
 if __name__ == "__main__":

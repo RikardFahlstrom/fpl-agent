@@ -13,9 +13,6 @@
 auto_login = true
 email =
 password =
-; Refuse make_transfers. Recommended for anything unattended: the cached token is a
-; bearer credential that can execute transfers on your account.
-read_only = true
 ; Where the session and its refresh token are cached. Put this somewhere persistent
 ; on a server. The file rotates on every refresh, so restoring an old copy of it
 ; restores a dead token - back up the location, not the content.
@@ -55,7 +52,3 @@ ntfy_topic =
 ; A self-hosted ntfy instance, if you would rather not post to the public one. The topic
 ; is still a secret there unless you have put access control in front of it.
 ; ntfy_server = https://ntfy.sh
-
-[server]
-; transport = stdio
-; auth_port = 8020

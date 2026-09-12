@@ -1,8 +1,8 @@
 # fpl-agent
 
 An FPL decision engine; `README.md` covers install and use. `src/fpl_agent/engine/` is
-the real work and `mcp/` the inherited fork surface over it. `learnings/` and `logs/` are
-the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
+the real work; the root modules beside it are the FPL API layer it reads through.
+`learnings/` and `logs/` are the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
 is committed, not scratch.
 
 ## Commands

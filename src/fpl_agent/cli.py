@@ -7,7 +7,6 @@ work and are deliberately kept for anyone who prefers them; the docs name the
 `fpl-agent` form because it is the one that does not encode the package layout.
 """
 
-import inspect
 import sys
 from typing import Callable, Optional
 
@@ -21,7 +20,6 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "schedule": ("fpl_agent.engine.schedule", "Say what a scheduled job is due to do"),
     "brief": ("fpl_agent.engine.brief", "Write the gameweek brief to logs/gwNN.md"),
     "notify": ("fpl_agent.engine.notify", "Push the brief's triggers to ntfy, once each"),
-    "serve": ("fpl_agent.main", "Run the MCP server"),
 }
 
 
@@ -48,13 +46,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     module_name = COMMANDS[command][0]
     module = __import__(module_name, fromlist=["main"])
     entry: Callable = module.main
-    # The engine commands parse their own arguments; the server takes none.
-    if inspect.signature(entry).parameters:
-        return entry(argv[1:]) or 0
-    if argv[1:]:
-        print(f"{command} takes no options", file=sys.stderr)
-        return 2
-    return entry() or 0
+    return entry(argv[1:]) or 0
 
 
 if __name__ == "__main__":

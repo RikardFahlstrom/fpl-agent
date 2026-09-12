@@ -11,7 +11,6 @@ from unittest import mock
 import httpx
 
 from fpl_agent import headless_auth
-from fpl_agent.mcp import tools
 from fpl_agent.client import FPLClient
 from fpl_agent.sessions import sessions
 
@@ -531,34 +530,6 @@ class ReauthOnExpiryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await client.get_me()
         self.assertEqual(session.calls, 1)
-
-
-class ReadOnlyGuardTests(unittest.IsolatedAsyncioTestCase):
-    async def test_read_only_blocks_transfers_before_touching_the_account(self) -> None:
-        previous = tools.get_active_session()
-        # No session is registered, so if the guard fails to fire the tool would
-        # report an authentication error instead of a read-only refusal.
-        tools.set_active_session(None)
-        try:
-            with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "true"}):
-                result = await tools.make_transfers(["Salah"], ["Haaland"])
-        finally:
-            tools.set_active_session(previous)
-
-        self.assertIn("read-only", result)
-        self.assertIn("FPL_READ_ONLY", result)
-
-    async def test_transfers_are_allowed_when_not_read_only(self) -> None:
-        previous = tools.get_active_session()
-        tools.set_active_session(None)
-        try:
-            with mock.patch.dict(os.environ, {"FPL_READ_ONLY": "false"}):
-                result = await tools.make_transfers(["Salah"], ["Haaland"])
-        finally:
-            tools.set_active_session(previous)
-
-        # Falls through the guard to the normal authentication check.
-        self.assertIn("Not authenticated", result)
 
 
 if __name__ == "__main__":

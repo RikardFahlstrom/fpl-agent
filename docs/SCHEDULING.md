@@ -2,8 +2,8 @@
 
 The target is a Linux server running everything on cron with no human present, and
 **no automated transfers**. The agent captures, projects and recommends; a person
-reads the output and makes the move. `read_only = true` is the setting that enforces
-that, and it is the reason a bearer token can sit on a remote host at all.
+reads the output and makes the move. No code path executes a transfer, and that is the
+reason a bearer token can sit on a remote host at all.
 
 The organising principle is that **cron fires dumbly and often; the guards decide
 whether there is anything to do.** The FPL calendar cannot be written in a crontab -
@@ -380,7 +380,6 @@ For an unattended host:
 auto_login = true
 email = you@example.com
 password = ...
-read_only = true                          ; refuse make_transfers - keep this on
 token_cache = /srv/fpl-agent/state/session.json
 ```
 
@@ -390,14 +389,15 @@ token_cache = /srv/fpl-agent/state/session.json
   content - the file rotates constantly, so a restored old copy is a dead token.
   The default is `~/.config/fpl-mcp/session.json`, which is fine if the service user
   has a stable home directory.
-- `read_only = true` is a real control, not tidiness. The cached token is a bearer
-  credential that can execute transfers. On a remote host it is the crown jewel.
+- The cached token is a bearer credential that could execute transfers on your account
+  if anything asked it to. Nothing here does, but on a remote host it is still the crown
+  jewel: treat the cache location like the password.
 - `FPL_TOKEN_ENDPOINT` and `FPL_OAUTH_CLIENT_ID` exist so a client-id rotation is a
   config change rather than a code change. Leave them unset unless the login breaks.
 
 ## What is not automated yet
 
-- **Transfers are never executed.** By design, and `read_only = true` enforces it. The
+- **Transfers are never executed.** By design: the client has no method for it. The
   agent tells you what to do; you do it.
 - **The deadline is derived, not fetched.** 90 minutes before the first stored kickoff,
   which a postponed opening fixture would move. `bootstrap-static`'s `deadline_time` is
