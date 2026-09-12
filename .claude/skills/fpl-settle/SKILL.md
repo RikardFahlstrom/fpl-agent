@@ -10,15 +10,13 @@ calibration slices and drafts a learning file.
 
 ## Check the warehouse first
 
-Run `.venv/bin/fpl-agent status` **before `make settle`.** It is read-only - it
-authenticates against nothing and writes nothing - and it says whether gameweek `n` has a
-decision-time projection and the actuals to grade it against.
+Run `.venv/bin/fpl-agent status` **before `make settle`.** It is read-only, and it says
+whether gameweek `n` has a decision-time projection and the actuals to grade it against.
 
 Exit 0 means there is something real to settle. Any non-zero exit names a specific
-inconsistency; the code table is in `docs/SCHEDULING.md`, shared with `deploy/fpl-cron.sh`.
-Look the code up there before reacting to it - some are the normal answer rather than a
-fault. "The gameweek has not finished, or there was nothing to grade" is most mornings,
-and it means stop, not investigate.
+inconsistency: look the code up in `docs/SCHEDULING.md` before reacting to it - some are
+the normal answer rather than a fault. "The gameweek has not finished, or there was
+nothing to grade" is most mornings, and it means stop, not investigate.
 
 **A non-zero status is not something to work around.** Settle's own guards will refuse the
 run anyway, and they exist because grading a gameweek the warehouse cannot honestly
@@ -67,7 +65,5 @@ A learning that is rejected is still worth keeping - set `status: rejected` and 
 
 ## Committed
 
-`learnings/*.md` and `logs/actions.jsonl` are tracked once they exist. Neither is in the
-checkout yet: `--learn` writes the first learning file and creates `learnings/` doing it.
-Commit what it wrote. The database is not tracked: it is derived and re-fetchable, the
-reasoning is not.
+`learnings/*.md` and `logs/` are tracked. Commit what `--learn` wrote. The database is not
+tracked: it is derived and re-fetchable, the reasoning is not.

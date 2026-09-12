@@ -7,8 +7,8 @@ description: Run the pre-deadline cycle - capture, project, and rank transfers -
 
 Run `make deadline`. It runs the deadline half of `engine/schedule`'s plan: a fresh
 capture, the three-gameweek projection, rival squads, the transfer ranking, and then
-`status` over what that left behind. The order matters - rivals must exist before ownership
-means anything - and it is stated once, in the schedule, so this file does not restate it.
+`status` over what that left behind. The order matters, and it is stated once, in the
+schedule.
 
 **It does nothing when no deadline is near**, which is the same answer the hourly cron job
 gives and is not a failure. `make deadline DRY=--dry-run` shows the decision without acting
@@ -23,13 +23,11 @@ Then interpret. The numbers are not the answer.
 
 The plan ends on `status`, so a `make deadline` that ranked has already run it - read
 those lines before reading a single recommendation. Run `.venv/bin/fpl-agent status` by
-hand when you are reading a ranking from an earlier run. It is read-only - it authenticates against nothing and writes nothing -
-and it answers in one command what used to be three SQL queries and a hope.
+hand when you are reading a ranking from an earlier run; it is read-only.
 
 Exit 0 means the warehouse is consistent and the recommendations rest on something. Any
-non-zero exit names a specific inconsistency; the code table is in `docs/SCHEDULING.md`
-and is shared with `deploy/fpl-cron.sh`, so a failure here is the same failure cron would
-have mailed you. Read the code, do not re-derive it.
+non-zero exit names a specific inconsistency: look the code up in `docs/SCHEDULING.md`
+rather than re-deriving it.
 
 **Do not read the recommendations over a non-zero status.** The output will look entirely
 normal - ranked moves, prices, gains - because every one of those numbers is computed
@@ -76,7 +74,7 @@ whole league gains on you. That is reported separately for a reason.
 ## Afterwards
 
 Run `make record` once the transfer has actually been made. It logs the top-ranked move to
-`logs/actions.jsonl`, creating the file and its directory on the first run, and that file
-is committed. `make deadline` deliberately does not record: recording is a claim about
-what was done, not about what was suggested. If the move you made was not the top-ranked
-one, edit the recorded line rather than leaving a decision the log misattributes.
+`logs/actions.jsonl`, which is committed. `make deadline` deliberately does not record:
+recording is a claim about what was done, not about what was suggested. If the move you
+made was not the top-ranked one, edit the recorded line rather than leaving a decision the
+log misattributes.
