@@ -26,7 +26,6 @@ from .. import config
 from . import storage, warehouse
 from ..api.client import FPLClient
 from ..api.headless_auth import authenticated_client
-from ..api.reference import reference
 from ..api.sessions import sessions
 
 logger = logging.getLogger("fpl_rivals")
@@ -262,7 +261,7 @@ async def _refresh_only(args) -> int:
     means something real rather than a host that has never run `rivals`.
     """
     conn = storage.connect(args.db)
-    client = FPLClient(reference=reference)
+    client = FPLClient()
     try:
         refreshed = await refresh_known_standings(
             conn, client, args.league or configured_league_ids(), args.max_rivals)

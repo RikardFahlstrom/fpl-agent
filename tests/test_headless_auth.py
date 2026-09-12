@@ -84,7 +84,7 @@ class _NoBrowser:
 class _AcceptingClient:
     """An FPLClient that accepts whatever token it is given."""
 
-    def __init__(self, reference=None):
+    def __init__(self):
         self.api_token = None
         self.user_info = None
 
@@ -197,7 +197,7 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
         """A token the API no longer accepts must not be left on disk."""
 
         class _RejectedClient:
-            def __init__(self, reference=None):
+            def __init__(self):
                 self.api_token = None
                 self.user_info = None
 
@@ -226,7 +226,7 @@ class TokenCacheTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_cached_token_restores_a_session(self) -> None:
         class _AcceptedClient:
-            def __init__(self, reference=None):
+            def __init__(self):
                 self.api_token = None
                 self.user_info = None
 

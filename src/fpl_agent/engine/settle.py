@@ -45,7 +45,6 @@ from ..api.client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
 from .actuals import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
-from ..api.reference import reference
 
 logger = logging.getLogger("fpl_settle")
 
@@ -286,7 +285,7 @@ def draft_learning(slices: dict[str, list[Slice]], gameweek: int,
 # code snapshot returns for the same condition), 6 the round's actuals were never fetched.
 async def _run(args) -> int:
     conn = storage.connect(args.db)
-    client = FPLClient(reference=reference)
+    client = FPLClient()
     try:
         # Whether a gameweek is over is read from fixture.finished, which only a snapshot
         # writes - so without this, settle's verdict depends on an unrelated nightly job

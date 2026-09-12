@@ -1,26 +1,21 @@
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .models import Player, TransferPayload
-
-if TYPE_CHECKING:
-    from .reference import ReferenceData
 
 logger = logging.getLogger("fpl_client")
 
 class FPLClient:
     BASE_URL = "https://fantasy.premierleague.com/api/"
     
-    def __init__(self, reference: Optional['ReferenceData'] = None):
+    def __init__(self):
         self.session: httpx.AsyncClient | None = None
         self._session_loop: asyncio.AbstractEventLoop | None = None
         self.api_token = None
         self.team_id: Optional[int] = None
         self.user_info: Optional[Dict[str, Any]] = None  # Store user info from /me
-        self._reference = reference
         self._reauth_hook = None
 
     def set_reauth_hook(self, hook) -> None:
@@ -72,7 +67,7 @@ class FPLClient:
             response = await session.post(url, json=data, headers=headers)
 
         # Every authenticated call funnels through here, so recovering from an
-        # expired token in this one place covers all tools. Retry only once, so a
+        # expired token in this one place covers every caller. Retry only once, so a
         # persistently rejected token surfaces as an error instead of looping.
         if response.status_code == 401 and allow_reauth and self._reauth_hook:
             logger.info("FPL rejected the token; attempting to re-authenticate.")
@@ -169,136 +164,9 @@ class FPLClient:
         """
         return await self._request("GET", "me/")
 
-    async def get_players(self) -> List[Player]:
-        """Get all players using in-memory bootstrap data"""
-        # Use in-memory data if available
-        if self._reference and self._reference.bootstrap_data:
-            data = self._reference.bootstrap_data
-            teams = {t.id: t.name for t in data.teams}
-            types = {t.id: t.singular_name_short for t in data.element_types}
-            
-            players = []
-            for element in data.elements:
-                # Convert ElementData to Player
-                player = Player(
-                    id=element.id,
-                    web_name=element.web_name,
-                    first_name=element.first_name,
-                    second_name=element.second_name,
-                    team=element.team,
-                    element_type=element.element_type,
-                    now_cost=element.now_cost,
-                    form=element.form,
-                    points_per_game=element.points_per_game,
-                    news=element.news,
-                    status=element.status,
-                    total_points=getattr(element, 'total_points', 0),
-                    minutes=getattr(element, 'minutes', 0)
-                )
-                player.team_name = teams.get(player.team, "Unknown")
-                player.position = types.get(player.element_type, "Unk")
-                players.append(player)
-            return players
-        
-        # Fallback to API if in-memory data not available
-        logger.warning("Bootstrap data not loaded, fetching from API")
-        data = await self.get_bootstrap_data()
-        teams = {t['id']: t['name'] for t in data['teams']}
-        types = {t['id']: t['singular_name_short'] for t in data['element_types']}
-        
-        players = []
-        for p in data['elements']:
-            player = Player(**p)
-            player.team_name = teams.get(player.team, "Unknown")
-            player.position = types.get(player.element_type, "Unk")
-            players.append(player)
-        return players
-
-    async def get_top_players_by_position(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Get top players by position based on points per game.
-        Returns: {
-            'GKP': [top 5 goalkeepers],
-            'DEF': [top 20 defenders],
-            'MID': [top 20 midfielders],
-            'FWD': [top 20 forwards]
-        }
-        """
-        if not self._reference or not self._reference.bootstrap_data:
-            logger.warning("Bootstrap data not available for top players")
-            return {'GKP': [], 'DEF': [], 'MID': [], 'FWD': []}
-        
-        data = self._reference.bootstrap_data
-        teams = {t.id: t.name for t in data.teams}
-        types = {t.id: t.singular_name_short for t in data.element_types}
-        
-        # Group players by position
-        players_by_position = {'GKP': [], 'DEF': [], 'MID': [], 'FWD': []}
-        
-        for element in data.elements:
-            # Only include available players
-            #if element.status != 'a':
-            #    continue
-                
-            position = types.get(element.element_type, 'UNK')
-            if position not in players_by_position:
-                continue
-            
-            # Convert to float for sorting, handle 0.0 as string
-            try:
-                ppg = float(element.points_per_game) if element.points_per_game else 0.0
-            except ValueError:
-                ppg = 0.0
-            
-            player_data = {
-                'id': element.id,
-                'name': element.web_name,
-                'full_name': f"{element.first_name} {element.second_name}",
-                'team': teams.get(element.team, 'Unknown'),
-                'price': element.now_cost / 10,
-                'points_per_game': ppg,
-                'total_points': getattr(element, 'total_points', 0),
-                'form': element.form,
-                'status': element.status,
-                'news': element.news if element.news else ''
-            }
-            players_by_position[position].append(player_data)
-        
-        # Sort by points_per_game and take top N
-        result = {
-            'GKP': sorted(players_by_position['GKP'], key=lambda x: x['points_per_game'], reverse=True)[:5],
-            'DEF': sorted(players_by_position['DEF'], key=lambda x: x['points_per_game'], reverse=True)[:20],
-            'MID': sorted(players_by_position['MID'], key=lambda x: x['points_per_game'], reverse=True)[:20],
-            'FWD': sorted(players_by_position['FWD'], key=lambda x: x['points_per_game'], reverse=True)[:20]
-        }
-        
-        return result
-
     async def get_my_team(self, team_id: int) -> Dict[str, Any]:
         return await self._request("GET", f"my-team/{team_id}/")
 
-    async def get_current_gameweek(self) -> int:
-        """The gameweek transfers would be submitted for.
-
-        Raises rather than falling back. This number goes straight into a transfer
-        payload as `event`, so a guess is not a degraded answer - it is a real transfer
-        made in the wrong week, against a squad and prices that belong to another one.
-        The old fallback of 38 was the worst available guess: it is only correct on the
-        final week of the season and unrecoverable on every other.
-        """
-        data = await self.get_bootstrap_data()
-        for event in data['events']:
-            if event['is_next']:
-                return event['id']
-        raise RuntimeError(
-            "bootstrap-static reports no upcoming gameweek (no event has is_next), so "
-            "there is no week to act in: the season has ended, or the payload arrived "
-            "incomplete. Refusing to guess - a wrong event submits transfers for a "
-            "gameweek you did not choose.")
-
-    async def execute_transfers(self, payload: TransferPayload) -> Dict[str, Any]:
-        return await self._request("POST", "transfers/", payload.model_dump())
-        
     async def close(self):
         if self.session is not None:
             await self.session.aclose()

@@ -1,7 +1,6 @@
 """Authenticated sessions and the leagues they belong to.
 
-Split out of the old SessionStore. This half holds who is logged in and what can be
-looked up on their behalf; the reference data lives in `reference.py`.
+Holds who is logged in and the leagues that can be looked up on their behalf.
 """
 
 import logging
@@ -10,7 +9,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .client import FPLClient
-from .reference import normalize_name
 
 logger = logging.getLogger("fpl_sessions")
 
@@ -29,21 +27,18 @@ class SessionRegistry:
     def __init__(self):
         # request_id (from the login URL) -> status
         self.pending_logins: Dict[str, PendingLogin] = {}
-        # session_id (given to the model) -> authenticated client
+        # session_id -> authenticated client
         self.active_sessions: Dict[str, FPLClient] = {}
-        # A session established with no human present, which tools fall back to.
+        # The session established with no human present.
         self.active_session_id: Optional[str] = None
         # Classic leagues per entry id: /me/ does not carry them.
         self.league_cache: Dict[int, List[dict]] = {}
-
-    def _normalize_name(self, name: str) -> str:
-        return normalize_name(name)
 
     def create_login_request(self, request_id: str):
         self.pending_logins[request_id] = PendingLogin(created_at=time.time())
 
     async def set_login_success(self, request_id: str, session_id: str, client: FPLClient):
-        """Set login success, retaining only loop-safe client state for MCP use."""
+        """Record a successful login and fetch who it belongs to."""
         self.active_sessions[session_id] = client
         
         # Fetch user info after successful login and store it in the client
@@ -55,8 +50,8 @@ class SessionRegistry:
         except Exception as e:
             logger.error(f"Failed to fetch user info after login: {e}")
         finally:
-            # Web authentication and MCP tools run on different event loops. Dispose
-            # the web loop's connection pool; the client lazily creates a new one in MCP.
+            # Dispose this loop's connection pool; the client lazily opens another on
+            # first use, so a caller on a different loop is safe.
             await client.close()
         
         if request_id in self.pending_logins:
@@ -108,94 +103,6 @@ class SessionRegistry:
         leagues = (entry.get("leagues") or {}).get("classic") or []
         self.league_cache[entry_id] = leagues
         return leagues
-
-    async def find_league_by_name(self, client: FPLClient, league_name: str) -> Optional[dict]:
-        """
-        Find a league by name from the user's leagues.
-        
-        Args:
-            client: The authenticated FPL client
-            league_name: The name of the league to find
-            
-        Returns:
-            League dict with 'id' and 'name' if found, None otherwise
-        """
-        classic_leagues = await self.get_user_leagues(client)
-        if not classic_leagues:
-            return None
-        
-        # Normalize search name
-        normalized_search = self._normalize_name(league_name)
-        
-        # Try exact match first
-        for league in classic_leagues:
-            if self._normalize_name(league.get('name', '')) == normalized_search:
-                return {
-                    'id': league.get('id'),
-                    'name': league.get('name')
-                }
-        
-        # Try substring match
-        for league in classic_leagues:
-            league_norm = self._normalize_name(league.get('name', ''))
-            if normalized_search in league_norm or league_norm in normalized_search:
-                return {
-                    'id': league.get('id'),
-                    'name': league.get('name')
-                }
-        
-        return None
-
-    async def find_manager_by_name(self, client: FPLClient, league_id: int, manager_name: str) -> Optional[dict]:
-        """
-        Find a manager by name in a league's standings.
-        
-        Args:
-            client: The authenticated FPL client
-            league_id: The league ID to search in
-            manager_name: The manager's name to find
-            
-        Returns:
-            Manager dict with 'entry', 'entry_name', 'player_name' if found, None otherwise
-        """
-        try:
-            standings = await client.get_league_standings(league_id)
-            results = (standings.get('standings') or {}).get('results') or []
-            
-            # Normalize search name
-            normalized_search = self._normalize_name(manager_name)
-            
-            def _as_match(result: dict) -> dict:
-                return {
-                    'entry': result.get('entry'),
-                    'entry_name': result.get('entry_name'),
-                    'player_name': result.get('player_name')
-                }
-            
-            # Search through standings
-            for result in results:
-                # Try matching against player_name (manager name), then entry_name (team name)
-                if self._normalize_name(result.get('player_name', '')) == normalized_search:
-                    return _as_match(result)
-                
-                if self._normalize_name(result.get('entry_name', '')) == normalized_search:
-                    return _as_match(result)
-            
-            # Try substring matches
-            for result in results:
-                player_norm = self._normalize_name(result.get('player_name', ''))
-                entry_norm = self._normalize_name(result.get('entry_name', ''))
-                
-                if (normalized_search in player_norm or player_norm in normalized_search or
-                    normalized_search in entry_norm or entry_norm in normalized_search):
-                    return _as_match(result)
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error finding manager by name: {e}")
-            return None
-
 
 # Global instance
 sessions = SessionRegistry()

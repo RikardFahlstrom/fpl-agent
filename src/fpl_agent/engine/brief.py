@@ -18,7 +18,8 @@ Two separate outputs, and the difference matters:
                       in the record, because the record is what the next decision is
                       read against.
 
-  `evaluate_triggers` the small set of facts worth interrupting someone for. The review
+  `evaluate`          the small set of facts worth interrupting someone for, and why
+                      the rest stayed silent - `notify` reads both halves. The review
                       named the risk plainly: notification spam erodes trust fast. So a
                       trigger has to earn its place, and every one of them ends in the
                       single action wanted from the human.
@@ -626,16 +627,6 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                       triggers=triggers, silent=silent, checks=checks,
                       capture=capture, squad=squad, state=state,
                       deadline=deadline, listing=listing)
-
-
-def evaluate_triggers(conn: sqlite3.Connection, gameweek: int, **kwargs) -> list[Trigger]:
-    """The facts worth a push notification. This is the seam a notifier codes against.
-
-    `evaluate` does the work and also records why the silent triggers were silent; this
-    is the half a notifier wants, kept under its own name so the contract stays one line
-    long and cannot drift as the brief grows sections.
-    """
-    return evaluate(conn, gameweek, **kwargs).triggers
 
 
 # --------------------------------------------------------------------------

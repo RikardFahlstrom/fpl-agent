@@ -237,7 +237,7 @@ version on the same gameweeks rather than silently replacing it.
 ```
 src/fpl_agent/
   api/               the FPL side of the wire: client, auth, headless_auth,
-                     sessions, reference, models; and rotowire_scraper, the
+                     sessions; and rotowire_scraper, the
                      one other source
   engine/            snapshot, actuals, lineups, projection, scoring, pricing,
                      rivals, recommend, settle, status, brief, notify, storage
