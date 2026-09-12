@@ -4,7 +4,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from fpl_agent.rotowire_scraper import RotoWireLineupScraper
+from fpl_agent.api.rotowire_scraper import RotoWireLineupScraper
 
 FIXTURE = Path(__file__).parent / "fixtures" / "rotowire_lineups.html"
 

@@ -24,10 +24,10 @@ from typing import Any, Optional
 
 from .. import config
 from . import storage, warehouse
-from ..client import FPLClient
-from ..headless_auth import authenticated_client
-from ..reference import reference
-from ..sessions import sessions
+from ..api.client import FPLClient
+from ..api.headless_auth import authenticated_client
+from ..api.reference import reference
+from ..api.sessions import sessions
 
 logger = logging.getLogger("fpl_rivals")
 

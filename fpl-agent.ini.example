@@ -18,7 +18,7 @@ password =
 ; restores a dead token - back up the location, not the content.
 ; token_cache = ~/.config/fpl-mcp/session.json
 ; The OAuth endpoint and client id the refresh grant uses. Set only if the login
-; breaks because the account service changed them; the defaults are in headless_auth.
+; breaks because the account service changed them; the defaults are in api/headless_auth.
 ; token_endpoint = https://account.premierleague.com/as/token
 ; client_id =
 

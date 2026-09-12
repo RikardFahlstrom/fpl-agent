@@ -1,7 +1,7 @@
 # fpl-agent
 
 An FPL decision engine; `README.md` covers install and use. `src/fpl_agent/engine/` is
-the real work; the root modules beside it are the FPL API layer it reads through.
+the real work and `api/` the FPL side of the wire it reads through.
 `learnings/` and `logs/` are the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
 is committed, not scratch.
 

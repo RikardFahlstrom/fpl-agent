@@ -41,11 +41,11 @@ from typing import Optional
 
 from .. import config
 from . import storage, warehouse
-from ..client import FPLClient
+from ..api.client import FPLClient
 from .projection import MODEL_VERSION
 from .scoring import POSITIONS
 from .actuals import MAX_BACKFILL_FAILURE_RATE, backfill_actuals
-from ..reference import reference
+from ..api.reference import reference
 
 logger = logging.getLogger("fpl_settle")
 

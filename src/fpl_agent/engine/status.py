@@ -396,7 +396,7 @@ def check_token(now: Optional[float] = None) -> Check:
     refresh grant - so the three answers are fresh, refreshable, and browser needed. No
     part of any token is ever printed; the cache is a bearer credential.
     """
-    from ..headless_auth import cache_path, token_is_fresh
+    from ..api.headless_auth import cache_path, token_is_fresh
 
     path = cache_path()
     browser = "the next authenticated run launches a browser"

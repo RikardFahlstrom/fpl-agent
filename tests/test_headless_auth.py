@@ -10,9 +10,9 @@ from unittest import mock
 
 import httpx
 
-from fpl_agent import headless_auth
-from fpl_agent.client import FPLClient
-from fpl_agent.sessions import sessions
+from fpl_agent.api import headless_auth
+from fpl_agent.api.client import FPLClient
+from fpl_agent.api.sessions import sessions
 
 
 class _FakeResponse:

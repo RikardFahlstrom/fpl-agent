@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Iterable, Optional
 
-from ..rotowire_scraper import INJURY_STATUS, MatchLineup
+from ..api.rotowire_scraper import INJURY_STATUS, MatchLineup
 from . import warehouse
 
 logger = logging.getLogger("fpl_lineups")

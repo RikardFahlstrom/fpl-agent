@@ -236,10 +236,12 @@ version on the same gameweeks rather than silently replacing it.
 
 ```
 src/fpl_agent/
+  api/               the FPL side of the wire: client, auth, headless_auth,
+                     sessions, reference, models; and rotowire_scraper, the
+                     one other source
   engine/            snapshot, actuals, lineups, projection, scoring, pricing,
                      rivals, recommend, settle, status, brief, notify, storage
-  (root)             auth, headless_auth, sessions, client, config, models,
-                     reference, rotowire_scraper, cli
+  config, cli        settings from fpl-agent.ini; the `fpl-agent` command
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify,
                      /claude-md-review
 deploy/              fpl-cron.sh, the unattended entry point; a crontab names it by

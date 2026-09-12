@@ -3,7 +3,7 @@ import os
 import unittest
 
 from fpl_agent.engine import rivals, storage
-from fpl_agent.sessions import SessionRegistry
+from fpl_agent.api.sessions import SessionRegistry
 
 
 def storage_store():

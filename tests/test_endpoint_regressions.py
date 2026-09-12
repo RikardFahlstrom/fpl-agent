@@ -5,10 +5,10 @@ here reaches the FPL API.
 """
 import unittest
 
-from fpl_agent.client import FPLClient
-from fpl_agent.models import BootstrapData
-from fpl_agent.reference import ReferenceData, reference
-from fpl_agent.sessions import SessionRegistry
+from fpl_agent.api.client import FPLClient
+from fpl_agent.api.models import BootstrapData
+from fpl_agent.api.reference import ReferenceData, reference
+from fpl_agent.api.sessions import SessionRegistry
 
 
 def _event(event_id: int, *, current=False, next_=False, finished=False, deadline=None):
