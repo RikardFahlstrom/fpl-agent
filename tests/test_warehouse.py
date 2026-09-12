@@ -110,10 +110,6 @@ class ProjectedTests(WarehouseTestCase):
         self.assertEqual(warehouse.projected(self.conn, 3, MODEL_VERSION).id, later)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LedgerTestCase(WarehouseTestCase):
     def ledger(self, model_version=MODEL_VERSION):
         return warehouse.gameweeks(self.conn, model_version)
@@ -223,3 +219,7 @@ class SettleableTests(LedgerTestCase):
         entry = self.ledger().get(30)
         self.assertEqual((entry.fixtures, entry.played, entry.actuals), (0, 0, 0))
         self.assertFalse(entry.projected or entry.graded or entry.finished)
+
+
+if __name__ == "__main__":
+    unittest.main()

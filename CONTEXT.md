@@ -28,9 +28,10 @@ do, at this moment, given this warehouse.
 Answering it **reads and nothing else** — no writes, no subprocesses, and no clock of its
 own. The time, the warehouse and the settings are arguments, which is what makes "what
 would run tonight" an assertion in a test rather than a dry run against a live database.
-`due` never decides what is gradeable or when a deadline falls: it asks
-`settle.settleable_gameweeks` and `storage.hours_to_deadline`, because those rules already
-exist and a second statement of one is how the scheduler and the engine came to disagree.
+`due` never decides what is gradeable or when a deadline falls: it asks the *ledger*
+(`warehouse.gameweeks(...).settleable()`) and `storage.hours_to_deadline`, because those
+rules already exist and a second statement of one is how the scheduler and the engine
+came to disagree.
 
 ## Plan
 

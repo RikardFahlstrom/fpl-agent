@@ -48,7 +48,7 @@ from .. import config
 
 from . import storage
 from .projection import MODEL_VERSION
-from .warehouse import gameweeks as ledger_of
+from .warehouse import gameweeks
 
 JOBS = ("daily", "deadline", "auto")
 
@@ -271,7 +271,7 @@ def _grading(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
     """
     if not warehouse.readable:
         return [], [Skipped("grading", warehouse.problem)]
-    pending = ledger_of(warehouse.conn, MODEL_VERSION).settleable()
+    pending = gameweeks(warehouse.conn, MODEL_VERSION).settleable()
     if not pending:
         return [], [Skipped("grading", "no finished gameweek is waiting to be graded")]
     return [Step("settle", ("--gameweek", str(gameweek), "--learn"),
