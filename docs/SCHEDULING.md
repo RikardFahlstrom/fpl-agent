@@ -90,9 +90,11 @@ committed or discarded.
 
 `engine/schedule.py` answers what a job is due to do. `due(job, now=..., warehouse=...,
 settings=...)` returns a **Plan**: the ordered **Step**s, why each one is due, and every
-**Skipped** item with the reason it was skipped. It is produced by reads only — no
-writes, no subprocesses, and no clock of its own, so a deadline window is testable
-without waiting for one.
+**Skipped** item with the reason it was skipped. The warehouse arrives already read — a
+`Reading` from `schedule.read_warehouse(path)`: the next deadline, what is settleable,
+whether a league is known, or the reason none of that could be read — so a Plan is a
+function of its arguments with no writes, no subprocesses, and no clock of its own, and a
+deadline window is testable without waiting for one or seeding a database.
 
 ```sh
 fpl-agent schedule --dry-run auto      # what is due, and what is not, and why

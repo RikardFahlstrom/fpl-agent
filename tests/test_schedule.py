@@ -89,7 +89,7 @@ class ScheduleTestCase(unittest.TestCase):
         self.conn.commit()
 
     def due(self, job: str, *, now: datetime = NOW, conn=None) -> schedule.Plan:
-        warehouse = schedule.Opened(self.conn if conn is None else conn)
+        warehouse = schedule.read(self.conn if conn is None else conn)
         return schedule.due(job, now=now, warehouse=warehouse, settings=schedule.Settings())
 
 
@@ -140,14 +140,14 @@ class TailTests(ScheduleTestCase):
 
     def test_both_tolerate_failure(self):
         settings = schedule.Settings(notifications_configured=True)
-        plan = schedule.due("daily", now=NOW, warehouse=schedule.Opened(self.conn),
+        plan = schedule.due("daily", now=NOW, warehouse=schedule.read(self.conn),
                             settings=settings)
         tail = [step for step in plan.steps if step.command in ("brief", "notify")]
         self.assertEqual([step.command for step in tail], ["brief", "notify"])
         self.assertTrue(all(step.tolerated for step in tail))
 
     def test_they_come_last_so_they_describe_what_the_run_left_behind(self):
-        plan = schedule.due("daily", now=NOW, warehouse=schedule.Opened(self.conn),
+        plan = schedule.due("daily", now=NOW, warehouse=schedule.read(self.conn),
                             settings=schedule.Settings(notifications_configured=True))
         self.assertEqual(commands(plan)[-2:], ["brief", "notify"])
 
@@ -212,7 +212,7 @@ class DeadlineTests(ScheduleTestCase):
 
     def test_the_window_is_a_setting_not_a_number_buried_in_the_decision(self):
         self.kickoff(20)
-        warehouse = schedule.Opened(self.conn)
+        warehouse = schedule.read(self.conn)
         narrow = schedule.due("deadline", now=NOW, warehouse=warehouse,
                               settings=schedule.Settings(deadline_within_hours=4))
         self.assertEqual(narrow.steps, ())
@@ -302,7 +302,7 @@ class StandingsTests(ScheduleTestCase):
 
     def test_an_unreadable_warehouse_skips_it_with_the_warehouses_reason(self):
         plan = schedule.due("daily", now=NOW, settings=schedule.Settings(),
-                            warehouse=schedule.Opened(problem="no warehouse at x"))
+                            warehouse=schedule.Reading(problem="no warehouse at x"))
         self.assertNotIn(self.STEP, commands(plan))
         skip = [s for s in plan.skipped if "standings" in s.what][0]
         self.assertEqual(skip.reason, "no warehouse at x")
@@ -324,7 +324,18 @@ class StandingsTests(ScheduleTestCase):
 
 
 class ReadOnlyTests(ScheduleTestCase):
-    """Producing a Plan is a read. Nothing about it may touch the warehouse."""
+    """Reading the warehouse for a Plan is a read. Nothing about it may touch the file."""
+
+    def test_a_reading_is_what_the_warehouse_holds(self):
+        self.kickoff(5)
+        self.settleable_gameweek(4)
+        self.w.rivals(2)
+        self.conn.commit()
+        reading = schedule.read(self.conn)
+        self.assertEqual(reading.settleable, (4,))
+        self.assertTrue(reading.league_known)
+        self.assertEqual(reading.next_deadline, NOW + timedelta(hours=3.5))
+        self.assertTrue(reading.readable)
 
     def test_a_plan_can_be_produced_over_a_read_only_connection(self):
         self.kickoff(5)
@@ -338,6 +349,53 @@ class ReadOnlyTests(ScheduleTestCase):
                 self.assertTrue(self.due(job, conn=conn).steps, job)
 
 
+class ReadingTests(unittest.TestCase):
+    """`due` takes the warehouse already read, so a Plan needs no database at all.
+
+    The SQLite-backed cases above prove `read` asks the right questions; these prove the
+    decision is a function of the answers, at the edges a builder makes awkward to reach.
+    """
+
+    def due(self, job: str, *, now: datetime = NOW, **facts) -> schedule.Plan:
+        return schedule.due(job, now=now, warehouse=schedule.Reading(**facts),
+                            settings=schedule.Settings())
+
+    def test_a_reading_with_nothing_in_it_is_a_readable_empty_warehouse(self):
+        plan = self.due("daily")
+        self.assertIsNone(plan.problem)
+        self.assertEqual(commands(plan), [
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3"] + TAIL)
+
+    def test_grading_is_the_readings_answer_in_the_readings_order(self):
+        plan = self.due("daily", settleable=(4, 5))
+        self.assertEqual([step.gameweek for step in plan.steps if step.command == "settle"],
+                         [4, 5])
+
+    def test_the_window_edge_is_decided_from_the_clock_passed_in(self):
+        deadline = NOW + timedelta(hours=26, minutes=30)
+        # 26h30 away floors to 26, which is inside a 26h window; asked an hour earlier,
+        # the same reading is 27h out and nothing is due. The reading did not change.
+        self.assertTrue(self.due("deadline", next_deadline=deadline).steps)
+        self.assertEqual(self.due("deadline", now=NOW - timedelta(hours=1),
+                                  next_deadline=deadline).steps, ())
+
+    def test_a_deadline_gone_by_a_minute_reads_as_gone(self):
+        plan = self.due("deadline", next_deadline=NOW - timedelta(minutes=1))
+        self.assertEqual(plan.steps, ())
+        self.assertTrue(any("passed 1h ago" in skip.reason for skip in plan.skipped),
+                        plan.skipped)
+
+    def test_the_hours_carried_on_the_plan_are_the_ones_it_decided_from(self):
+        plan = self.due("deadline", next_deadline=NOW + timedelta(hours=3, minutes=30))
+        self.assertEqual(plan.hours_to_deadline, 3)
+
+    def test_a_problem_makes_the_reading_unreadable_whatever_else_it_carries(self):
+        plan = self.due("daily", problem="x", settleable=(4,), league_known=True)
+        self.assertEqual(plan.problem, "x")
+        self.assertNotIn("settle --gameweek 4 --learn", commands(plan))
+        self.assertNotIn("rivals --standings-only", commands(plan))
+
+
 class ColdStartTests(unittest.TestCase):
     """A host with no warehouse. The capture is what creates one, so it is still due."""
 
@@ -348,7 +406,7 @@ class ColdStartTests(unittest.TestCase):
 
     def due(self, job: str) -> schedule.Plan:
         return schedule.due(job, now=NOW,
-                            warehouse=schedule.open_warehouse(self.path),
+                            warehouse=schedule.read_warehouse(self.path),
                             settings=schedule.Settings())
 
     def test_daily_still_captures_and_marks_the_rest_skipped_with_that_reason(self):
@@ -382,13 +440,13 @@ class ColdStartTests(unittest.TestCase):
 
     def test_a_file_that_is_not_a_warehouse_reads_as_unreadable_not_as_empty(self):
         self.path.write_text("this is not a database")
-        warehouse = schedule.open_warehouse(self.path)
-        self.assertIsNone(warehouse.conn)
+        warehouse = schedule.read_warehouse(self.path)
+        self.assertFalse(warehouse.readable)
         self.assertIn(str(self.path), warehouse.problem)
 
     def test_a_database_missing_the_tables_is_not_a_warehouse(self):
         sqlite3.connect(self.path).close()
-        self.assertIsNone(schedule.open_warehouse(self.path).conn)
+        self.assertFalse(schedule.read_warehouse(self.path).readable)
 
 
 class RenderTests(ScheduleTestCase):
@@ -491,7 +549,7 @@ class RunTests(ScheduleTestCase):
     def test_the_plans_own_code_stands_when_nothing_ran(self):
         # The hourly job on a host whose warehouse will not open: 2, not 0.
         plan = schedule.due("deadline", now=NOW,
-                            warehouse=schedule.Opened(problem="unreadable"),
+                            warehouse=schedule.Reading(problem="unreadable"),
                             settings=schedule.Settings())
         executor = RecordingExecutor()
         outcome = schedule.run(plan, executor)
@@ -581,7 +639,7 @@ class SummariseTests(ScheduleTestCase):
     def test_a_warehouse_that_could_not_be_read_never_reads_as_nothing_due(self):
         # The capture is planned either way, so an absent settle step proves nothing here.
         plan = schedule.due("auto", now=NOW,
-                            warehouse=schedule.Opened(problem="fpl.db is not a warehouse"),
+                            warehouse=schedule.Reading(problem="fpl.db is not a warehouse"),
                             settings=schedule.Settings())
         summary = schedule.summarise(plan)
         self.assertIn("could not tell", summary)

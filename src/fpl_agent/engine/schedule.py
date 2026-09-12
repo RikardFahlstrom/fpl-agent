@@ -170,19 +170,46 @@ class Plan:
 
 
 @dataclass(frozen=True)
-class Opened:
-    """The warehouse as a value: an open connection, or the reason there is not one."""
-    conn: Optional[sqlite3.Connection] = None
+class Reading:
+    """What the warehouse said when asked, or the reason it could not be asked.
+
+    The three facts a Plan is decided from and nothing else, so that `due` holds no
+    connection: it cannot write, cannot run a query of its own, and a test hands it the
+    facts rather than seeding a database to produce them. Like the ledger it is a value,
+    not a seam - the executor passed to `run` is the only one of those.
+
+    The deadline is carried as a moment rather than as hours, so a Reading does not
+    depend on when it was taken: `due` applies its injected `now`, and the window is
+    decided in one place from one clock.
+    """
     problem: Optional[str] = None
+    next_deadline: Optional[datetime] = None
+    #: Every gameweek `settle` would grade, oldest first - the ledger's rule, answered.
+    settleable: tuple[int, ...] = ()
+    #: Whether a first full `rivals` run has recorded the league, so its table can be
+    #: refreshed.
+    league_known: bool = False
 
     @property
     def readable(self) -> bool:
-        return self.conn is not None
+        return self.problem is None
 
 
-def open_warehouse(path: Path | str) -> Opened:
-    """Open the warehouse read-only, turning every failure into a reason rather than a
-    raise.
+def read(conn: sqlite3.Connection) -> Reading:
+    """Ask an open warehouse the three questions a Plan is decided from. Never writes.
+
+    Each fact is read through its owner - `storage.next_deadline`, the ledger's
+    `settleable`, the `league` table - so nothing here is a second statement of a rule.
+    """
+    return Reading(
+        next_deadline=storage.next_deadline(conn),
+        settleable=tuple(gameweeks(conn, MODEL_VERSION).settleable()),
+        league_known=bool(conn.execute("SELECT COUNT(*) FROM league").fetchone()[0]))
+
+
+def read_warehouse(path: Path | str) -> Reading:
+    """Read the warehouse at `path`, turning every failure into a reason rather than a
+    raise, and close it again before returning.
 
     Deliberately never `storage.connect`: that creates the file and runs the schema,
     which turns "there is no warehouse" into "there is an empty warehouse that looks
@@ -192,28 +219,29 @@ def open_warehouse(path: Path | str) -> Opened:
     try:
         conn = storage.connect_readonly(path)
     except FileNotFoundError:
-        return Opened(problem=f"no warehouse at {path} - nothing has been captured yet")
+        return Reading(problem=f"no warehouse at {path} - nothing has been captured yet")
     except sqlite3.Error as e:
-        return Opened(problem=f"could not open {path}: {e}")
+        return Reading(problem=f"could not open {path}: {e}")
     try:
-        present = {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    except sqlite3.DatabaseError as e:
+        try:
+            present = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        except sqlite3.DatabaseError as e:
+            return Reading(problem=f"could not read {path}: {e}")
+        absent = [table for table in REQUIRED_TABLES if table not in present]
+        if absent:
+            return Reading(problem=f"{path} is missing {', '.join(absent)}, so it is "
+                                   f"not an fpl-agent warehouse")
+        return read(conn)
+    finally:
         conn.close()
-        return Opened(problem=f"could not read {path}: {e}")
-    absent = [table for table in REQUIRED_TABLES if table not in present]
-    if absent:
-        conn.close()
-        return Opened(problem=f"{path} is missing {', '.join(absent)}, so it is not "
-                                 f"an fpl-agent warehouse")
-    return Opened(conn=conn)
 
 
 # --------------------------------------------------------------------------
 # The steps, each named once
 # --------------------------------------------------------------------------
 
-def _capture(settings: Settings, warehouse: Opened, *,
+def _capture(settings: Settings, warehouse: Reading, *,
              backfill: bool) -> tuple[list[Step], list[Skipped]]:
     """Snapshot, optionally backfill, project - and always project - then refresh the
     league table.
@@ -245,13 +273,12 @@ def _capture(settings: Settings, warehouse: Opened, *,
     return steps + standings, not_standings
 
 
-def _standings_or_skip(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
+def _standings_or_skip(warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
     """The league table refresh if there is a league to refresh, else why not."""
     what = "the standings refresh"
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
-    known = warehouse.conn.execute("SELECT COUNT(*) FROM league").fetchone()[0]
-    if not known:
+    if not warehouse.league_known:
         return [], [Skipped(what, "no league is known yet; a first `make rivals` inside "
                                   "a deadline window records them")]
     return [Step("rivals", ("--standings-only",),
@@ -259,19 +286,19 @@ def _standings_or_skip(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
                  "for want of a snapshot, it is stale because nothing asked")], []
 
 
-def _grading(warehouse: Opened) -> tuple[list[Step], list[Skipped]]:
+def _grading(warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
     """Grade every gameweek that can be graded, oldest first.
 
     Which ones those are is the ledger's rule (`warehouse.GameweekLedger.settleable`,
-    the same one `settle --list` prints) and never decided here. The scheduler asked its
-    own SQL once and got it wrong twice over: it took the highest gameweek with *any*
-    finished fixture, so on the Saturday of gameweek 4 it offered a round still being
-    played and stepped over an ungraded gameweek 3 that would then never have been
-    graded at all.
+    the same one `settle --list` prints), answered in the Reading and never decided
+    here. The scheduler asked its own SQL once and got it wrong twice over: it took the
+    highest gameweek with *any* finished fixture, so on the Saturday of gameweek 4 it
+    offered a round still being played and stepped over an ungraded gameweek 3 that
+    would then never have been graded at all.
     """
     if not warehouse.readable:
         return [], [Skipped("grading", warehouse.problem)]
-    pending = gameweeks(warehouse.conn, MODEL_VERSION).settleable()
+    pending = warehouse.settleable
     if not pending:
         return [], [Skipped("grading", "no finished gameweek is waiting to be graded")]
     return [Step("settle", ("--gameweek", str(gameweek), "--learn"),
@@ -297,7 +324,7 @@ def _ranking() -> list[Step]:
     ]
 
 
-def _ranking_or_skip(warehouse: Opened, hours: Optional[int],
+def _ranking_or_skip(warehouse: Reading, hours: Optional[int],
                      settings: Settings) -> tuple[list[Step], list[Skipped]]:
     """The ranking half if a deadline is near, else the reason it is not due."""
     what = "the ranking half"
@@ -348,20 +375,21 @@ def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
 # The jobs
 # --------------------------------------------------------------------------
 
-def due(job: str, *, now: datetime, warehouse: Opened,
+def due(job: str, *, now: datetime, warehouse: Reading,
         settings: Settings = Settings()) -> Plan:
-    """What `job` would do at `now`, given this warehouse and these settings.
+    """What `job` would do at `now`, given this reading of the warehouse and these
+    settings.
 
-    Reads only. Nothing here writes, and nothing here runs a subprocess, so a Plan is
-    safe to produce anywhere - including hourly on a host where the answer is nothing.
+    A function of its arguments. The warehouse arrives already read, so nothing here can
+    write, query or run a subprocess, and a Plan is safe to produce anywhere - including
+    hourly on a host where the answer is nothing.
     """
     if job not in JOBS:
         raise ValueError(f"unknown job: {job} (expected one of {', '.join(JOBS)})")
 
     steps: list[Step] = []
     skipped: list[Skipped] = []
-    hours = (storage.hours_to_deadline(warehouse.conn, now) if warehouse.readable
-             else None)
+    hours = storage.hours_until(warehouse.next_deadline, now)
 
     if job in ("daily", "auto"):
         # The capture is due whatever the warehouse says - on a host that has none, it is
@@ -651,15 +679,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     config.load()
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 
-    warehouse = open_warehouse(args.db)
-    try:
-        plan = due(args.job, now=datetime.now(timezone.utc), warehouse=warehouse,
-                   settings=Settings.from_env())
-    finally:
-        # Closed before anything runs: the steps open the warehouse themselves, and each
-        # of them writes to it.
-        if warehouse.conn is not None:
-            warehouse.conn.close()
+    # Read and closed before anything runs: the steps open the warehouse themselves, and
+    # each of them writes to it.
+    plan = due(args.job, now=datetime.now(timezone.utc), warehouse=read_warehouse(args.db),
+               settings=Settings.from_env())
 
     print(render(plan))
     if args.dry_run:
