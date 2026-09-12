@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,7 +19,6 @@ import httpx
 
 from .auth import FPLAutomation
 from .client import FPLClient
-from .sessions import sessions
 
 logger = logging.getLogger("fpl_headless_auth")
 
@@ -298,8 +296,8 @@ async def _refresh_cached_token(data: dict) -> Optional[dict]:
 # --------------------------------------------------------------------------
 
 
-async def _session_from_cache(data: dict) -> Optional[str]:
-    """Register a session for a cached token, or None if /me rejects it."""
+async def _client_from_cache(data: dict) -> Optional[FPLClient]:
+    """A client for a cached token, or None if /me rejects it."""
     client = FPLClient()
     client.set_api_token(data["api_token"])
     client.set_reauth_hook(reauth_hook)
@@ -309,16 +307,13 @@ async def _session_from_cache(data: dict) -> Optional[str]:
         logger.info("The cached FPL token was rejected by /me (%s).", error)
         await client.close()
         return None
-
-    session_id = str(uuid.uuid4())
-    sessions.active_sessions[session_id] = client
-    # Match the login path: dispose this loop's pool so a caller on another loop
-    # does not trip the loop-boundary guard in FPLClient.
+    # Dispose this loop's pool; the client lazily opens another on first use, so a
+    # caller on a different loop does not trip the loop-boundary guard in FPLClient.
     await client.close()
-    return session_id
+    return client
 
 
-async def load_cached_session() -> Optional[str]:
+async def load_cached_session() -> Optional[FPLClient]:
     """Rebuild a session from the token cache, refreshing it if need be.
 
     Order: a live cached token, then the refresh grant, then - only if both are
@@ -342,16 +337,16 @@ async def load_cached_session() -> Optional[str]:
             return None
         data, refreshed = renewed, True
 
-    session_id = await _session_from_cache(data)
-    if session_id is None and not refreshed:
+    client = await _client_from_cache(data)
+    if client is None and not refreshed:
         # The cache thought the token was live but the API disagreed - clock
         # drift, or a revocation. One refresh before giving up on the cache.
         renewed = await _refresh_cached_token(data)
         if renewed:
             data, refreshed = renewed, True
-            session_id = await _session_from_cache(data)
+            client = await _client_from_cache(data)
 
-    if session_id is None:
+    if client is None:
         clear_cached_session()
         logger.info(
             "The cached FPL session could not be revived; falling back to a browser login."
@@ -362,7 +357,7 @@ async def load_cached_session() -> Optional[str]:
         logger.info("Refreshed the FPL access token; no browser login needed.")
     else:
         logger.info("Restored the FPL session from cache; no browser login needed.")
-    return session_id
+    return client
 
 
 # --------------------------------------------------------------------------
@@ -370,34 +365,29 @@ async def load_cached_session() -> Optional[str]:
 # --------------------------------------------------------------------------
 
 
-async def establish_session(
-    email: str,
-    password: str,
-    request_id: Optional[str] = None,
-) -> tuple[Optional[str], Optional[str]]:
-    """Drive the browser login and register the resulting session.
+async def establish_session(email: str, password: str) -> tuple[Optional[FPLClient], Optional[str]]:
+    """Drive the browser login and return the client it produced.
 
-    Shared by the interactive web form and the unattended path.
-    Returns (session_id, error); exactly one is set.
+    Returns (client, error); exactly one is set.
     """
-    request_id = request_id or str(uuid.uuid4())
-    if request_id not in sessions.pending_logins:
-        sessions.create_login_request(request_id)
-
     auth = FPLAutomation(email, password)
     token = await auth.login_and_get_token()
 
     if not token:
-        failure = auth.failure_reason or "Could not capture an authenticated FPL session."
-        sessions.set_login_failure(request_id, failure)
-        return None, failure
+        return None, auth.failure_reason or "Could not capture an authenticated FPL session."
 
-    session_id = str(uuid.uuid4())
     client = FPLClient()
     client.set_api_token(token)
     client.set_reauth_hook(reauth_hook)
-    # Fetches /me, stores user_info, and closes this loop's HTTP pool.
-    await sessions.set_login_success(request_id, session_id, client)
+    try:
+        client.user_info = await client.get_me()
+        logger.info("Logged in as entry %s.", (client.user_info.get("player") or {}).get("entry"))
+    except Exception as e:
+        logger.error(f"Failed to fetch user info after login: {e}")
+    finally:
+        # Dispose this loop's pool; the client lazily opens another on first use.
+        await client.close()
+
     # Only persist for unattended runs. An interactive login keeps the token in
     # memory as it always has, rather than silently writing a credential to disk.
     if env_flag("FPL_AUTO_LOGIN"):
@@ -406,35 +396,30 @@ async def establish_session(
             refresh_token=auth.refresh_token,
             expires_in=auth.expires_in,
         )
-    return session_id, None
+    return client, None
 
 
-async def authenticate_headless() -> Optional[str]:
+async def authenticate_headless() -> Optional[FPLClient]:
     """Log in using credentials from the environment, with no human present."""
     email, password = load_credentials()
     logger.info("Starting an unattended FPL login for %s.", email)
-    session_id, error = await establish_session(email, password)
+    client, error = await establish_session(email, password)
     if error:
         logger.error("Unattended FPL login failed: %s", error)
         return None
-    return session_id
+    return client
 
 
-async def bootstrap_session() -> Optional[str]:
-    """Restore a session at startup: cache first, then a credential login."""
-    session_id = await load_cached_session()
-    if session_id:
-        sessions.active_session_id = session_id
-        return session_id
-
+async def bootstrap_session() -> Optional[FPLClient]:
+    """The client to run with: from the cache first, else a credential login."""
+    client = await load_cached_session()
+    if client:
+        return client
     try:
-        session_id = await authenticate_headless()
+        return await authenticate_headless()
     except RuntimeError as error:
         logger.error("%s", error)
         return None
-    if session_id:
-        sessions.active_session_id = session_id
-    return session_id
 
 
 async def reauth_hook(client: FPLClient) -> bool:
@@ -460,20 +445,15 @@ async def reauth_hook(client: FPLClient) -> bool:
 
     logger.info("Falling back to a browser login after a 401.")
     try:
-        session_id = await authenticate_headless()
+        refreshed = await authenticate_headless()
     except RuntimeError as error:
         logger.error("%s", error)
         return False
-    if not session_id:
-        return False
-
-    refreshed = sessions.get_client(session_id)
     if not refreshed or not refreshed.api_token:
         return False
     # Mutate the client the caller already holds rather than swapping it out.
     client.set_api_token(refreshed.api_token)
     client.user_info = refreshed.user_info
-    sessions.active_session_id = session_id
     logger.info("Re-authenticated the FPL session after an expired token.")
     return True
 
@@ -490,21 +470,16 @@ async def authenticated_client() -> tuple[FPLClient, bool]:
         return FPLClient(), False
 
     try:
-        session_id = await bootstrap_session()
+        client = await bootstrap_session()
     except Exception as e:
         logger.error("could not establish a session: %s", e)
         return FPLClient(), False
 
-    if not session_id:
+    if client is None:
         logger.error(
             "login did not produce a session. The credential path drives a headless "
             "browser, so check `uv run playwright install chromium` has been run and "
             "that FPL_EMAIL / FPL_PASSWORD are correct.")
-        return FPLClient(), False
-
-    client = sessions.get_client(session_id)
-    if client is None:
-        logger.error("session %s established but no client was registered", session_id)
         return FPLClient(), False
 
     logger.info("session established")

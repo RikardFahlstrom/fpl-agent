@@ -11,7 +11,7 @@ standing rules are in [CLAUDE.md](../CLAUDE.md).
 | --- | --- |
 | Price change rule: Predicted Progress > 100% is "Very Likely"; `likelihood` is a derived band of the same number | `engine/pricing.py` |
 | Defensive-contribution thresholds (DEF >= 10, MID >= 12) are not published; derived from the 622 played appearances, not the 1236 stored rows | `engine/scoring.py` |
-| `/me/` carries no league membership - leagues are on `entry/{id}/` | `api/sessions.get_user_leagues` |
+| `/me/` carries no league membership - leagues are on `entry/{id}/` | `api/account.leagues` |
 | `league_type` `x` is a private league, `s` is global and unusable ("Overall" has ~9.9M entries) | `engine/rivals.py` |
 | League standings (`leagues-classic/{id}/standings/`) are public and always current; a session is needed only to learn membership from `/me/`, and picks are hidden until the gameweek starts | `engine/rivals.refresh_standings`, `rivals --standings-only` |
 | Per-90 rates from tiny samples must be shrunk toward a prior | `engine/projection.shrink` |

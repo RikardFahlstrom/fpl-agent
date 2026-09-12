@@ -3,11 +3,7 @@ import os
 import unittest
 
 from fpl_agent.engine import rivals, storage
-from fpl_agent.api.sessions import SessionRegistry
-
-
-def storage_store():
-    return SessionRegistry()
+from fpl_agent.api import account
 from fpl_agent.engine.recommend import (
     DIFFERENTIAL_EO, TEMPLATE_EO, ownership_profile,
 )
@@ -57,6 +53,7 @@ class LeagueSourceTests(unittest.IsolatedAsyncioTestCase):
 
         def __init__(self):
             self.entry_calls = 0
+            self.leagues = None
 
         async def get_manager_entry(self, entry_id):
             self.entry_calls += 1
@@ -66,23 +63,22 @@ class LeagueSourceTests(unittest.IsolatedAsyncioTestCase):
             ]}}
 
     async def test_leagues_come_from_the_entry_endpoint(self):
-        isolated = storage_store()
         client = self._Client()
-        leagues = await isolated.get_user_leagues(client)
+        leagues = await account.leagues(client)
         self.assertEqual([lg["id"] for lg in leagues], [920863, 314])
         self.assertEqual(client.entry_calls, 1)
 
-    async def test_the_result_is_cached_per_entry(self):
-        isolated = storage_store()
+    async def test_the_result_is_cached_on_the_client(self):
         client = self._Client()
-        await isolated.get_user_leagues(client)
-        await isolated.get_user_leagues(client)
+        await account.leagues(client)
+        await account.leagues(client)
         self.assertEqual(client.entry_calls, 1, "entry/{id}/ should not be refetched")
 
     async def test_no_entry_id_yields_no_leagues(self):
         class _Anonymous:
             user_info = {"player": None, "watched": []}
-        self.assertEqual(await storage_store().get_user_leagues(_Anonymous()), [])
+            leagues = None
+        self.assertEqual(await account.leagues(_Anonymous()), [])
 
 
 class OwnershipTests(unittest.TestCase):

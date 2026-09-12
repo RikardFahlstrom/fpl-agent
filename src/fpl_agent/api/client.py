@@ -17,6 +17,7 @@ class FPLClient:
         self.api_token = None
         self.team_id: Optional[int] = None
         self.user_info: Optional[Dict[str, Any]] = None  # Store user info from /me
+        self.leagues: Optional[List[Dict[str, Any]]] = None  # entry/{id}/ classic leagues, once fetched
         self._reauth_hook = None
 
     def set_reauth_hook(self, hook) -> None:

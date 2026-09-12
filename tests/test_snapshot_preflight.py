@@ -108,8 +108,7 @@ class SessionEstablishmentTests(unittest.IsolatedAsyncioTestCase):
         os.environ["FPL_AUTO_LOGIN"] = "true"
         sentinel = object()
         with mock.patch.object(headless_auth, "bootstrap_session",
-                               return_value="session-1") as bootstrap, \
-             mock.patch.object(headless_auth.sessions, "get_client", return_value=sentinel):
+                               return_value=sentinel) as bootstrap:
             client, authenticated = await headless_auth.authenticated_client()
         bootstrap.assert_awaited_once()
         self.assertTrue(authenticated)
@@ -129,12 +128,6 @@ class SessionEstablishmentTests(unittest.IsolatedAsyncioTestCase):
             client, authenticated = await headless_auth.authenticated_client()
         self.assertFalse(authenticated)
 
-    async def test_a_session_without_a_registered_client_is_not_authenticated(self):
-        os.environ["FPL_AUTO_LOGIN"] = "true"
-        with mock.patch.object(headless_auth, "bootstrap_session", return_value="session-1"), \
-             mock.patch.object(headless_auth.sessions, "get_client", return_value=None):
-            client, authenticated = await headless_auth.authenticated_client()
-        self.assertFalse(authenticated)
 
 
 def _history_row(element_id: int, round_: int = 2) -> dict:
