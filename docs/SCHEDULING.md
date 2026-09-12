@@ -37,8 +37,9 @@ gameweek that is gradable and ungraded, oldest first, and grades each one — so
 season depends on you remembering.
 
 It does not decide that for itself. `fpl-agent settle --list` prints the answer and the
-script consumes it, so the rule lives in exactly one place — `settle.settleable_gameweeks`
-— which `settle`, `status` and the scheduler all ask. Three statements of one rule is how
+script consumes it, so the rule lives in exactly one place — the per-gameweek ledger,
+`warehouse.GameweekLedger.settleable` — which `settle`, `status` and the scheduler all
+read. Three statements of one rule is how
 the scheduler and the engine came to disagree in the first place.
 
 "When is the next deadline" is now asked the same way. It was the script's own SQL until

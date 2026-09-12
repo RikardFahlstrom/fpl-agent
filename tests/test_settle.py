@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fpl_agent.engine import settle, storage
+from fpl_agent.engine import settle, storage, warehouse
 from fpl_agent.engine.projection import MODEL_VERSION
 from fpl_agent.engine.settle import ActualsMissing, GameweekNotFinished
 from fpl_agent.engine.actuals import BackfillResult
@@ -74,7 +74,7 @@ class SettleTests(unittest.TestCase):
     def _round_was_fetched(self, gameweek, players=22):
         """Seed the actuals a played round carries, for tests that expect grading.
 
-        Eleven a side per finished fixture is the floor has_actuals demands, so a test
+        Eleven a side per finished fixture is the floor the ledger demands, so a test
         that grades a round has to look like a round whose backfill actually ran. These
         players hold no projections, so they never change what is graded.
         """
@@ -95,16 +95,6 @@ class SettleTests(unittest.TestCase):
             settle.settle_gameweek(self.conn, 3)
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM outcome").fetchone()[0], 0)
-
-    def test_a_gameweek_with_no_fixtures_is_not_finished(self):
-        self.assertFalse(settle.gameweek_is_finished(self.conn, 7))
-
-    def test_partially_played_gameweek_is_not_finished(self):
-        self._fixtures(4, finished=True)
-        self.conn.execute(
-            "INSERT OR REPLACE INTO fixture VALUES (401,4,3,4,3,3,NULL,NULL,NULL,0,'{}')")
-        self.conn.commit()
-        self.assertFalse(settle.gameweek_is_finished(self.conn, 4))
 
     def _settleable_fixture(self, gameweek, finished=True):
         """A gameweek that is finished and has a projection from a snapshot targeting it."""
@@ -262,17 +252,6 @@ class SettleTests(unittest.TestCase):
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM outcome").fetchone()[0], 0)
 
-    def test_a_handful_of_rows_is_not_a_fetched_round(self):
-        """Half a backfill is still a backfill that failed."""
-        self._fixtures(2, finished=True)
-        self._round_was_fetched(2, players=5)
-        self.assertFalse(settle.has_actuals(self.conn, 2))
-
-    def test_a_fetched_round_has_actuals(self):
-        self._fixtures(2, finished=True)
-        self._round_was_fetched(2)
-        self.assertTrue(settle.has_actuals(self.conn, 2))
-
     def test_settling_twice_replaces_rather_than_duplicates(self):
         snapshot_id = self._snapshot(gameweek=2)
         self._fixtures(2)
@@ -350,7 +329,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fixtures_are_refreshed_before_the_finished_check(self):
         """Whether the gameweek is over cannot depend on an unrelated nightly job."""
-        self.assertFalse(settle.gameweek_is_finished(self.conn, 2))
+        self.assertFalse(warehouse.gameweeks(self.conn, MODEL_VERSION).get(2).finished)
         with mock.patch.object(settle, "FPLClient", return_value=self._client()):
             self.assertEqual(await settle._run(self._args()), 0)
         self.assertEqual(self._outcomes(), 1)

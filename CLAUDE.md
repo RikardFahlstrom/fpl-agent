@@ -34,7 +34,7 @@ you wanted, not the exit code.
 - **Bump `MODEL_VERSION` (`engine/projection.py`) on any change that moves projections.**
   Both versions then sit in the warehouse and can be compared.
 - **Grade a gameweek only once it has finished.** Absence of an actual is a zero only
-  after the fixtures are played. See `engine/settle.gameweek_is_finished`.
+  after the fixtures are played. See `engine/warehouse.Gameweek.finished`.
 - **A settled gameweek keeps its projection.** The graded row is the record of what the
   model believed before the result; to re-score it, bump `MODEL_VERSION`. See
   `engine/projection.SettledProjection`.

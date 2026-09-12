@@ -390,15 +390,12 @@ class ActualsTests(StatusTestCase):
         self.assertIn("nothing to be behind", self.by_label()["actuals"].detail)
 
     def test_a_partially_played_gameweek_does_not_count_as_finished(self):
-        """The same rule as settle.gameweek_is_finished: one fixture still to play means
-        the round is not over, so the backfill is not behind it."""
+        """One fixture still to play means the round is not over, so the backfill is
+        not behind it (the rule is the ledger's; see test_warehouse)."""
         self.conn.execute("UPDATE fixture SET finished = 1 WHERE id = 300")
         self.conn.commit()
-        self.assertEqual(status.finished_gameweeks(self.conn), [1, 2])
         self.assertClean()
-
-    def test_a_gameweek_with_no_fixtures_recorded_is_not_finished(self):
-        self.assertNotIn(9, status.finished_gameweeks(self.conn))
+        self.assertIn("latest finished gameweek is 2", self.by_label()["actuals"].detail)
 
 
 class GradingTests(StatusTestCase):

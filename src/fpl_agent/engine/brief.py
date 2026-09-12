@@ -262,7 +262,7 @@ def gameweek_deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[datet
     See DEADLINE_BEFORE_FIRST_KICKOFF: the warehouse stores fixtures, not events, so
     there is no published deadline to read. A gameweek with no fixtures recorded has no
     derivable deadline, and None is returned rather than a guess - absence of fixtures is
-    absence of evidence, the same rule `settle.gameweek_is_finished` follows.
+    absence of evidence, the same rule `warehouse.Gameweek.finished` follows.
     """
     row = conn.execute(
         "SELECT MIN(kickoff_time) AS first FROM fixture WHERE event = ?",
