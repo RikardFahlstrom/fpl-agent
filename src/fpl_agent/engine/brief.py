@@ -74,7 +74,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import lineups, pricing, recommend, settle, status, storage, warehouse
+from . import chips, lineups, pricing, recommend, settle, status, storage, warehouse
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing
 
 logger = logging.getLogger("fpl_brief")
@@ -862,6 +862,12 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
                      f"({source.managers} rivals); no move to measure"
                      if source.fresh else f"not shown: {source.reason}")
 
+    # Captain: the model's pick for the target gameweek from the captured XI.
+    capture = evaluation.capture
+    picks = (chips.captain_picks(conn, capture.id, evaluation.gameweek, MODEL_VERSION)
+             if capture and squad else [])
+    captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
+
     # Wildcard. The judgement does not exist yet, and the line says so rather than
     # implying "no" was decided.
     chip = state.get("wildcard")
@@ -915,7 +921,8 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
     if undelivered:
         data += "; a push fired and did not reach your phone (see Push)"
 
-    rows = [("Move", move), ("Ownership", ownership), ("Wildcard", wildcard),
+    rows = [("Move", move), ("Ownership", ownership), ("Captain", captain),
+            ("Wildcard", wildcard),
             ("Availability", availability), ("Deadline", when), ("Push", push),
             ("Learnings", pending), ("Data", data)]
     if markdown:

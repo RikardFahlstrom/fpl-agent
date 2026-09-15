@@ -560,6 +560,45 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
     return stored_horizon(conn, snapshot.id, start, weeks, model_version)
 
 
+def project_chip_window(conn: sqlite3.Connection, start_gameweek: Optional[int] = None,
+                        model_version: str = MODEL_VERSION) -> Optional[tuple[int, int]]:
+    """Project every gameweek from the target to the chip set's expiry.
+
+    The chip logic needs a value for each week a chip could still be played, and a
+    suggestion has to be re-readable from the warehouse later, so the rows are stored
+    like the horizon's. Nothing already stored changes - the same model on the same
+    inputs - so this needs no MODEL_VERSION bump. Weeks beyond the next carry no
+    predicted lineups; the brief says so where it shows them.
+
+    Returns the range projected, or None when no squad (and so no chip payload) has
+    been captured: a market-only warehouse has no chips to value.
+    """
+    from . import chips     # chips reads projections; imported here to avoid the cycle
+    snapshot = warehouse.latest(conn)
+    if not snapshot:
+        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
+    start = start_gameweek or snapshot.gameweek
+    if start is None:
+        raise LookupError("no target gameweek; the season may be over")
+    end = chips.chip_window(conn, start)
+    if end is None:
+        logger.info("no chips captured; nothing beyond the horizon to project")
+        return None
+    last_fixture = conn.execute("SELECT MAX(event) FROM fixture").fetchone()[0]
+    if last_fixture is not None:
+        end = min(end, last_fixture)
+    for gameweek in range(start, end + 1):
+        # The horizon has usually written the first weeks already, from this same
+        # snapshot under this same model: the same answer, so they are not redone.
+        if conn.execute("SELECT 1 FROM projection WHERE snapshot_id = ? AND gameweek = ? "
+                        "AND model_version = ? LIMIT 1",
+                        (snapshot.id, gameweek, model_version)).fetchone():
+            continue
+        project_gameweek(conn, gameweek, model_version)
+    logger.info("chip window: gameweeks %s-%s", start, end)
+    return start, end
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Project expected points for a gameweek.")
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
@@ -568,6 +607,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--horizon", type=int, default=None,
                         help=f"project this many gameweeks and total them "
                              f"(default {HORIZON_GAMEWEEKS} via the recommender)")
+    parser.add_argument("--chips", action="store_true",
+                        help="also project every gameweek to the current chip set's "
+                             "expiry, so a chip can be valued in each week it could be "
+                             "played (no-op when no squad, and so no chips, is captured)")
     args = parser.parse_args(argv)
 
     config.load()
@@ -579,6 +622,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             project_horizon(conn, args.gameweek, weeks=args.horizon)
         else:
             project_gameweek(conn, args.gameweek)
+        if args.chips:
+            project_chip_window(conn, args.gameweek)
         # One row per player over the whole horizon, not one per gameweek. The latest
         # capture is the one project_* just wrote to, so it cannot be None here.
         latest = warehouse.latest(conn)
