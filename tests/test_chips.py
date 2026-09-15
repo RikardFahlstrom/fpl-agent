@@ -160,6 +160,40 @@ class CaptainTests(unittest.TestCase):
         self.assertEqual(self.picks(), [])
         self.assertIn("not evaluated", chips.captain_line([]))
 
+    def test_a_pick_carries_its_fixture_and_what_the_xp_is_made_of(self):
+        # The fixture helper plays club 1 at home to club 2 twice - a double gameweek;
+        # P1 is club 1, P2 club 2.
+        p1 = next(p for p in self.picks() if p.element_id == 1)
+        p2 = next(p for p in self.picks() if p.element_id == 2)
+        self.assertEqual(p1.opponents, ("C02 at home", "C02 at home"))
+        self.assertEqual(p2.opponents, ("C01 away", "C01 away"))
+        self.assertIsInstance(p1.components, dict)
+
+    def test_why_names_the_fixture_the_sources_and_the_gaps(self):
+        picks = [
+            chips.Pick(1, "Saka", "ARS", 5.1, 1, False, ("BHA away",), (3,),
+                       {"appearance": 1.8, "goals": 2.0, "assists": 0.1,
+                        "bonus": 0.5, "clean_sheet": 0.45}),
+            chips.Pick(2, "Barry", "EVE", 4.9, 1, False, ("IPS at home",), (2,), {}),
+            chips.Pick(3, "Isak", "LIV", 4.6, 1, True, (), (), {}),
+        ]
+        why = chips.captain_why(picks)
+        self.assertIn("Saka faces BHA away (difficulty 3)", why)
+        self.assertIn("2.0 from goals, 0.5 from bonus, 0.5 from clean sheet", why)
+        self.assertNotIn("assists", why)                   # under the floor
+        self.assertIn("Barry is 0.2 behind, Isak 0.5 behind", why)
+        self.assertIn("coin flip", why)
+        short = chips.captain_why(picks, short=True)
+        self.assertTrue(short.endswith("from clean sheet."), short)
+        self.assertNotIn("Barry", short)
+
+    def test_why_says_when_moving_the_armband_is_worth_it(self):
+        picks = [chips.Pick(1, "Saka", "ARS", 6.0, 1, False),
+                 chips.Pick(2, "Isak", "LIV", 4.5, 1, True)]
+        why = chips.captain_why(picks)
+        self.assertIn("Isak is 1.5 behind, so moving the armband is worth doing", why)
+        self.assertEqual(chips.captain_why([]), "")
+
 
 if __name__ == "__main__":
     unittest.main()
