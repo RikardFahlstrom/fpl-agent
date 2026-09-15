@@ -674,6 +674,8 @@ class RenderBriefTests(BriefTestCase):
 
     def render(self, **kwargs):
         kwargs.setdefault("now", NOW)
+        # Never the repo's own learnings/: the suite runs from the repo root.
+        kwargs.setdefault("learnings_dir", Path(self.tmp.name) / "learnings")
         return brief.render_brief(self.conn, GAMEWEEK, **kwargs)
 
     def test_the_wildcard_banner_comes_before_anything_it_would_change(self):
@@ -735,9 +737,30 @@ class RenderBriefTests(BriefTestCase):
         text = self.render()
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
-        self.assertEqual(labels[:7], ["- **Move", "- **Ownership", "- **Wildcard",
+        self.assertEqual(labels[:8], ["- **Move", "- **Ownership", "- **Wildcard",
                                       "- **Availability", "- **Deadline", "- **Push",
-                                      "- **Data"])
+                                      "- **Learnings", "- **Data"])
+        self.assertIn("- **Learnings:** none proposed", text)
+
+    def test_the_learnings_line_groups_repeats_and_speaks_plainly(self):
+        self.warehouse.healthy()
+        root = Path(self.tmp.name) / "learnings"
+        root.mkdir()
+        for number, gameweek in ((1, 3), (2, 4)):
+            (root / f"000{number}-gw{gameweek}-under.md").write_text(
+                f"---\nid: 000{number}\ngameweek: {gameweek}\nmodel_version: 0.5.0\n"
+                f"metric: bias_by_start_probability\nslice: P(start) 75-100%\n"
+                f"observation: under-projected by 0.54 points across 218 players\n"
+                f"status: proposed\naction: none yet\n---\n\n# body\n")
+        (root / "0003-gw4-over.md").write_text(
+            "---\nid: 0003\ngameweek: 4\nmetric: bias_by_position\nslice: FWD\n"
+            "observation: over-projected by 1.10 points across 40 players\n"
+            "status: rejected\n---\n")
+        text = self.render(learnings_dir=root)
+        self.assertIn("- **Learnings:** 2 proposed - players almost certain to start "
+                      "scored about half a point per game more than the model expected "
+                      "(GW3 and GW4 both; 0001, 0002)", text)
+        self.assertNotIn("P(start)", text.split("## What needs you")[0])
         self.assertLess(text.index("- **Move:**"), text.index("## What needs you"))
 
     def test_the_block_names_who_cannot_play_and_why(self):
