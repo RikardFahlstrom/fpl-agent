@@ -422,6 +422,15 @@ class CommandTest(unittest.TestCase):
         )
         patch.start()
         self.addCleanup(patch.stop)
+        # `main` calls `config.load()`, which fills an *empty* env var from the local
+        # `fpl-agent.ini`. Once the owner has a real topic in that file, the tests that
+        # blank the env to mean "unconfigured" are silently configured again. Point the
+        # loader at a file that does not exist so the suite reads only what it sets
+        # (the default path is bound at definition time, so `load` itself is patched).
+        real_load, absent = config.load, Path(self.tmp.name) / "absent.ini"
+        ini = mock.patch.object(config, "load", lambda path=absent: real_load(path))
+        ini.start()
+        self.addCleanup(ini.stop)
 
     def run_notify(self, *argv):
         out, err = StringIO(), StringIO()
