@@ -143,13 +143,15 @@ class TailTests(ScheduleTestCase):
         plan = schedule.due("daily", now=NOW, warehouse=schedule.read(self.conn),
                             settings=settings)
         tail = [step for step in plan.steps if step.command in ("brief", "notify")]
-        self.assertEqual([step.command for step in tail], ["brief", "notify"])
+        self.assertEqual([step.command for step in tail], ["notify", "brief"])
         self.assertTrue(all(step.tolerated for step in tail))
 
     def test_they_come_last_so_they_describe_what_the_run_left_behind(self):
+        # The push before the brief: the brief's Push line reads "sent <when>" from the
+        # notification table, which only holds a row once notify has run.
         plan = schedule.due("daily", now=NOW, warehouse=schedule.read(self.conn),
                             settings=schedule.Settings(notifications_configured=True))
-        self.assertEqual(commands(plan)[-2:], ["brief", "notify"])
+        self.assertEqual(commands(plan)[-2:], ["notify", "brief"])
 
     def test_an_unconfigured_topic_skips_the_push_rather_than_failing_it(self):
         # notify is opt-in: a host that has never set a topic must not be mailed an error

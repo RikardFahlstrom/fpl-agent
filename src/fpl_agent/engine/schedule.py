@@ -344,31 +344,40 @@ def _ranking_or_skip(warehouse: Reading, hours: Optional[int],
 
 
 def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
-    """Write the brief, then push what is worth interrupting a person for.
+    """Push what is worth interrupting a person for, then write the brief.
 
     Both tolerate failure, which is the whole reason they are marked rather than
     special-cased: the snapshot is the irrecoverable asset and neither of these is. A
     dead ntfy server must never make a run that captured the market look like one that
     lost it, and a formatting problem in the brief must not mask a healthy capture.
 
+    The push goes first so that the brief's Push line is read from the `notification`
+    table - "sent Tue 15 Sep 11:30" - rather than promised. A brief written before the
+    push could only say "will be sent", which is the shape of claim CLAUDE.md opens
+    with. The two evaluate the same warehouse, so nothing the brief describes changes
+    between them.
+
     They were the shell's tail, outside the job dispatch, with the masking rule written
     by hand around them. Here they are ordinary Steps and the rule is `Outcome`'s.
     """
-    steps = [Step("brief", (),
-                  "the push carries only what is worth a phone buzzing; the brief is the "
-                  "rest of the reasoning, and `logs/` is tracked so it survives",
-                  tolerated=True)]
-    if not settings.notifications_configured:
+    steps: list[Step] = []
+    skipped: list[Skipped] = []
+    if settings.notifications_configured:
+        steps.append(Step("notify", (),
+                          "each trigger is pushed once; the fingerprints already sent "
+                          "live in the warehouse, which is what makes an hourly job safe "
+                          "to notify from",
+                          tolerated=True))
+    else:
         # Skipped, not failed: notify is opt-in, and a host that has never set a topic
         # should not be mailed an error every hour.
-        return steps, [Skipped("notify", "no ntfy topic is configured; notification is "
-                                         "opt-in - see docs/SCHEDULING.md")]
-    steps.append(Step("notify", (),
-                      "each trigger is pushed once; the fingerprints already sent live "
-                      "in the warehouse, which is what makes an hourly job safe to "
-                      "notify from",
+        skipped.append(Skipped("notify", "no ntfy topic is configured; notification is "
+                                         "opt-in - see docs/SCHEDULING.md"))
+    steps.append(Step("brief", (),
+                      "the push carries only what is worth a phone buzzing; the brief is "
+                      "the rest of the reasoning, and `logs/` is tracked so it survives",
                       tolerated=True))
-    return steps, []
+    return steps, skipped
 
 
 # --------------------------------------------------------------------------

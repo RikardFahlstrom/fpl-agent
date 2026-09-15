@@ -632,6 +632,27 @@ def sent_fingerprints(conn: sqlite3.Connection,
     return {r["fingerprint"] for r in rows}
 
 
+def sent_notifications(conn: sqlite3.Connection,
+                       fingerprints: Iterable[str]) -> dict[str, str]:
+    """When each of these was pushed, by fingerprint; absent means never.
+
+    The brief reads this to say *sent <when>* rather than *sent*. Tolerates a warehouse
+    from before the table existed, the way `sent_fingerprints`'s callers do, because
+    a brief must render on any warehouse it can open.
+    """
+    wanted = [str(f) for f in fingerprints]
+    if not wanted:
+        return {}
+    placeholders = ",".join("?" * len(wanted))
+    try:
+        rows = conn.execute(
+            f"SELECT fingerprint, sent_at FROM notification "
+            f"WHERE fingerprint IN ({placeholders})", wanted).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {r["fingerprint"]: r["sent_at"] for r in rows}
+
+
 def record_notification(conn: sqlite3.Connection, fingerprint: str, trigger_name: str,
                         headline: str, channel: str,
                         gameweek: Optional[int] = None) -> None:

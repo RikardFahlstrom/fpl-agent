@@ -181,6 +181,24 @@ def active_transfer_chip(chips_json: Optional[str]) -> Optional[str]:
     return None
 
 
+def chip_status(chips_json: Optional[str], name: str = "wildcard") -> Optional[str]:
+    """FPL's `status_for_entry` for one chip - "available", "active", "played" - or
+    None when the payload does not say. The brief's wildcard line reads this; the
+    judgement about whether to *use* one is not made anywhere yet, and the line says so."""
+    if not chips_json:
+        return None
+    try:
+        chips = json.loads(chips_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(chips, list):
+        return None
+    for chip in chips:
+        if isinstance(chip, dict) and chip.get("name") == name:
+            return chip.get("status_for_entry")
+    return None
+
+
 def transfer_price(free_transfers: Optional[int], transfer_cost: Optional[int],
                    chip: Optional[str]) -> int:
     """What the next transfer costs in points, given the state of the squad.
@@ -217,6 +235,7 @@ def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
     cost = state["transfer_cost"] if state else None
     chip = active_transfer_chip(state["chips"] if state else None)
     return {"free_transfers": free, "transfer_cost": cost, "chip": chip,
+            "wildcard": chip_status(state["chips"] if state else None),
             "hit_cost": transfer_price(free, cost, chip)}
 
 
@@ -561,6 +580,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"\nCannot recommend: {missing}", file=sys.stderr)
             return 1
 
+        # The terminal opens with the brief's fixed block - the same seven lines a
+        # person reads on the page - and then the full ranked list under it. The block
+        # is the brief's, not a copy: `brief` imports this module, so it is reached here
+        # locally rather than at the top.
+        from . import brief
+        gameweek = brief.default_gameweek(conn)
+        if gameweek is not None:
+            evaluation = brief.evaluate(conn, gameweek, include_token=False)
+            print("\n".join(brief.render_block(
+                conn, evaluation, brief.push_reports(conn, evaluation), markdown=False)))
         print(render(context, recommendations, args.weeks))
         if not recommendations:
             return 0

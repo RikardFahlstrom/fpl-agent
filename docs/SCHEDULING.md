@@ -80,9 +80,10 @@ gameweek 4 an ungraded gameweek 3 must still be what gets settled — taking the
 passed it over for a gameweek 4 that had not finished, and gameweek 3 would never have
 been graded at all. A week the box was down catches up the same way.
 
-Both jobs end by writing `logs/gwNN.md` and then notifying. The push carries only the few
-lines worth interrupting someone for; the brief is the rest of the reasoning, and `logs/`
-is tracked so that record survives. Note that this rewrites a tracked file, so a server's
+Both jobs end by notifying and then writing `logs/gwNN.md` - in that order, so the
+brief's Push line reports "sent <when>" from the notification table rather than promising
+it. The push carries only the few lines worth interrupting someone for; the brief is the
+rest of the reasoning, and `logs/` is tracked so that record survives. Note that this rewrites a tracked file, so a server's
 checkout will show it modified and `git pull` will refuse until those changes are
 committed or discarded.
 
@@ -298,8 +299,8 @@ if the pushes feel like noise.
 
 ### Why a failed push cannot fail the job
 
-`notify` runs *after* `daily` and `deadline`, and its exit code is reported only when the
-job itself succeeded:
+`notify` runs at the tail of `daily` and `deadline` (just before the brief), and its exit
+code is reported only when the job itself succeeded:
 
 ```
 job's code != 0  ->  exit the job's code (notify's is logged and discarded)

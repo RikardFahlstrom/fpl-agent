@@ -183,6 +183,13 @@ class CleanWarehouseTests(StatusTestCase):
             self.assertIn(label, report)
         self.assertIn("the warehouse agrees with itself", report)
 
+    def test_a_warn_is_explained_as_stale_or_pending_rather_than_counted(self):
+        """"1 warn" on its own reads as a fault; the sentence says what a warn is."""
+        self.conn.execute("DELETE FROM rival_squad")
+        report = status.render(self.gather(), "data/test.db")
+        self.assertIn("stale or pending, not broken: snapshot, rivals", report)
+        self.assertNotIn("worth a look", report)
+
     def test_main_exits_zero_over_a_clean_warehouse(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fpl.db"

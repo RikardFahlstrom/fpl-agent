@@ -88,6 +88,11 @@ fail the run. Taken literally, honouring both needs two kinds of tolerance and a
 case for the brief — which is the shape #37 set out to remove. The rule stays general, on
 the grounds that the only code the brief can return already means what it would mean here.
 
+**(4) The push runs before the brief.** The shell wrote the brief and then notified. The
+brief now opens with a Push line that says *sent <when>* from the `notification` table,
+which only holds a row once `notify` has run, so the order is reversed. Both evaluate the
+same unchanged warehouse; the exit-code rule is unaffected because both are tolerated.
+
 ## After the entry point was shrunk
 
 `deploy/fpl-cron.sh` passes its argv to `fpl-agent schedule` and decides nothing now, so

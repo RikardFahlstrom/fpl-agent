@@ -363,7 +363,7 @@ class SquadPlayerUnavailableTests(BriefTestCase):
         self.warehouse.healthy()
         evaluation = self.evaluate()
         self.assertNotIn("squad_player_unavailable", self.fired(evaluation))
-        self.assertIn("all 15 squad players checked",
+        self.assertIn("all 15 players you own are fit",
                       evaluation.silent["squad_player_unavailable"])
 
     def test_an_injured_player_fires_once_with_an_action(self):
@@ -722,8 +722,68 @@ class RenderBriefTests(BriefTestCase):
         self.conn.commit()
         text = self.render(now=datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc))
         self.assertIn("Nothing needs you", text)
+        # Every trigger is accounted for under Push, by its plain title, and the code
+        # name a person would have to decode is not on the page.
         for name in brief.TRIGGER_NAMES:
-            self.assertIn(f"`{name}`", text)
+            self.assertIn(f"- {brief.TRIGGER_TITLES[name]} — **did not fire**:", text)
+            self.assertNotIn(f"`{name}`", text)
+        self.assertIn("- **Push:** nothing fired - all 4 triggers checked", text)
+        self.assertIn("- **Wildcard:** not evaluated - chip active", text)
+
+    def test_the_block_opens_every_brief_with_the_same_lines_in_the_same_order(self):
+        self.warehouse.healthy()
+        text = self.render()
+        labels = [line.split(":**")[0] for line in text.splitlines()
+                  if line.startswith("- **")]
+        self.assertEqual(labels[:7], ["- **Move", "- **Ownership", "- **Wildcard",
+                                      "- **Availability", "- **Deadline", "- **Push",
+                                      "- **Data"])
+        self.assertLess(text.index("- **Move:**"), text.index("## What needs you"))
+
+    def test_the_block_names_who_cannot_play_and_why(self):
+        self.warehouse.healthy()
+        self.warehouse.flag(4, "d", chance=25, news="Knock")
+        self.warehouse.flag(5, "s", news="Red card")
+        self.conn.commit()
+        text = self.render()
+        self.assertIn("- **Availability:** 13 of 15 - P4 (doubtful, 25% to play), "
+                      "P5 (suspended)", text)
+
+    def test_a_fired_push_with_no_topic_is_not_delivered_and_the_data_line_says_so(self):
+        """Fired-but-unsent must never read like nothing-to-say: the Push line, the
+        Push list and the Data line all carry it."""
+        self.warehouse.healthy()
+        self.warehouse.flag(4, "i", news="Hamstring")
+        self.conn.commit()
+        text = self.render(notifications_configured=False)
+        self.assertIn("- **Push:** fired, not delivered: A player you own cannot play",
+                      text)
+        self.assertIn("- A player you own cannot play — **fired, not delivered**: no ntfy "
+                      "topic in fpl-agent.ini", text)
+        self.assertIn("a push fired and did not reach your phone (see Push)", text)
+
+    def test_a_fired_push_with_a_topic_but_no_record_names_notify(self):
+        self.warehouse.healthy()
+        self.warehouse.flag(4, "i", news="Hamstring")
+        self.conn.commit()
+        text = self.render(notifications_configured=True)
+        self.assertIn("**fired, not delivered**: not in the sent record; `fpl-agent "
+                      "notify` sends it", text)
+
+    def test_a_recorded_push_reads_sent_with_when(self):
+        self.warehouse.healthy()
+        self.warehouse.flag(4, "i", news="Hamstring")
+        self.conn.commit()
+        evaluation = self.evaluate()
+        for trigger in evaluation.triggers:      # the injury, and both deadline triggers
+            storage.record_notification(self.conn, trigger.fingerprint, trigger.name,
+                                        trigger.headline, "ntfy", GAMEWEEK)
+        self.conn.commit()
+        text = self.render(evaluation=evaluation, notifications_configured=True)
+        self.assertRegex(text, r"- \*\*Push:\*\* sent: A player you own cannot play "
+                               r"\(\w{3} \d\d \w{3} \d\d:\d\d UTC\)")
+        self.assertIn("— **sent**: ", text)
+        self.assertNotIn("did not reach your phone", text)
 
     def test_a_fired_trigger_is_rendered_with_its_action(self):
         self.warehouse.healthy()
