@@ -179,6 +179,75 @@ class RecommendTests(SeedMixin, unittest.TestCase):
         results = recommend.recommend(conn, weeks=3, limit=50)
         self.assertEqual(results[0]["in"]["profile"], "unknown")
         self.assertIsNone(results[0]["in"]["league_eo"])
+        self.assertIsNone(results[0]["in"]["managers"])
+        self.assertFalse(results[0]["ownership"]["fresh"])
+        self.assertIn("never been captured", results[0]["ownership"]["reason"])
+        self.assertIn("Ownership not shown: rivals have never been captured",
+                      recommend.move_lines(results[0])[1])
+
+    def _rivals_at(self, conn, gameweek, owners_of_one=4):
+        conn.executemany(
+            "INSERT OR REPLACE INTO rival_squad VALUES (?,?,?,?,?,?,?)",
+            [(900 + i, gameweek, 1, 1, 1, 0, 0) for i in range(owners_of_one)])
+        conn.commit()
+
+    def _finish(self, conn, gameweek):
+        conn.execute("UPDATE fixture SET finished = 1 WHERE event = ?", (gameweek,))
+        conn.commit()
+
+    def test_ownership_is_shown_when_rivals_are_not_behind_the_last_finished_gameweek(self):
+        """Picks for a round exist only after its deadline, so rivals captured for the
+        last finished gameweek are as fresh as ownership can be."""
+        conn = self._seed()
+        self._finish(conn, 3)
+        self._rivals_at(conn, 3)
+        move = recommend.recommend(conn, weeks=3, limit=50)[0]
+        self.assertTrue(move["ownership"]["fresh"])
+        self.assertEqual(move["ownership"]["gameweek"], 3)
+        self.assertEqual(move["ownership"]["last_finished"], 3)
+        self.assertEqual((move["out"]["owned_by"], move["out"]["managers"]), (4, 4))
+        self.assertEqual((move["in"]["owned_by"], move["in"]["managers"]), (0, 4))
+        worth, ownership = recommend.move_lines(move)
+        self.assertIn("owned by 0 of 4 rivals (0%)", ownership)
+        self.assertIn("owned by 4 of 4 rivals (100%)", ownership)
+
+    def test_stale_ownership_is_not_shown_anywhere(self):
+        """Rivals from GW3 once GW4 has finished are a wrong number, not a caveat:
+        every ownership field is None and the reason says which gameweek to fetch."""
+        conn = self._seed()
+        self._rivals_at(conn, 3)
+        self._finish(conn, 3)
+        self._finish(conn, 4)
+        move = recommend.recommend(conn, weeks=3, limit=50)[0]
+        self.assertFalse(move["ownership"]["fresh"])
+        self.assertIsNone(move["in"]["league_eo"])
+        self.assertIsNone(move["out"]["owned_by"])
+        self.assertEqual(move["out"]["profile"], "unknown")
+        reason = move["ownership"]["reason"]
+        self.assertIn("last captured for gameweek 3", reason)
+        self.assertIn("gameweek 4 has finished", reason)
+        self.assertIn(reason, recommend.move_lines(move)[1])
+        text = recommend.render(recommend.transfer_context(conn), [move])
+        self.assertEqual(text.count("Ownership not shown"), 1)
+        self.assertNotIn("rivals (", text)
+
+    def test_move_lines_say_what_the_move_costs(self):
+        conn = self._seed()
+        worth = recommend.move_lines(recommend.recommend(conn, weeks=3)[0])[0]
+        self.assertIn("xP over 3 gameweeks", worth)
+        self.assertIn("free transfer", worth)
+        conn = self._seed(limit=0)
+        worth = recommend.move_lines(recommend.recommend(conn, weeks=3)[0])[0]
+        self.assertIn("after a 4-point hit", worth)
+
+    def test_the_recorded_rationale_carries_ownership(self):
+        conn = self._seed()
+        self._finish(conn, 3)
+        self._rivals_at(conn, 3)
+        move = recommend.recommend(conn, weeks=3)[0]
+        recommend.record_decision(conn, move)
+        rationale = conn.execute("SELECT rationale FROM decision").fetchone()["rationale"]
+        self.assertIn("owned by 0 of 4 rivals", rationale)
 
     def test_a_bench_upgrade_is_discounted_against_the_same_upgrade_in_the_xi(self):
         """A bench player only scores through substitutions, so the slot is worth less.

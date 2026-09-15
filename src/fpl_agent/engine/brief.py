@@ -435,6 +435,15 @@ def _move_id(move: dict[str, Any]) -> str:
     return f"{move['out']['element_id']}->{move['in']['element_id']}"
 
 
+def _deadline_line(deadline: Optional[datetime], remaining: Optional[timedelta]) -> str:
+    if deadline is None:
+        return "- Deadline: none derived (no fixtures recorded)"
+    when = deadline.strftime("%a %d %b %H:%M UTC")
+    if remaining < timedelta(0):
+        return f"- Deadline {when} passed {_hours(-remaining)} ago"
+    return f"- Deadline {when}, {_hours(remaining)} away"
+
+
 def _hours(delta: timedelta) -> str:
     total = delta.total_seconds() / 3600
     if abs(total) >= 48:
@@ -556,7 +565,8 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             detail=(f"- Deadline {deadline.isoformat(timespec='minutes')} "
                     f"({_hours(remaining)} away).\n"
                     f"- Best move: {top['in']['name']} for {top['out']['name']}, "
-                    f"net {top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks."
+                    f"net {top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks.\n"
+                    f"- {recommend.move_lines(top)[1]}"
                     + (f"\n- {state['chip'].upper()} is active, so this is a "
                        f"like-for-like swap ranked inside a squad rebuild the tool does "
                        f"not plan." if state["chip"] else "")),
@@ -610,14 +620,18 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             headline=headline(
                 f"{top['in']['name']} for {top['out']['name']}: "
                 f"net {top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks"),
-            detail=(f"- Out: {top['out']['name']} "
-                    f"(£{top['out']['selling_price'] / 10:.1f}m, {top['out']['xp']} xP)\n"
-                    f"- In: {top['in']['name']} ({top['in']['team']}, "
-                    f"£{top['in']['now_cost'] / 10:.1f}m, {top['in']['xp']} xP)\n"
-                    f"- Net {top['net_xp_delta']:+.2f} after a {top['hit_cost']}-point "
-                    f"hit; clears the {threshold:.1f} bar.\n"
-                    f"- Price urgency: {top['urgency']} - "
-                    f"{top['affordability']['reason']}"),
+            # The push body, in the order it is read on a lock screen: what the move is
+            # worth, who owns whom, when it has to be done by, and the one action.
+            detail="\n".join([
+                f"- Out: {top['out']['name']} "
+                f"(£{top['out']['selling_price'] / 10:.1f}m, {top['out']['xp']} xP); "
+                f"in: {top['in']['name']} ({top['in']['team']}, "
+                f"£{top['in']['now_cost'] / 10:.1f}m, {top['in']['xp']} xP)",
+                *(f"- {line}" for line in recommend.move_lines(top)),
+                f"- Net {top['net_xp_delta']:+.2f} clears the {threshold:.1f} bar. "
+                f"Price: {top['affordability']['reason']}",
+                _deadline_line(deadline, remaining),
+            ]),
             action=(f"Make {top['in']['name']} for {top['out']['name']}, or record why "
                     f"not with `fpl-agent recommend --record`."),
             fingerprint=f"move_worth_making:gw{gameweek}:{_move_id(top)}",
@@ -791,15 +805,30 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
         lines += [f"No transfer improves the squad over the horizon within budget{tail}.",
                   ""]
     else:
+        source = listing["moves"][0]["ownership"]
+
+        def owned(player: dict[str, Any]) -> str:
+            if not source["fresh"]:
+                return "-"
+            return f"{player['owned_by']} of {player['managers']}"
+
         rows = []
         for i, move in enumerate(listing["moves"], 1):
             rows.append([str(i), f"{move['in']['name']} ({move['in']['team']})",
-                         move["out"]["name"],
+                         owned(move["in"]), move["out"]["name"], owned(move["out"]),
                          f"{move['net_xp_delta']:+.2f}", f"{move['xp_delta']:+.2f}",
                          str(move["hit_cost"]), move["urgency"],
                          move["out"]["slot"]])
-        lines += _table(["#", "in", "out", "net xP", "gross xP", "hit", "urgency", "slot"],
-                        ["---:", "---", "---", "---:", "---:", "---:", "---", "---"], rows)
+        lines += _table(["#", "in", "rivals own", "out", "rivals own",
+                         "net xP", "gross xP", "hit", "urgency", "slot"],
+                        ["---:", "---", "---:", "---", "---:",
+                         "---:", "---:", "---:", "---", "---"], rows)
+        if source["fresh"]:
+            lines += ["", f"*Rivals own* counts the rivals in your leagues holding the "
+                          f"player, from their gameweek {source['gameweek']} squads "
+                          f"({source['managers']} rivals)."]
+        else:
+            lines += ["", f"Ownership not shown: {source['reason']}."]
         lines += ["",
                   f"Every option is priced as *the next transfer you would make*, not as "
                   f"the nth move of a plan, so the same hit applies to all of them. The "
