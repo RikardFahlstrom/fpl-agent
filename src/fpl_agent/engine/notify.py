@@ -80,6 +80,8 @@ PRIORITY = {
     "squad_player_unavailable": "4",
     "deadline_with_move": "4",
     "move_worth_making": "3",
+    # A chip is a one-per-set decision with a wall; missing the week loses the chip.
+    "chip_worth_playing": "4",
 }
 DEFAULT_PRIORITY = "3"
 
@@ -89,6 +91,7 @@ TAGS = {
     "squad_player_unavailable": "hospital",
     "deadline_with_move": "alarm_clock",
     "move_worth_making": "chart_with_upwards_trend",
+    "chip_worth_playing": "joystick",
 }
 DEFAULT_TAGS = "soccer"
 

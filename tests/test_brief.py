@@ -240,11 +240,11 @@ class TriggerShapeTests(unittest.TestCase):
         self.assertEqual(self.make(), self.make())
         self.assertEqual(len({self.make(), self.make()}), 1)
 
-    def test_the_four_names_are_the_documented_set(self):
+    def test_the_five_names_are_the_documented_set(self):
         self.assertEqual(
             brief.TRIGGER_NAMES,
             ("status_failed", "squad_player_unavailable", "deadline_with_move",
-             "move_worth_making"))
+             "move_worth_making", "chip_worth_playing"))
 
 
 class BriefPathTests(unittest.TestCase):
@@ -729,8 +729,8 @@ class RenderBriefTests(BriefTestCase):
         for name in brief.TRIGGER_NAMES:
             self.assertIn(f"- {brief.TRIGGER_TITLES[name]} — **did not fire**:", text)
             self.assertNotIn(f"`{name}`", text)
-        self.assertIn("- **Push:** nothing fired - all 4 triggers checked", text)
-        self.assertIn("- **Wildcard:** not evaluated - chip active", text)
+        self.assertIn("- **Push:** nothing fired - all 5 triggers checked", text)
+        self.assertIn("- **Chips:** wildcard active this gameweek", text)
 
     def test_the_block_opens_every_brief_with_the_same_lines_in_the_same_order(self):
         self.warehouse.healthy()
@@ -738,7 +738,7 @@ class RenderBriefTests(BriefTestCase):
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
         self.assertEqual(labels[:9], ["- **Move", "- **Ownership", "- **Captain",
-                                      "- **Wildcard", "- **Availability", "- **Deadline",
+                                      "- **Chips", "- **Availability", "- **Deadline",
                                       "- **Push", "- **Learnings", "- **Data"])
         self.assertIn("- **Captain:** P1 (C01), 1.0 xP; next P2 1.0 - no armband captured",
                       text)

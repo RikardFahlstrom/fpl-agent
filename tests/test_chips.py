@@ -163,3 +163,236 @@ class CaptainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# Values and verdicts
+# --------------------------------------------------------------------------
+
+def value(gw, v, note="x"):
+    return chips.ChipValue(gw, v, note)
+
+
+BB = chips.ChipState("bboost", "available", 1, 19, None)
+TC = chips.ChipState("3xc", "available", 1, 19, None)
+
+
+class DecideTests(unittest.TestCase):
+    """Play now needs both gates: the bar, and best-of-window within the band."""
+
+    def test_under_the_bar_is_hold_even_when_this_week_is_the_best(self):
+        v = chips.decide(BB, [value(5, 11.7), value(6, 9.8), value(7, 8.9)], 5)
+        self.assertFalse(v.play_now)
+        self.assertIn("under the 15 bar", v.reason)
+        self.assertIn("no week to GW7 clears it either", v.reason)
+        self.assertEqual(v.short, "hold (+11.7, bar 15)")
+
+    def test_a_later_week_over_the_bar_is_named_as_the_hold_target(self):
+        v = chips.decide(BB, [value(5, 11.7), value(6, 9.8), value(9, 16.2, "double")], 5)
+        self.assertFalse(v.play_now)
+        self.assertIn("GW9 clears it (+16.2, double)", v.reason)
+        self.assertEqual(v.short, "hold for GW9 (+16.2 vs +11.7 now)")
+
+    def test_over_the_bar_and_the_best_week_is_play_now(self):
+        v = chips.decide(BB, [value(5, 16.0, "bench"), value(6, 9.8), value(7, 8.9)], 5)
+        self.assertTrue(v.play_now)
+        self.assertIn("play now: +16.0 (bench) clears the 15 bar, the best of the 3 weeks",
+                      v.reason)
+        self.assertEqual(v.short, "PLAY NOW (+16.0, bar 15)")
+
+    def test_over_the_bar_and_within_the_band_of_the_best_is_play_now(self):
+        # 16.0 is within 15% of 18.0: ties go to now, because the set has a wall.
+        v = chips.decide(BB, [value(5, 16.0), value(6, 18.0), value(7, 8.9)], 5)
+        self.assertTrue(v.play_now)
+        self.assertIn("within 15% of GW6 (+18.0)", v.reason)
+
+    def test_over_the_bar_but_a_clearly_better_week_is_hold(self):
+        v = chips.decide(BB, [value(5, 16.0), value(6, 22.0, "double"), value(7, 8.9)], 5)
+        self.assertFalse(v.play_now)
+        self.assertIn("hold for GW6: +22.0 (double) against +16.0 now", v.reason)
+
+    def test_no_projection_for_this_week_is_not_evaluated(self):
+        v = chips.decide(BB, [value(6, 9.8)], 5)
+        self.assertFalse(v.evaluated)
+        self.assertIn("not evaluated", v.reason)
+
+    def test_the_bar_is_per_chip(self):
+        self.assertTrue(chips.decide(TC, [value(5, 9.5, "Haaland, 2 fixtures")], 5).play_now)
+        self.assertFalse(chips.decide(BB, [value(5, 9.5)], 5).play_now)
+
+
+class ValueTests(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = storage.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.warehouse = Warehouse(self.conn).healthy()
+        self.conn.commit()
+        self.squad = [dict(r) for r in self.conn.execute(
+            "SELECT element_id, position, multiplier FROM my_squad")]
+
+    def project(self, gameweek, element_id, xp, fixtures=1):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO projection
+               (snapshot_id, gameweek, element_id, model_version, expected_points,
+                p_start, expected_minutes, fixture_count, components, created_at)
+               VALUES (?,?,?,?,?,0.9,80,?,'{}','now')""",
+            (self.warehouse.snapshot_id, gameweek, element_id, MODEL_VERSION, xp, fixtures))
+        self.conn.commit()
+
+    def by_week(self, first=GAMEWEEK, last=GAMEWEEK + 2):
+        return chips.squad_projections(self.conn, self.warehouse.snapshot_id,
+                                       MODEL_VERSION, [p["element_id"] for p in self.squad],
+                                       first, last)
+
+    def test_bench_boost_is_the_bench_summed_week_by_week(self):
+        for e in (12, 13, 14, 15):
+            self.project(GAMEWEEK + 1, e, 4.0)
+        values = chips.bench_boost_values(self.by_week(), self.squad)
+        self.assertEqual([(v.gameweek, v.value) for v in values],
+                         [(3, 4.0), (4, 16.0), (5, 4.0)])
+        self.assertEqual(values[0].note, "P12, P13, P14, P15")
+
+    def test_triple_captain_is_the_best_xi_player_with_his_fixtures(self):
+        self.project(GAMEWEEK + 1, 7, 9.6, fixtures=2)
+        self.project(GAMEWEEK + 1, 14, 20.0)        # bench: never the captain
+        values = chips.triple_captain_values(self.by_week(), self.squad)
+        week = next(v for v in values if v.gameweek == GAMEWEEK + 1)
+        self.assertEqual((week.value, week.note), (9.6, "P7, 2 fixtures"))
+
+    def test_the_post_move_squad_puts_the_incoming_player_in_the_outgoing_slot(self):
+        move = {"out": {"element_id": 1}, "in": {"element_id": 17}}
+        after = chips.apply_move(self.squad, move)
+        self.assertEqual(after[0]["element_id"], 17)
+        self.assertEqual(after[0]["position"], 1)
+        self.assertEqual(chips.apply_move(self.squad, None), self.squad)
+        stranger = {"out": {"element_id": 99}, "in": {"element_id": 17}}
+        self.assertEqual(chips.apply_move(self.squad, stranger), self.squad)
+
+    def test_evaluate_reports_every_chip_in_fpls_order(self):
+        self.warehouse.state(chips=json.dumps(FIRST_SET))
+        self.conn.commit()
+        verdicts = chips.evaluate(self.conn, self.warehouse.snapshot_id, GAMEWEEK,
+                                  MODEL_VERSION, self.squad)
+        self.assertEqual([v.state.name for v in verdicts],
+                         ["bboost", "3xc", "wildcard", "freehit"])
+        self.assertTrue(verdicts[0].evaluated)
+        self.assertEqual(verdicts[2].reason, "played in GW3")
+        self.assertIn("needs the squad rebuild", verdicts[3].reason)
+        line = chips.chips_line(verdicts, GAMEWEEK)
+        self.assertIn("bench boost hold (+4.0, bar 15)", line)
+        self.assertIn("wildcard played in GW3 · free hit not evaluated", line)
+        self.assertIn("set expires after GW19 (17 weeks left)", line)
+
+    def test_no_chips_captured_is_said_not_guessed(self):
+        self.assertEqual(chips.evaluate(self.conn, self.warehouse.snapshot_id, GAMEWEEK,
+                                        MODEL_VERSION, self.squad), [])
+        self.assertIn("no chips captured", chips.chips_line([], GAMEWEEK))
+
+
+# --------------------------------------------------------------------------
+# Through the brief: the trigger, the line, the section, the record
+# --------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+from pathlib import Path
+import tempfile
+
+from fpl_agent.engine import brief, recommend
+from test_brief import NOW
+
+
+class ChipTriggerTests(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = storage.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.warehouse = Warehouse(self.conn).healthy()
+        self.warehouse.state(chips=json.dumps(FIRST_SET))
+        self.conn.commit()
+
+    def bench(self, xp, gameweek=GAMEWEEK):
+        for e in (12, 13, 14, 15):
+            self.conn.execute(
+                "UPDATE projection SET expected_points = ? WHERE element_id = ? "
+                "AND gameweek = ?", (xp, e, gameweek))
+        self.conn.commit()
+
+    def evaluate(self):
+        return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False)
+
+    def render(self, evaluation=None):
+        return brief.render_brief(self.conn, GAMEWEEK, now=NOW, evaluation=evaluation,
+                                  include_token=False, notifications_configured=False,
+                                  learnings_dir=Path(self.tmp.name))
+
+    def test_a_bench_over_the_bar_fires_with_the_one_action(self):
+        self.bench(4.5)                         # 18 > 15, and the best of the horizon
+        evaluation = self.evaluate()
+        [trigger] = [t for t in evaluation.triggers if t.name == "chip_worth_playing"]
+        self.assertEqual(trigger.headline,
+                         "Play your bench boost this gameweek: +18.0 (P12, P13, P14, P15)")
+        self.assertIn("clears the 15 bar", trigger.detail)
+        self.assertIn("Best other week: GW4 (+4.0", trigger.detail)
+        self.assertIn("Deadline Sat 05 Sep 07:30 UTC", trigger.detail)
+        self.assertIn("Play the bench boost before Sat 05 Sep 07:30 UTC, or record why not "
+                      "with `fpl-agent recommend --record --chip bboost`", trigger.action)
+        self.assertEqual(trigger.fingerprint, "chip_worth_playing:gw3:bboost")
+
+    def test_the_fingerprint_is_the_chip_and_the_week_not_the_value(self):
+        self.bench(4.5)
+        first = self.evaluate().triggers[-1].fingerprint
+        self.bench(4.8)
+        self.assertEqual(self.evaluate().triggers[-1].fingerprint, first)
+
+    def test_a_bench_under_the_bar_is_silent_and_says_the_numbers(self):
+        evaluation = self.evaluate()
+        self.assertNotIn("chip_worth_playing", [t.name for t in evaluation.triggers])
+        self.assertIn("bench boost hold: +4.0 now", evaluation.silent["chip_worth_playing"])
+        self.assertIn("under the 15 bar", evaluation.silent["chip_worth_playing"])
+
+    def test_the_block_and_the_section_carry_the_verdicts(self):
+        self.bench(4.5)
+        text = self.render()
+        self.assertIn("- **Chips:** bench boost PLAY NOW (+18.0, bar 15) · triple captain "
+                      "hold (+2.0, bar 9) · wildcard played in GW3 · free hit not "
+                      "evaluated; set expires after GW19 (17 weeks left)", text)
+        self.assertIn("## Chips", text)
+        self.assertIn("| GW3 * | +18.0 (P12, P13, P14, P15) | +2.0 (P17) |", text)
+        self.assertIn("| GW4 | +4.0 | +2.0 |", text)         # names only when they change
+        self.assertIn("The set expires after GW19; weeks GW6-GW19 are not projected yet "
+                      "(`project --chips`)", text)
+        self.assertIn("Only the next gameweek has predicted lineups", text)
+        self.assertIn("fired, not delivered: Deadline near with a free transfer unused, A move worth making, A chip worth playing", text)
+
+    def test_values_are_summed_over_the_post_move_squad(self):
+        # The recommended move brings P17 (2.0) in for P1; P1 is in the XI, so the
+        # captain pick for triple captain moves with it.
+        evaluation = self.evaluate()
+        tc = next(v for v in evaluation.chips if v.state.name == "3xc")
+        self.assertEqual(tc.now.note, "P17")
+
+    def test_a_passed_deadline_never_fires_a_chip(self):
+        self.bench(4.5)
+        late = brief.evaluate(self.conn, GAMEWEEK,
+                              now=datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc),
+                              include_token=False)
+        self.assertNotIn("chip_worth_playing", [t.name for t in late.triggers])
+        self.assertIn("deadline has passed", late.silent["chip_worth_playing"])
+
+    def test_recording_a_chip_writes_a_chip_decision_with_the_values(self):
+        self.bench(4.5)
+        evaluation = self.evaluate()
+        verdict = next(v for v in evaluation.chips if v.state.name == "bboost")
+        recommend.record_chip(self.conn, verdict)
+        row = self.conn.execute("SELECT * FROM decision").fetchone()
+        self.assertEqual(row["kind"], "chip")
+        self.assertEqual(row["gameweek"], GAMEWEEK)
+        self.assertEqual(row["status"], "made")
+        self.assertIn("bench boost played in gameweek 3: play now: +18.0", row["rationale"])
+        payload = json.loads(row["payload"])
+        self.assertEqual(payload["chip"], "bboost")
+        self.assertEqual(payload["values"][0], {"gameweek": 3, "value": 18.0,
+                                                "note": "P12, P13, P14, P15"})
