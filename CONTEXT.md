@@ -212,8 +212,8 @@ means neither source names anyone; otherwise the names, each with its reason.
 
 One drafted finding from `settle --learn`: a calibration slice that deviated enough to
 be written down, filed in `learnings/` as `proposed`. It is a claim about the model, not
-about the gameweek, and it stays `proposed` until a person accepts it — a weight changes
-and `MODEL_VERSION` is bumped — or rejects it with a reason. Nothing accepts a learning
+about the gameweek, and it stays `proposed` until a person applies it — a weight changes,
+`MODEL_VERSION` is bumped and the file says `applied` — or rejects it with a reason. Nothing accepts a learning
 on its own; the `/fpl-learn` skill does it when the owner says so, in plain words, one
 learning at a time. Two drafts naming the same slice in consecutive rounds are the
 signal a single draft asks the reader to wait for, and the brief says so when it

@@ -200,6 +200,69 @@ def calibration(conn: sqlite3.Connection, gameweek: int,
     }
 
 
+@dataclass(frozen=True)
+class Learning:
+    """One drafted learning's frontmatter, as `draft_learning` writes it.
+
+    `bias` is signed the way the calibration is - predicted minus actual, positive means
+    the model expected too much - recovered from the observation line, and None when the
+    file was written by hand in some other shape.
+    """
+    id: str
+    gameweek: Optional[int]
+    metric: str
+    slice: str
+    observation: str
+    status: str
+    path: Path
+    bias: Optional[float] = None
+    players: Optional[int] = None
+
+
+def read_learnings(directory: Path = LEARNINGS_DIR) -> list[Learning]:
+    """Every learning file in `directory`, oldest first; an unreadable one is skipped
+    with a warning rather than failing the brief that asked."""
+    learnings = []
+    for path in sorted(Path(directory).glob("*.md")):
+        try:
+            text = path.read_text()
+        except OSError as e:
+            logger.warning("could not read %s: %s", path, e)
+            continue
+        if not text.startswith("---"):
+            continue
+        head = text.split("---", 2)
+        if len(head) < 3:
+            continue
+        fields = {}
+        for line in head[1].splitlines():
+            key, sep, value = line.partition(":")
+            if sep:
+                fields[key.strip()] = value.strip()
+        observation = fields.get("observation", "")
+        bias = players = None
+        parts = observation.split()
+        # "under-projected by 0.54 points across 218 players"
+        if len(parts) >= 3 and parts[1] == "by" and parts[0].endswith("-projected"):
+            try:
+                bias = float(parts[2]) * (1 if parts[0].startswith("over") else -1)
+            except ValueError:
+                bias = None
+        if "across" in parts:
+            try:
+                players = int(parts[parts.index("across") + 1])
+            except (IndexError, ValueError):
+                players = None
+        gameweek = fields.get("gameweek")
+        learnings.append(Learning(
+            id=fields.get("id", path.stem[:4]),
+            gameweek=int(gameweek) if gameweek and gameweek.isdigit() else None,
+            metric=fields.get("metric", ""), slice=fields.get("slice", ""),
+            observation=observation, status=fields.get("status", "proposed"),
+            path=path, bias=bias, players=players))
+    return learnings
+
+
 def biggest_deviation(slices: dict[str, list[Slice]]) -> Optional[tuple[str, Slice]]:
     """The slice most worth writing a learning about."""
     candidates = [

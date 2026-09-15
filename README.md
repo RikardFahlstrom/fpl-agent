@@ -222,8 +222,9 @@ notification failed. The full table, the trigger set and the reasoning are in
 ## Use from Claude Code
 
 Optional. A session started in this checkout loads the skills in `.claude/skills/`: the
-`/fpl-*` ones — `/fpl-deadline`, `/fpl-settle`, `/fpl-verify` — wrap the `make` targets
-with what to check and when not to act; `ls .claude/skills/` is the current list. The
+`/fpl-*` ones — `/fpl-deadline`, `/fpl-settle`, `/fpl-learn`, `/fpl-verify` — wrap the
+`make` targets with what to check and when not to act (`/fpl-learn` walks the proposed
+learnings with you, in plain words, and applies or rejects each only on your say-so); `ls .claude/skills/` is the current list. The
 skills read the same warehouse and logs the commands write, so what Claude sees is what
 `make status` sees, not a second opinion.
 
@@ -249,7 +250,7 @@ src/fpl_agent/
   engine/            snapshot, actuals, lineups, projection, scoring, pricing,
                      rivals, recommend, settle, status, brief, notify, storage
   config, cli        settings from fpl-agent.ini; the `fpl-agent` command
-.claude/skills/      /fpl-deadline, /fpl-settle, /fpl-verify,
+.claude/skills/      /fpl-deadline, /fpl-settle, /fpl-learn, /fpl-verify,
                      /claude-md-review
 deploy/              fpl-cron.sh, the unattended entry point; a crontab names it by
                      path, so it does not move

@@ -63,6 +63,10 @@ Before changing a weight:
 
 A learning that is rejected is still worth keeping - set `status: rejected` and say why.
 
+**Acting on drafts is `/fpl-learn`**, and only when the owner asks for it. End here by
+telling them what is waiting: `grep -l "status: proposed" learnings/*.md`, grouped by
+slice, in plain words - the brief's `Learnings:` line says the same thing every run.
+
 ## Committed
 
 `learnings/*.md` and `logs/` are tracked. Commit what `--learn` wrote. The database is not

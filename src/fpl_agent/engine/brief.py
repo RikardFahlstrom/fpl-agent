@@ -790,8 +790,45 @@ def _table(header: list[str], align: list[str], rows: list[list[str]]) -> list[s
             + ["| " + " | ".join(r) + " |" for r in rows])
 
 
+def learnings_line(learnings: list[settle.Learning]) -> str:
+    """The proposed learnings, grouped by what they claim, in the reader's words.
+
+    Two drafts naming the same slice in different gameweeks are the signal a single
+    draft asks the reader to wait for, so the grouping is the point: "GW3 and GW4 both"
+    is what makes a learning worth acting on, and it is said here rather than left for
+    someone to notice across two files.
+    """
+    proposed = [l for l in learnings if l.status == "proposed"]
+    if not proposed:
+        return "none proposed" if not learnings else (
+            f"none proposed ({len(learnings)} closed)")
+    groups: dict[tuple[str, str], list[settle.Learning]] = {}
+    for learning in proposed:
+        groups.setdefault((learning.metric, learning.slice), []).append(learning)
+    claims = []
+    for (_, slice_name), members in groups.items():
+        weeks = [f"GW{l.gameweek}" for l in members if l.gameweek is not None]
+        biases = [l.bias for l in members if l.bias is not None]
+        who = plain_slice(slice_name)
+        if biases:
+            mean = sum(biases) / len(biases)
+            size = ("about half a point" if 0.35 <= abs(mean) < 0.75 else
+                    "about a point" if 0.75 <= abs(mean) < 1.5 else
+                    f"about {abs(mean):.1f} points")
+            what = (f"{who} scored {size} per game "
+                    f"{'less' if mean > 0 else 'more'} than the model expected")
+        else:
+            what = f"{who}: {members[0].observation}"
+        when = (", ".join(weeks[:-1]) + f" and {weeks[-1]} both" if len(weeks) > 1
+                else weeks[0] if weeks else "")
+        ids = ", ".join(l.id for l in members)
+        claims.append(f"{what} ({when}; {ids})" if when else f"{what} ({ids})")
+    return f"{len(proposed)} proposed - " + "; ".join(claims)
+
+
 def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
-                 reports: list[PushReport], *, markdown: bool = True) -> list[str]:
+                 reports: list[PushReport], *, markdown: bool = True,
+                 learnings_dir: Path = settle.LEARNINGS_DIR) -> list[str]:
     """The fixed opening block: the same lines in the same order, every run.
 
     Every line is present whether or not there is anything to say, and says "none" or
@@ -863,6 +900,9 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
         parts.append("fired, not delivered: " + ", ".join(r.title for r in undelivered))
     push = "; ".join(parts) if parts else f"nothing fired - all {len(reports)} triggers checked"
 
+    # Learnings.
+    pending = learnings_line(settle.read_learnings(learnings_dir))
+
     # Data.
     failed = [c.label for c in evaluation.checks if c.failed]
     warned = [c.label for c in evaluation.checks if c.level == status.WARN]
@@ -877,7 +917,7 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
 
     rows = [("Move", move), ("Ownership", ownership), ("Wildcard", wildcard),
             ("Availability", availability), ("Deadline", when), ("Push", push),
-            ("Data", data)]
+            ("Learnings", pending), ("Data", data)]
     if markdown:
         return [f"- **{label}:** {text}" for label, text in rows] + [""]
     width = max(len(label) for label, _ in rows) + 1
@@ -888,7 +928,8 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
                  now: Optional[datetime] = None,
                  evaluation: Optional[Evaluation] = None,
                  include_token: bool = True,
-                 notifications_configured: Optional[bool] = None) -> str:
+                 notifications_configured: Optional[bool] = None,
+                 learnings_dir: Path = settle.LEARNINGS_DIR) -> str:
     """The gameweek brief as markdown.
 
     Written for a person holding a phone at 07:00, so the order is what changed, what to
@@ -933,7 +974,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
                   f"priced as though no free transfer exists.", ""]
 
     # 0. The block. Same lines, same order, every run.
-    lines += render_block(conn, evaluation, reports)
+    lines += render_block(conn, evaluation, reports, learnings_dir=learnings_dir)
 
     # 1. What needs you.
     lines += ["## What needs you", ""]
