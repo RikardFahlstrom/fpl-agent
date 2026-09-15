@@ -36,6 +36,28 @@ Deliberately *not* a trigger, at the owner's choice: a held player very likely t
 price. It is the most frequent signal in the whole warehouse and the one most likely to
 become noise, so it stays in the written brief where it can be read rather than pushed.
 
+**The brief opens with the same block every run** - move, ownership, wildcard,
+availability, deadline, push, data - each line saying "none" or "not evaluated" when
+there is nothing, so the reader looks at the same line every time rather than reading
+the page to find out nothing happened (`CONTEXT.md`, *brief*). Under it, "What needs
+you" carries the bodies of whatever fired, "Push" says what became of every trigger,
+and the sections show the working.
+
+**Plain English is a rule, not a style.** Nothing from the code - a trigger name, a
+check level, a slice id - appears without its meaning beside it on first use; internal
+names survive only where a command has to be typed. The owner's own example: a
+learning that says "P(start) 75-100% under-projected by 0.54" means nothing on a phone,
+and "players almost certain to start scored about half a point more per game than the
+model expected" is the same fact. `plain_slice` is where slice names are translated.
+
+**Push states are three words that are not interchangeable** (`CONTEXT.md`, *push*):
+*did not fire* (the condition was not met), *sent <when>* (the phone got it), and
+*fired, not delivered* (it should have and did not - no topic, or the send failed).
+The last is a data problem and the Data line says so, because a push that fired and
+went nowhere must never look like one that had nothing to say. `notify` runs before
+this command in the scheduled jobs so that "sent" can be read from the record rather
+than promised.
+
     fpl-agent brief                      # write logs/gwNN.md for the latest snapshot
     fpl-agent brief --gameweek 3
     fpl-agent brief --dry-run            # print it, and the triggers, and write nothing
@@ -103,6 +125,25 @@ HEADLINE_MAX = 120
 # happened to be appended this run.
 TRIGGER_NAMES = ("status_failed", "squad_player_unavailable", "deadline_with_move",
                  "move_worth_making")
+
+# What each trigger is called on the page. The code names above are what `notify`
+# stores and what a person types; these are what a person reads.
+TRIGGER_TITLES = {
+    "status_failed": "Broken warehouse",
+    "squad_player_unavailable": "A player you own cannot play",
+    "deadline_with_move": "Deadline near with a free transfer unused",
+    "move_worth_making": "A move worth making",
+}
+
+# The calibration slices, in the reader's words. Keyed on the names `settle` writes.
+PLAIN_SLICES = {
+    "all players": "all players",
+    "GKP": "goalkeepers", "DEF": "defenders", "MID": "midfielders", "FWD": "forwards",
+    "P(start) 0-25%": "players unlikely to start",
+    "P(start) 25-50%": "players who might start",
+    "P(start) 50-75%": "players likely to start",
+    "P(start) 75-100%": "players almost certain to start",
+}
 
 # How many ranked transfers the written brief carries. The full list runs to dozens under
 # a wildcard; the tail of it is not a decision anyone makes on a phone.
@@ -186,6 +227,75 @@ class Evaluation:
     state: dict[str, Any]
     deadline: Optional[datetime]
     listing: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PushReport:
+    """What became of one trigger this run, in the three words the owner chose."""
+
+    name: str
+    title: str
+    state: str          # "did not fire" | "sent" | "fired, not delivered"
+    detail: str         # why it did not fire, what was sent, or why it was not
+    when: Optional[str] = None   # sent: when, in the reader's format
+
+    @property
+    def delivered(self) -> bool:
+        return self.state == "sent"
+
+    @property
+    def undelivered(self) -> bool:
+        return self.state == "fired, not delivered"
+
+
+def push_reports(conn: sqlite3.Connection, evaluation: "Evaluation", *,
+                 configured: Optional[bool] = None) -> list[PushReport]:
+    """One report per trigger, fired or not, in reading order.
+
+    "sent" is read from the `notification` table, never inferred: `notify` writes a row
+    only after the server accepted the message, so a row is the fact. A fired trigger
+    with no row is *not delivered*, and the reason is the one thing the brief can know
+    from here - no topic configured, or the send did not happen (it runs before this
+    command in `make now`; by hand, `fpl-agent notify` says why).
+    """
+    if configured is None:
+        from . import notify     # notify imports this module; a local import breaks the cycle
+        configured = notify.target_from_env() is not None
+    sent = storage.sent_notifications(conn, [t.fingerprint for t in evaluation.triggers])
+    reports = []
+    for name in TRIGGER_NAMES:
+        fired = [t for t in evaluation.triggers if t.name == name]
+        if not fired:
+            reports.append(PushReport(name, TRIGGER_TITLES[name], "did not fire",
+                                      evaluation.silent.get(name, "not evaluated")))
+            continue
+        for trigger in fired:
+            when = sent.get(trigger.fingerprint)
+            if when:
+                reports.append(PushReport(name, TRIGGER_TITLES[name], "sent",
+                                          f"{_when(when)}: {trigger.headline}",
+                                          when=_when(when)))
+            elif not configured:
+                reports.append(PushReport(
+                    name, TRIGGER_TITLES[name], "fired, not delivered",
+                    f"no ntfy topic in fpl-agent.ini, so nothing can reach your phone. "
+                    f"{trigger.headline}"))
+            else:
+                reports.append(PushReport(
+                    name, TRIGGER_TITLES[name], "fired, not delivered",
+                    f"not in the sent record; `fpl-agent notify` sends it and says why "
+                    f"if it cannot. {trigger.headline}"))
+    return reports
+
+
+def _when(stamp: str) -> str:
+    parsed = _parse_utc(stamp)
+    return parsed.strftime("%a %d %b %H:%M UTC") if parsed else stamp
+
+
+def plain_slice(name: str) -> str:
+    """A calibration slice in the reader's words, or the name itself when unknown."""
+    return PLAIN_SLICES.get(name, name)
 
 
 def headline(text: str) -> str:
@@ -357,6 +467,31 @@ def unavailable_players(squad: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return flagged
 
 
+def availability_problems(squad: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    """Every squad player either source has a question about, with the reason in words.
+
+    Broader than `unavailable_players`, on purpose: a doubt or an unnamed starter is
+    worth a line on the page even though neither is worth a push.
+    """
+    problems = []
+    for p in squad:
+        if p["status"] in CANNOT_PLAY:
+            reason = CANNOT_PLAY[p["status"]]
+        elif p["status"] == "d":
+            reason = "doubtful" + (f", {p['chance']}% to play" if p["chance"] is not None else "")
+        elif p["status"] not in (None, "a"):
+            reason = f"FPL status `{p['status']}`"
+        elif p["lineup_out"]:
+            reason = "out of the predicted lineup" + (
+                f" ({p['lineup_injury']})" if p["lineup_injury"] else "")
+        elif p["lineup_starter"] is False:
+            reason = "not named a starter in the predicted lineup"
+        else:
+            continue
+        problems.append((p, reason))
+    return problems
+
+
 def falling_holdings(conn: sqlite3.Connection, snapshot_id: int,
                      squad: list[dict[str, Any]],
                      now: Optional[datetime] = None) -> list[pricing.PriceOutlook]:
@@ -486,11 +621,11 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             fingerprint=f"status_failed:gw{gameweek}:{'+'.join(labels)}",
         ))
     else:
-        warned = [c for c in checks if c.level == status.WARN]
+        warned = [c.label for c in checks if c.level == status.WARN]
         silent["status_failed"] = (
             f"all {len(checks)} warehouse checks passed"
-            + (f"; {len(warned)} warn ({', '.join(c.label for c in warned)}), which is "
-               f"not an inconsistency" if warned else ""))
+            + (f"; {', '.join(warned)} {'is' if len(warned) == 1 else 'are'} stale or "
+               f"pending, not broken (the Warehouse table says what)" if warned else ""))
 
     capture = warehouse.latest(conn)
     state = transfer_state(conn)
@@ -525,8 +660,9 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
         silent["squad_player_unavailable"] = (
             "no squad captured on the latest snapshot, so nothing could be checked"
             if not squad else
-            f"all {len(squad)} squad players checked: none flagged `i` or `s` by FPL, "
-            f"none listed OUT in the gameweek {gameweek} predicted lineups")
+            f"all {len(squad)} players you own are fit in FPL's eyes (none injured or "
+            f"suspended) and none is out of the predicted lineups for gameweek "
+            f"{gameweek}")
 
     # 3. deadline_with_move. Every condition is about *this* deadline: it has not passed,
     #    it is close, a free transfer is sitting unused, and there is a positive-net move
@@ -654,10 +790,105 @@ def _table(header: list[str], align: list[str], rows: list[list[str]]) -> list[s
             + ["| " + " | ".join(r) + " |" for r in rows])
 
 
+def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
+                 reports: list[PushReport], *, markdown: bool = True) -> list[str]:
+    """The fixed opening block: the same lines in the same order, every run.
+
+    Every line is present whether or not there is anything to say, and says "none" or
+    "not evaluated" rather than going missing - the whole value of the block is that the
+    reader looks at the same line every time.
+    """
+    state, squad, deadline = evaluation.state, evaluation.squad, evaluation.deadline
+    remaining = None if deadline is None else deadline - evaluation.now
+    listing = evaluation.listing
+    top = listing["moves"][0] if listing["moves"] else None
+    threshold = evaluation.threshold
+
+    # Move.
+    if top is None:
+        move = "none - " + (listing["reason"]
+                            or "no transfer improves the squad within budget")
+    else:
+        bar = ("clears" if top["net_xp_delta"] >= threshold else "under")
+        move = (f"{top['in']['name']} for {top['out']['name']}, net "
+                f"{top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks - "
+                f"{bar} the {threshold:.1f} bar")
+        if state.get("chip"):
+            move += f" ({state['chip']} active: single swaps, not a rebuild)"
+
+    # Ownership - of the move when there is one, of the rivals capture otherwise.
+    if top is not None:
+        ownership = recommend.move_lines(top)[1].replace("Ownership not shown", "not shown")
+    else:
+        source, _ = recommend.ownership_source(conn)
+        ownership = (f"rivals captured for gameweek {source.gameweek} "
+                     f"({source.managers} rivals); no move to measure"
+                     if source.fresh else f"not shown: {source.reason}")
+
+    # Wildcard. The judgement does not exist yet, and the line says so rather than
+    # implying "no" was decided.
+    chip = state.get("wildcard")
+    wildcard = "not evaluated - " + (
+        f"chip {chip}" if chip else
+        "chip state not recorded" + ("" if state.get("known") else " (no squad captured)"))
+
+    # Availability.
+    if not squad:
+        availability = "unknown - no squad captured"
+    else:
+        problems = availability_problems(squad)
+        availability = (f"{len(squad)} of {len(squad)}" if not problems else
+                        f"{len(squad) - len(problems)} of {len(squad)} - "
+                        + ", ".join(f"{p['name']} ({why})" for p, why in problems))
+
+    # Deadline.
+    if deadline is None:
+        when = "unknown - no fixtures recorded"
+    elif remaining < timedelta(0):
+        when = f"{deadline.strftime('%a %d %b %H:%M UTC')} passed {_hours(-remaining)} ago"
+    else:
+        when = f"{deadline.strftime('%a %d %b %H:%M UTC')}, {_hours(remaining)} away"
+    if state.get("known"):
+        free = state["free_transfers"]
+        when += ("; free transfers unknown" if free is None else
+                 f"; {free} free transfer{'' if free == 1 else 's'} unused")
+
+    # Push.
+    delivered = [r for r in reports if r.delivered]
+    undelivered = [r for r in reports if r.undelivered]
+    parts = []
+    if delivered:
+        parts.append("sent: " + ", ".join(f"{r.title} ({r.when})" for r in delivered))
+    if undelivered:
+        parts.append("fired, not delivered: " + ", ".join(r.title for r in undelivered))
+    push = "; ".join(parts) if parts else f"nothing fired - all {len(reports)} triggers checked"
+
+    # Data.
+    failed = [c.label for c in evaluation.checks if c.failed]
+    warned = [c.label for c in evaluation.checks if c.level == status.WARN]
+    if failed:
+        data = f"NOT trustworthy - {', '.join(failed)} failed; see What needs you"
+    elif warned:
+        data = f"trustworthy; stale or pending, not broken: {', '.join(warned)} (see Warehouse)"
+    else:
+        data = f"trustworthy - all {len(evaluation.checks)} checks agree"
+    if undelivered:
+        data += "; a push fired and did not reach your phone (see Push)"
+
+    rows = [("Move", move), ("Ownership", ownership), ("Wildcard", wildcard),
+            ("Availability", availability), ("Deadline", when), ("Push", push),
+            ("Data", data)]
+    if markdown:
+        return [f"- **{label}:** {text}" for label, text in rows] + [""]
+    width = max(len(label) for label, _ in rows) + 1
+    return [f"{label + ':':<{width}} {text}" for label, text in rows]
+
+
 def render_brief(conn: sqlite3.Connection, gameweek: int, *,
                  now: Optional[datetime] = None,
                  evaluation: Optional[Evaluation] = None,
-                 include_token: bool = True) -> str:
+                 include_token: bool = True,
+                 notifications_configured: Optional[bool] = None) -> str:
     """The gameweek brief as markdown.
 
     Written for a person holding a phone at 07:00, so the order is what changed, what to
@@ -672,6 +903,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
     """
     if evaluation is None:
         evaluation = evaluate(conn, gameweek, now=now, include_token=include_token)
+    reports = push_reports(conn, evaluation, configured=notifications_configured)
     now = evaluation.now
     triggers = evaluation.triggers
     capture = evaluation.capture
@@ -700,26 +932,25 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
         lines += [f"> **Transfer state unknown** ({state['reason']}). Moves below are "
                   f"priced as though no free transfer exists.", ""]
 
+    # 0. The block. Same lines, same order, every run.
+    lines += render_block(conn, evaluation, reports)
+
     # 1. What needs you.
     lines += ["## What needs you", ""]
     if triggers:
         for i, trigger in enumerate(triggers, 1):
-            lines += [f"{i}. **{trigger.headline}**", ""]
+            lines += [f"{i}. **{TRIGGER_TITLES[trigger.name]} — {trigger.headline}**", ""]
             lines += [f"   {line}" for line in trigger.detail.splitlines()]
             lines += ["", f"   **Do:** {trigger.action}", ""]
-        lead = "The other triggers were evaluated and declined:"
     else:
         lines += ["Nothing needs you. This brief is a record, not a request.", ""]
-        lead = "Every trigger was evaluated and declined:"
 
-    # Always printed, whether or not something fired. "Nothing needs you" is only worth
-    # anything if it can say what it looked at - a clean report for checks that were
-    # never made is the failure mode this whole project keeps tripping over.
-    quiet = [n for n in TRIGGER_NAMES if n in evaluation.silent]
-    if quiet:
-        lines += [lead, ""]
-        lines += [f"- `{n}` — {evaluation.silent[n]}." for n in quiet]
-        lines.append("")
+    # 2. Push. Always printed, whether or not something fired. "Nothing needs you" is
+    #    only worth anything if it can say what it looked at - a clean report for checks
+    #    that were never made is the failure mode this whole project keeps tripping over.
+    lines += ["## Push", ""]
+    lines += [f"- {r.title} — **{r.state}**: {r.detail.rstrip('.')}." for r in reports]
+    lines.append("")
 
     # 2. Deadline and budget.
     lines += ["## Deadline and transfers", ""]
@@ -750,9 +981,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
         lines += ["No squad captured on the latest snapshot, so availability cannot be "
                   "read. An authenticated snapshot is what records it.", ""]
     else:
-        problems = [p for p in squad
-                    if p["status"] not in (None, "a") or p["lineup_out"]
-                    or p["lineup_starter"] is False]
+        problems = [p for p, _ in availability_problems(squad)]
         if not problems:
             lines += [f"All {len(squad)} squad players are available in FPL and named as "
                       f"starters in the predicted lineups for gameweek {gameweek}.", ""]
@@ -847,13 +1076,15 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
         rows = []
         for group, entries in settled["slices"].items():
             for s in entries:
-                rows.append([group, s.name, str(s.n), f"{s.predicted:.2f}",
+                rows.append([group.replace("_", " "), plain_slice(s.name), str(s.n),
+                             f"{s.predicted:.2f}",
                              f"{s.actual:.2f}", f"{s.bias:+.2f}", f"{s.mae:.2f}"])
         head = (f"Gameweek {settled['gameweek']} under model "
                 f"{settled['model_version']}, {settled['n']} players graded.")
         if overall:
-            head += (f" Overall bias {overall[0].bias:+.2f} (positive means "
-                     f"over-projecting), MAE {overall[0].mae:.2f}.")
+            head += (f" Overall bias {overall[0].bias:+.2f} (predicted minus actual, "
+                     f"per player per game: positive means the model expected too "
+                     f"much), MAE {overall[0].mae:.2f} (average size of the miss).")
         lines += [head, ""]
         lines += _table(["group", "slice", "n", "predicted", "actual", "bias", "MAE"],
                         ["---", "---", "---:", "---:", "---:", "---:", "---:"], rows)

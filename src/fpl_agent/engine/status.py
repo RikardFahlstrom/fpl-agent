@@ -520,9 +520,12 @@ def render(checks: list[Check], db: Path | str, next_line: Optional[str] = None)
         lines.append(f"{len(failed)} inconsistency(ies): "
                      f"{', '.join(c.label for c in failed)}. Exiting {EXIT_INCONSISTENT}.")
     else:
-        warned = [c for c in checks if c.level == WARN]
+        warned = [c.label for c in checks if c.level == WARN]
+        # A warn is a legitimate state a healthy warehouse passes through, not a fault;
+        # the sentence says so, because "1 warn" on its own reads as a problem.
         lines.append("the warehouse agrees with itself" +
-                     (f"; {len(warned)} thing(s) worth a look above" if warned else ""))
+                     (f"; {len(warned)} thing(s) stale or pending, not broken: "
+                      f"{', '.join(warned)} - see above" if warned else ""))
     if next_line:
         lines.append(next_line)
     return "\n".join(lines)
