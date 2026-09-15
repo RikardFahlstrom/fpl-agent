@@ -16,7 +16,7 @@ the held squad, free hit and wildcard from a rebuilt one).
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import squad as squads
@@ -133,6 +133,9 @@ class Pick:
     xp: float
     fixtures: int
     is_captain: bool     # the armband as captured
+    opponents: tuple[str, ...] = ()       # "BHA away", one per fixture
+    difficulties: tuple[int, ...] = ()    # FPL's 1-5, one per fixture
+    components: dict[str, float] = field(default_factory=dict)  # the xP by source
 
 
 def captain_picks(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
@@ -159,8 +162,8 @@ def captain_picks(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
     ids = [p["element_id"] for p in xi]
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
-        f"""SELECT pr.element_id, p.web_name, t.short_name AS team,
-                   pr.expected_points, pr.fixture_count
+        f"""SELECT pr.element_id, p.web_name, p.team_id, t.short_name AS team,
+                   pr.expected_points, pr.fixture_count, pr.difficulties, pr.components
             FROM projection pr
             JOIN player p ON p.element_id = pr.element_id
             LEFT JOIN team t ON t.id = p.team_id
@@ -169,10 +172,29 @@ def captain_picks(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
             ORDER BY pr.expected_points DESC""",
         (snapshot_id, gameweek, model_version, *ids)).fetchall()
     armband = {p["element_id"] for p in xi if (p.get("multiplier") or 1) > 1}
+    opponents = _opponents(conn, gameweek)
     return [Pick(r["element_id"], r["web_name"], r["team"] or "?",
                  round(r["expected_points"], 2), r["fixture_count"] or 0,
-                 r["element_id"] in armband)
+                 r["element_id"] in armband,
+                 tuple(opponents.get(r["team_id"], ())),
+                 tuple(json.loads(r["difficulties"] or "[]")),
+                 json.loads(r["components"] or "{}"))
             for r in rows]
+
+
+def _opponents(conn: sqlite3.Connection, gameweek: int) -> dict[int, list[str]]:
+    """Each team's opponents in the gameweek as "BHA away", in kickoff order."""
+    rows = conn.execute(
+        """SELECT f.team_h, f.team_a, th.short_name AS home, ta.short_name AS away
+           FROM fixture f
+           LEFT JOIN team th ON th.id = f.team_h
+           LEFT JOIN team ta ON ta.id = f.team_a
+           WHERE f.event = ? ORDER BY f.kickoff_time""", (gameweek,)).fetchall()
+    out: dict[int, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["team_h"], []).append(f"{r['away'] or '?'} at home")
+        out.setdefault(r["team_a"], []).append(f"{r['home'] or '?'} away")
+    return out
 
 
 def captain_line(picks: list[Pick]) -> str:
@@ -194,6 +216,57 @@ def captain_line(picks: list[Pick]) -> str:
     else:
         text += f" - armband is on {held.name} ({held.xp:.1f})"
     return text
+
+
+#: How `components` keys read in a sentence.
+_SOURCES = (("goals", "goals"), ("assists", "assists"), ("clean_sheet", "clean sheet"),
+            ("bonus", "bonus"), ("saves", "saves"),
+            ("defensive_contribution", "defensive contribution"))
+
+#: Below this, a source is not worth a word; below this gap, two picks are a coin flip.
+_SOURCE_FLOOR = 0.25
+_COIN_FLIP = 0.3
+
+
+def captain_why(picks: list[Pick], *, short: bool = False) -> str:
+    """Why the pick is the pick: the fixture and what the xP is made of, then how far
+    the runner-up and the armband holder are behind. `short` keeps the first
+    sentence only, for a push.
+
+    The numbers are the projection's own, so the reader can argue with the model
+    rather than with a name. Empty when there is nothing to explain.
+    """
+    if not picks:
+        return ""
+    best = picks[0]
+    first = ""
+    if best.opponents:
+        fixture = " and ".join(best.opponents)
+        if best.difficulties:
+            fixture += " (difficulty " + "/".join(str(d) for d in best.difficulties) + ")"
+        first = f"{best.name} faces {fixture}"
+    sources = sorted(((label, best.components.get(key, 0.0)) for key, label in _SOURCES
+                      if best.components.get(key, 0.0) >= _SOURCE_FLOOR),
+                     key=lambda kv: -kv[1])[:3]
+    if sources:
+        made = ", ".join(f"{v:.1f} from {label}" for label, v in sources)
+        first = (f"{first}; the {best.xp:.1f} xP is {made}" if first
+                 else f"{best.name}'s {best.xp:.1f} xP is {made}")
+    second = ""
+    if len(picks) > 1 and not short:
+        runner = picks[1]
+        gap = best.xp - runner.xp
+        parts = [f"{runner.name} is {gap:.1f} behind" if gap >= 0.05
+                 else f"{runner.name} is level"]
+        held = next((p for p in picks if p.is_captain), None)
+        if held is not None and held is not best and held is not runner:
+            parts.append(f"{held.name} {best.xp - held.xp:.1f} behind")
+        second = ", ".join(parts)
+        if gap < _COIN_FLIP:
+            second += ", so the armband is a coin flip"
+        elif held is not None and held is not best:
+            second += ", so moving the armband is worth doing"
+    return " ".join(f"{t}." for t in (first, second) if t)
 
 
 # --------------------------------------------------------------------------

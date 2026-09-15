@@ -572,6 +572,22 @@ def _move_id(move: dict[str, Any]) -> str:
     return f"{move['out']['element_id']}->{move['in']['element_id']}"
 
 
+def _captain_line(conn: sqlite3.Connection, capture, gameweek: int,
+                  squad: list[dict[str, Any]]) -> list[str]:
+    """The push's captain line, on the captured XI: who, and one sentence why.
+
+    Nothing when there is no squad or no projection - the push is about the move, and
+    a captain line that says "not evaluated" would be noise on a lock screen.
+    """
+    if not (capture and squad):
+        return []
+    picks = chips.captain_picks(conn, capture.id, gameweek, MODEL_VERSION)
+    if not picks:
+        return []
+    why = chips.captain_why(picks, short=True)
+    return [f"- Captain: {chips.captain_line(picks)}" + (f". {why}" if why else "")]
+
+
 def _deadline_line(deadline: Optional[datetime], remaining: Optional[timedelta]) -> str:
     if deadline is None:
         return "- Deadline: none derived (no fixtures recorded)"
@@ -768,6 +784,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                 *(f"- {line}" for line in recommend.move_lines(top)),
                 f"- Net {top['net_xp_delta']:+.2f} clears the {threshold:.1f} bar. "
                 f"Price: {top['affordability']['reason']}",
+                *_captain_line(conn, capture, gameweek, squad),
                 _deadline_line(deadline, remaining),
             ]),
             action=(f"Make {top['in']['name']} for {top['out']['name']}, or record why "
@@ -917,6 +934,9 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
     picks = (chips.captain_picks(conn, capture.id, evaluation.gameweek, MODEL_VERSION)
              if capture and squad else [])
     captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
+    why = chips.captain_why(picks)
+    if why:
+        captain += f". {why}"
 
     # Chips: one clause per chip, then the wall.
     chip_line = (chips.chips_line(evaluation.chips, evaluation.gameweek) if squad
