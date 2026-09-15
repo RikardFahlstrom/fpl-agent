@@ -218,3 +218,29 @@ on its own; the `/fpl-learn` skill does it when the owner says so, in plain word
 learning at a time. Two drafts naming the same slice in consecutive rounds are the
 signal a single draft asks the reader to wait for, and the brief says so when it
 happens.
+
+## chip
+
+One of FPL's four - bench boost, triple captain, free hit, wildcard - as FPL reports it for
+the entry: a status (available, active, played) and a window (`start_event` to
+`stop_event`). Two sets a season, each with a wall; nothing in the code hardcodes that,
+the window is read from the payload. A chip is *evaluable* when it is available and its
+window covers the gameweek; anything else is reported as it is (played in GW3, not until
+GW20, expired) and never valued.
+
+## chip value
+
+What a chip would add in one gameweek, on the squad after the recommended move: the
+bench's projected points (bench boost), the best XI player's projected points (triple
+captain), the best legal rebuilt squad against the held one for that week (free hit) or
+over the wildcard horizon (wildcard). One value per week from the target to the wall,
+read from stored projections - which is why the capture projects the *chip window*.
+
+## chip window
+
+Every gameweek from the target to the wall of the set in play, projected and stored on
+each capture so a verdict is re-readable later. Only the next gameweek has predicted
+lineups; the rest are rates against fixtures, which is why the current week tends to
+look best and why a verdict needs two gates: the chip's *bar* (a stated number of
+points) and being the best remaining week within a noise band. Under the bar is hold,
+whatever the window says.

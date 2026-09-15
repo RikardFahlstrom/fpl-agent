@@ -124,7 +124,7 @@ HEADLINE_MAX = 120
 # report on a trigger that did *not* fire: the set is a fixed contract, not whatever
 # happened to be appended this run.
 TRIGGER_NAMES = ("status_failed", "squad_player_unavailable", "deadline_with_move",
-                 "move_worth_making")
+                 "move_worth_making", "chip_worth_playing")
 
 # What each trigger is called on the page. The code names above are what `notify`
 # stores and what a person types; these are what a person reads.
@@ -133,6 +133,7 @@ TRIGGER_TITLES = {
     "squad_player_unavailable": "A player you own cannot play",
     "deadline_with_move": "Deadline near with a free transfer unused",
     "move_worth_making": "A move worth making",
+    "chip_worth_playing": "A chip worth playing",
 }
 
 # The calibration slices, in the reader's words. Keyed on the names `settle` writes.
@@ -227,6 +228,7 @@ class Evaluation:
     state: dict[str, Any]
     deadline: Optional[datetime]
     listing: dict[str, Any]
+    chips: list[chips.Verdict]
 
 
 @dataclass(frozen=True)
@@ -773,10 +775,56 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             fingerprint=f"move_worth_making:gw{gameweek}:{_move_id(top)}",
         ))
 
+    # 5. chip_worth_playing, one per chip that clears its bar this week. Valued on the
+    #    squad after the recommended move, so this and the move advice agree.
+    verdicts = (chips.evaluate(conn, capture.id, gameweek, MODEL_VERSION,
+                               chips.apply_move(squad, top))
+                if capture and squad else [])
+    playable = [v for v in verdicts if v.play_now]
+    if remaining is not None and remaining < timedelta(0):
+        playable = []
+    for verdict in playable:
+        triggers.append(Trigger(
+            name="chip_worth_playing",
+            headline=headline(f"Play your {verdict.title} this gameweek: "
+                              f"+{verdict.now.value:.1f} ({verdict.now.note})"),
+            detail="\n".join([
+                f"- {verdict.title.capitalize()} {verdict.reason}",
+                f"- Best other week: GW{_runner_up(verdict).gameweek} "
+                f"(+{_runner_up(verdict).value:.1f}, {_runner_up(verdict).note})"
+                if _runner_up(verdict) else "- No other week to compare against",
+                *(["- Valued on the squad after the recommended move "
+                   f"({top['in']['name']} for {top['out']['name']})"] if top else []),
+                _deadline_line(deadline, remaining),
+            ]),
+            action=(f"Play the {verdict.title} before "
+                    f"{deadline.strftime('%a %d %b %H:%M UTC') if deadline else 'the deadline'}"
+                    f", or record why not with `fpl-agent recommend --record --chip "
+                    f"{verdict.state.name}`."),
+            fingerprint=f"chip_worth_playing:gw{gameweek}:{verdict.state.name}",
+        ))
+    if not playable:
+        evaluated = [v for v in verdicts if v.evaluated]
+        if not verdicts:
+            silent["chip_worth_playing"] = "no chips captured, so none could be valued"
+        elif not evaluated:
+            silent["chip_worth_playing"] = "no chip is available to value this gameweek"
+        elif remaining is not None and remaining < timedelta(0):
+            silent["chip_worth_playing"] = (f"the gameweek {gameweek} deadline has "
+                                            f"passed, so no chip can be played for it")
+        else:
+            silent["chip_worth_playing"] = "; ".join(
+                f"{v.title} {v.reason}" for v in evaluated)
+
     return Evaluation(gameweek=gameweek, now=now, threshold=threshold,
                       triggers=triggers, silent=silent, checks=checks,
                       capture=capture, squad=squad, state=state,
-                      deadline=deadline, listing=listing)
+                      deadline=deadline, listing=listing, chips=verdicts)
+
+
+def _runner_up(verdict: chips.Verdict) -> Optional[chips.ChipValue]:
+    others = [v for v in verdict.values if v.gameweek != verdict.now.gameweek]
+    return max(others, key=lambda v: v.value) if others else None
 
 
 # --------------------------------------------------------------------------
@@ -868,12 +916,9 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
              if capture and squad else [])
     captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
 
-    # Wildcard. The judgement does not exist yet, and the line says so rather than
-    # implying "no" was decided.
-    chip = state.get("wildcard")
-    wildcard = "not evaluated - " + (
-        f"chip {chip}" if chip else
-        "chip state not recorded" + ("" if state.get("known") else " (no squad captured)"))
+    # Chips: one clause per chip, then the wall.
+    chip_line = (chips.chips_line(evaluation.chips, evaluation.gameweek) if squad
+                 else "not evaluated - no squad captured")
 
     # Availability.
     if not squad:
@@ -922,7 +967,7 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
         data += "; a push fired and did not reach your phone (see Push)"
 
     rows = [("Move", move), ("Ownership", ownership), ("Captain", captain),
-            ("Wildcard", wildcard),
+            ("Chips", chip_line),
             ("Availability", availability), ("Deadline", when), ("Push", push),
             ("Learnings", pending), ("Data", data)]
     if markdown:
@@ -1071,6 +1116,51 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
     else:
         lines += ["No held player is Very Likely to fall at the next update "
                   "(FPL's own rule: predicted progress past -100%).", ""]
+
+    # 4b. Chips: the week-by-week working behind the line.
+    lines += ["## Chips", ""]
+    valued = [v for v in evaluation.chips if v.values]
+    if not evaluation.chips:
+        lines += ["No chips captured - an authenticated snapshot records them.", ""]
+    else:
+        lines += [f"- {v.title.capitalize()}: {v.reason}." for v in evaluation.chips]
+        lines.append("")
+        if valued:
+            weeks = sorted({x.gameweek for v in valued for x in v.values})
+            by_chip = {v.title: {x.gameweek: x for x in v.values} for v in valued}
+            rows = []
+            last_note: dict[str, str] = {}
+            for week in weeks:
+                cells = []
+                for title in by_chip:
+                    x = by_chip[title].get(week)
+                    if x is None:
+                        cells.append("-")
+                        continue
+                    # The names only when they change, so a bench that is the same
+                    # fifteen weeks running is not written fifteen times.
+                    cell = f"+{x.value:.1f}"
+                    if last_note.get(title) != x.note:
+                        cell += f" ({x.note})"
+                        last_note[title] = x.note
+                    cells.append(cell)
+                rows.append([f"GW{week}" + (" *" if week == gameweek else ""), *cells])
+            lines += _table(["week", *by_chip], ["---", *["---:"] * len(by_chip)], rows)
+            wall = chips.window_end([v.state for v in evaluation.chips], gameweek)
+            reach = (f"The set expires after GW{wall}" if wall else
+                     "No expiry is recorded for this set")
+            if wall and weeks[-1] < wall:
+                reach += (f"; weeks GW{weeks[-1] + 1}-GW{wall} are not projected yet "
+                          f"(`project --chips`)")
+            lines += ["",
+                      f"Values are what the chip would add that week, on the squad after "
+                      f"the recommended move. Only the next gameweek has predicted "
+                      f"lineups; every later week is the player's rates against that "
+                      f"week's fixtures, which is why this week tends to look best and "
+                      f"why a chip also has to clear its bar (bench boost "
+                      f"{chips.CHIP_BARS['bboost']:.0f}, triple captain "
+                      f"{chips.CHIP_BARS['3xc']:.0f}). {reach}.",
+                      ""]
 
     # 5. The ranked list.
     lines += [f"## Transfers ranked (net xP over {HORIZON_GAMEWEEKS} gameweeks)", ""]

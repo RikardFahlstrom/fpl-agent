@@ -88,9 +88,12 @@ make brief           # write logs/gwNN.md: what changed and what needs you
 make test
 ```
 
-**Reading the brief.** `logs/gwNN.md` opens with the same seven lines every run — Move,
-Ownership, Wildcard, Availability, Deadline, Push, Data — each saying "none" or "not
-evaluated" when there is nothing, so you look at the same line every time. Ownership is
+**Reading the brief.** `logs/gwNN.md` opens with the same lines every run — Move,
+Ownership, Captain, Chips, Availability, Deadline, Push, Learnings, Data — each saying
+"none" or "not evaluated" when there is nothing, so you look at the same line every time.
+Chips are valued week by week to the set's expiry (`project --chips` projects that far)
+and suggested only when this week clears the chip's bar *and* is the best remaining week
+within a noise band; the `## Chips` section shows the working. Ownership is
 how many of the rivals in your leagues hold each player, and is withheld (with the reason)
 when the rival picks are older than the last finished gameweek. The Push line uses three
 words that are not interchangeable: *did not fire*, *sent <when>*, and *fired, not

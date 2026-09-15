@@ -537,6 +537,35 @@ def record_decision(conn: sqlite3.Connection, recommendation: dict[str, Any],
     return cur.lastrowid
 
 
+def record_chip(conn: sqlite3.Connection, verdict: Any, status: str = "made") -> int:
+    """Write a `chip` decision: the owner says they played (or are playing) this chip.
+
+    Same invariant as `record_decision`: a claim about what they did, written only when
+    they say so. The payload is the verdict's week-by-week values, so the record holds
+    what the model believed about every other week when the chip was spent.
+    """
+    now = verdict.now
+    rationale = (f"{verdict.title} played in gameweek {verdict.gameweek}: {verdict.reason}"
+                 if now else f"{verdict.title} played in gameweek {verdict.gameweek} "
+                             f"with no value recorded ({verdict.reason})")
+    payload = {
+        "chip": verdict.state.name, "gameweek": verdict.gameweek,
+        "play_now": verdict.play_now, "reason": verdict.reason,
+        "values": [{"gameweek": v.gameweek, "value": v.value, "note": v.note}
+                   for v in verdict.values],
+    }
+    cur = conn.execute(
+        """INSERT INTO decision (created_at, gameweek, model_version, kind, payload,
+                                 rationale, urgency, xp_delta, status)
+           VALUES (?, ?, ?, 'chip', ?, ?, 'none', ?, ?)""",
+        (datetime.now(timezone.utc).isoformat(), verdict.gameweek, MODEL_VERSION,
+         json.dumps(payload, sort_keys=True), rationale,
+         now.value if now else 0.0, status),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
 def export_actions(conn: sqlite3.Connection, path: Path = ACTIONS_LOG) -> int:
     """Write the decision log to JSONL.
 
@@ -564,6 +593,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--top", type=int, default=8)
     parser.add_argument("--record", action="store_true",
                         help="log the top recommendation as the transfer you made")
+    parser.add_argument("--chip", choices=("bboost", "3xc", "freehit", "wildcard"),
+                        help="with --record: log that you played this chip this "
+                             "gameweek instead of recording the transfer")
     parser.add_argument("--actions-log", type=Path, default=ACTIONS_LOG)
     args = parser.parse_args(argv)
 
@@ -591,9 +623,26 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("\n".join(brief.render_block(
                 conn, evaluation, brief.push_reports(conn, evaluation), markdown=False)))
         print(render(context, recommendations, args.weeks))
+
+        if args.record and args.chip:
+            from . import chips
+            capture = warehouse.latest(conn)
+            squad = [dict(r) for r in _squad(conn, capture.id)]
+            verdicts = chips.evaluate(conn, capture.id, capture.gameweek, MODEL_VERSION,
+                                      chips.apply_move(squad, recommendations[0]
+                                                       if recommendations else None))
+            verdict = next((v for v in verdicts if v.state.name == args.chip), None)
+            if verdict is None:
+                print(f"\n{args.chip} is not in the captured chips; nothing recorded",
+                      file=sys.stderr)
+                return 1
+            decision_id = record_chip(conn, verdict)
+            written = export_actions(conn, args.actions_log)
+            print(f"\nrecorded chip decision {decision_id} ({verdict.title}); "
+                  f"{written} decisions in {args.actions_log}")
+            return 0
         if not recommendations:
             return 0
-
         if args.record:
             decision_id = record_decision(conn, recommendations[0])
             written = export_actions(conn, args.actions_log)
