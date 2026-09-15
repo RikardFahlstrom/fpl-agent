@@ -259,6 +259,71 @@ class AutoTests(ScheduleTestCase):
                             for skip in plan.skipped), plan.skipped)
 
 
+class PicksTests(ScheduleTestCase):
+    """The rival picks are refreshed by the daily job once they fall behind.
+
+    Stale ownership - picks older than the last finished gameweek - is withheld from
+    the brief, so leaving the picks to the deadline window meant the Ownership line
+    read "not shown" from Tuesday to Friday every week.
+    """
+
+    def test_picks_behind_the_last_finished_gameweek_are_refreshed_daily(self):
+        self.w.rivals(1)             # gameweeks 1 and 2 have finished; picks are from 1
+        self.conn.commit()
+        plan = self.due("daily")
+        self.assertEqual(commands(plan)[:5], [
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3",
+            "rivals --standings-only", "rivals"])
+        [step] = [s for s in plan.steps if s.invocation == "rivals"]
+        self.assertIn("gameweek 1", step.reason)
+        self.assertIn("gameweek 2 has finished", step.reason)
+
+    def test_current_picks_are_a_skip_that_says_ownership_is_fresh(self):
+        self.w.rivals(2)
+        self.conn.commit()
+        plan = self.due("daily")
+        self.assertNotIn("rivals", commands(plan))
+        self.assertTrue(any("ownership is fresh" in skip.reason for skip in plan.skipped),
+                        plan.skipped)
+
+    def test_no_picks_at_all_with_a_known_league_are_captured(self):
+        self.w.rivals(2)
+        self.conn.execute("DELETE FROM rival_squad")
+        self.conn.commit()
+        self.assertIn("rivals", commands(self.due("daily")))
+
+    def test_the_hourly_job_does_not_refresh_them_outside_the_window(self):
+        self.w.rivals(1)
+        self.conn.commit()
+        self.kickoff(80)
+        self.assertEqual(self.due("deadline").steps, ())
+
+    def test_auto_inside_the_window_captures_them_once(self):
+        self.w.rivals(1)
+        self.conn.commit()
+        self.kickoff(5)
+        cmds = commands(self.due("auto"))
+        self.assertEqual(cmds.count("rivals"), 1)
+        self.assertLess(cmds.index("rivals"), cmds.index("recommend"))
+
+    def test_the_reading_carries_both_gameweeks(self):
+        self.w.rivals(1)
+        self.conn.commit()
+        reading = schedule.read(self.conn)
+        self.assertEqual((reading.rivals_gameweek, reading.last_finished), (1, 2))
+        self.assertTrue(reading.picks_behind)
+        self.assertFalse(schedule.Reading(rivals_gameweek=2, last_finished=2).picks_behind)
+
+
+    def test_no_finished_gameweek_means_nothing_to_capture_yet(self):
+        # Pre-season with a known league: behind, but there are no picks to fetch.
+        plan = schedule.due("daily", now=NOW, settings=schedule.Settings(),
+                            warehouse=schedule.Reading(league_known=True))
+        self.assertNotIn("rivals", commands(plan))
+        self.assertTrue(any("no gameweek has finished" in skip.reason
+                            for skip in plan.skipped), plan.skipped)
+
+
 class StandingsTests(ScheduleTestCase):
     """The league table is part of the capture, not of the ranking half (issue #49).
 

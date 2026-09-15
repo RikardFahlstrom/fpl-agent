@@ -92,7 +92,9 @@ recovered, and every projection is tied to the capture it was made from.
 
 Inside the schedule, "the capture" is a step group rather than a single step —
 `snapshot --force`, the backfill on the jobs that learn from results, `project`, and the
-league table refresh (`rivals --standings-only`, planned once a league is known).
+league table refresh (`rivals --standings-only`, planned once a league is known) — and,
+on the jobs that learn from results, the rival picks when they are behind the last
+finished gameweek, because *stale ownership* is withheld rather than shown.
 A capture is not finished until it has been projected: leaving those separately gated is
 what used to leave the warehouse holding a snapshot with no projections between Tuesday
 and Friday, which `status` calls an inconsistency and exits 7 for. The table refresh is
