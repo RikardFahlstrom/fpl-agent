@@ -899,7 +899,9 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
                 f"{top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks - "
                 f"{bar} the {threshold:.1f} bar")
         if state.get("chip"):
-            move += f" ({state['chip']} active: single swaps, not a rebuild)"
+            move += f" ({state['chip'].replace('freehit', 'free hit')} active: single swaps, not a rebuild)"
+        elif any(v.play_now and v.state.name == "wildcard" for v in evaluation.chips):
+            move += " - moot if you play the wildcard (see Chips)"
 
     # Ownership - of the move when there is one, of the rivals capture otherwise.
     if top is not None:
@@ -1146,6 +1148,11 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
                     cells.append(cell)
                 rows.append([f"GW{week}" + (" *" if week == gameweek else ""), *cells])
             lines += _table(["week", *by_chip], ["---", *["---:"] * len(by_chip)], rows)
+            for v in valued:
+                if v.play_now and v.now.squad:
+                    lines += ["", f"The {v.title} squad for GW{v.now.gameweek} "
+                                  f"(XI first, then bench): "
+                                  + "; ".join(v.now.squad) + "."]
             wall = chips.window_end([v.state for v in evaluation.chips], gameweek)
             reach = (f"The set expires after GW{wall}" if wall else
                      "No expiry is recorded for this set")
@@ -1159,7 +1166,11 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
                       f"week's fixtures, which is why this week tends to look best and "
                       f"why a chip also has to clear its bar (bench boost "
                       f"{chips.CHIP_BARS['bboost']:.0f}, triple captain "
-                      f"{chips.CHIP_BARS['3xc']:.0f}). {reach}.",
+                      f"{chips.CHIP_BARS['3xc']:.0f}, free hit "
+                      f"{chips.CHIP_BARS['freehit']:.0f} over the held squad, wildcard "
+                      f"{chips.CHIP_BARS['wildcard']:.0f} over {chips.WILDCARD_HORIZON} "
+                      f"weeks). A rebuild is the best legal fifteen today's prices buy "
+                      f"with bank plus selling prices. {reach}.",
                       ""]
 
     # 5. The ranked list.
