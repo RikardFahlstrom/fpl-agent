@@ -25,6 +25,7 @@ import json
 import logging
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -71,6 +72,61 @@ def ownership_profile(effective_ownership: Optional[float]) -> str:
     if effective_ownership <= DIFFERENTIAL_EO:
         return "differential"
     return "balanced"
+
+
+@dataclass(frozen=True)
+class OwnershipSource:
+    """Which rival picks ownership is measured from, and whether they are fresh.
+
+    Picks for a round exist only after its deadline, so before the GW5 deadline the
+    freshest possible picks are GW4's. Picks older than the last *finished* gameweek
+    are stale, and stale ownership is not shown anywhere - not in the brief, the table,
+    the push or the ranking - because a number from two rounds ago is not a caveat, it
+    is a wrong number at exactly the point the edge lives (`CONTEXT.md`, *stale
+    ownership*). Never captured reads the same way. `status.check_rivals` warns on the
+    identical comparison, so the two cannot disagree about what stale means.
+    """
+
+    gameweek: Optional[int]        # the rivals gameweek; None when never captured
+    last_finished: Optional[int]   # the ledger's last finished gameweek; None if none
+    managers: int = 0              # rivals in the configured leagues at that gameweek
+
+    @property
+    def fresh(self) -> bool:
+        if self.gameweek is None or not self.managers:
+            return False
+        return self.last_finished is None or self.gameweek >= self.last_finished
+
+    @property
+    def reason(self) -> Optional[str]:
+        """Why ownership is not shown, in the reader's words; None when it is."""
+        if self.fresh:
+            return None
+        if self.gameweek is None or not self.managers:
+            return "rivals have never been captured - run `make rivals`"
+        return (f"rivals were last captured for gameweek {self.gameweek} and gameweek "
+                f"{self.last_finished} has finished - run `make rivals`")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"gameweek": self.gameweek, "last_finished": self.last_finished,
+                "managers": self.managers, "fresh": self.fresh, "reason": self.reason}
+
+
+def ownership_source(conn: sqlite3.Connection) -> tuple[OwnershipSource, dict[int, dict]]:
+    """The source and, when it is fresh, the ownership map keyed by element id.
+
+    The map is empty whenever the source is not fresh, so a caller cannot show a stale
+    number by forgetting to check.
+    """
+    row = conn.execute("SELECT MAX(gameweek) AS gw FROM rival_squad").fetchone()
+    gameweek = row["gw"] if row and row["gw"] else None
+    finished = warehouse.gameweeks(conn, MODEL_VERSION).finished()
+    last_finished = finished[-1] if finished else None
+    ownership = (rivals.league_ownership(conn, gameweek, rivals.configured_league_ids())
+                 if gameweek else {})
+    managers = next((e["managers"] for e in ownership.values()), 0)
+    source = OwnershipSource(gameweek, last_finished, managers)
+    return source, (ownership if source.fresh else {})
 
 
 def _squad(conn: sqlite3.Connection, snapshot_id: int) -> list[sqlite3.Row]:
@@ -207,13 +263,9 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     outlooks = pricing.price_outlooks(conn, capture.id)
     team_limit = _team_limit(conn)
 
-    # Ownership comes from the most recent gameweek rivals were captured for; squads are
-    # only public once a gameweek has started, so this necessarily lags the target one.
-    row = conn.execute("SELECT MAX(gameweek) AS gw FROM rival_squad").fetchone()
-    ownership = (
-        rivals.league_ownership(conn, row["gw"], rivals.configured_league_ids())
-        if row and row["gw"] else {}
-    )
+    # Ownership comes from the most recent gameweek rivals were captured for, and only
+    # when that is not behind the last finished gameweek - see `OwnershipSource`.
+    source, ownership = ownership_source(conn)
 
     owned = {row["element_id"] for row in squad}
     club_counts: dict[int, int] = {}
@@ -270,33 +322,21 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
             if net <= 0:
                 continue
 
-            # With rivals captured, absence from every squad is 0% ownership - the
-            # strongest differential - rather than an absence of information.
-            def eo(element_id: int) -> Optional[float]:
-                if not ownership:
-                    return None
-                entry = ownership.get(element_id)
-                return entry["effective_ownership"] if entry else 0.0
-
-            in_eo = eo(cand["element_id"])
-            out_eo = eo(out_row["element_id"])
-
             recommendations.append({
                 "gameweek": capture.gameweek,
                 "horizon": weeks,
                 "out": {"element_id": out_row["element_id"], "name": out_row["web_name"],
                         "selling_price": selling, "xp": round(out_xp, 2),
                         "slot": "xi" if starts else "bench",
-                        "league_eo": round(out_eo, 3) if out_eo is not None else None,
-                        "profile": ownership_profile(out_eo)},
+                        **_ownership_fields(ownership, out_row["element_id"])},
                 "in": {"element_id": cand["element_id"], "name": cand["web_name"],
                        "team": cand["team"], "now_cost": cand["now_cost"],
                        "xp": round(totals.get(cand["element_id"], 0.0), 2),
                        # A doubt already discounted the xP above; it is carried through
                        # so the reader is told, not so it can be charged again.
                        "status": cand["status"], "chance": cand["chance"],
-                       "league_eo": round(in_eo, 3) if in_eo is not None else None,
-                       "profile": ownership_profile(in_eo)},
+                       **_ownership_fields(ownership, cand["element_id"])},
+                "ownership": source.as_dict(),
                 "xp_delta": round(gain, 2),
                 "raw_xp_delta": round(raw_gain, 2),
                 "net_xp_delta": round(net, 2),
@@ -314,6 +354,57 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     recommendations.sort(
         key=lambda r: (-r["net_xp_delta"], urgency_rank.get(r["urgency"], 9)))
     return recommendations[:limit]
+
+
+def _ownership_fields(ownership: dict[int, dict], element_id: int) -> dict[str, Any]:
+    """The four ownership facts a move carries for one player.
+
+    With fresh rivals, absence from every squad is 0% ownership - the strongest
+    differential - rather than an absence of information. Without them every field is
+    None and the profile is "unknown"; `move_lines` says why instead of a number.
+    """
+    if not ownership:
+        return {"owned_by": None, "managers": None, "league_eo": None,
+                "profile": ownership_profile(None)}
+    entry = ownership.get(element_id)
+    managers = next(e["managers"] for e in ownership.values())
+    owned_by = entry["owned_by"] if entry else 0
+    eo = entry["effective_ownership"] if entry else 0.0
+    return {"owned_by": owned_by, "managers": managers, "league_eo": round(eo, 3),
+            "profile": ownership_profile(eo)}
+
+
+def _share(player: dict[str, Any]) -> str:
+    return (f"{player['name']} owned by {player['owned_by']} of {player['managers']} "
+            f"rivals ({player['owned_by'] / player['managers']:.0%})")
+
+
+def move_lines(move: dict[str, Any]) -> list[str]:
+    """One move, as the lines every channel prints: what it is worth, who owns whom.
+
+    The brief, the push, the terminal and the recorded rationale all render a move
+    through here, so no two of them can disagree about what a move is. Plain English
+    throughout: ownership is "how many of the rivals you are racing hold him", and when
+    it cannot be said the line says why rather than going missing.
+    """
+    weeks = move["horizon"]
+    worth = f"+{move['xp_delta']:.2f} xP over {weeks} gameweeks"
+    if move["out"]["slot"] == "bench":
+        worth += (f" (bench slot: discounted from +{move['raw_xp_delta']:.2f}, because "
+                  f"the bench only scores through substitutions)")
+    if move.get("chip"):
+        worth += f", no hit ({move['chip']} active)"
+    elif move["hit_cost"]:
+        worth += f"; net +{move['net_xp_delta']:.2f} after a {move['hit_cost']}-point hit"
+    else:
+        free = move.get("free_transfers")
+        worth += ", free transfer" + (f" ({free} unused)" if free else "")
+    lines = [worth]
+    if move["in"]["managers"]:
+        lines.append(f"{_share(move['in'])} · {_share(move['out'])}")
+    else:
+        lines.append(f"Ownership not shown: {move['ownership']['reason']}")
+    return lines
 
 
 def banner(context: dict[str, Any]) -> str:
@@ -357,6 +448,11 @@ def render(context: dict[str, Any], recommendations: list[dict[str, Any]],
             f"No transfer improves the squad over the horizon within budget{tail}.")
         return "\n".join(lines)
 
+    # Stale or missing rivals are one fact about the list, not one per line.
+    source = recommendations[0]["ownership"]
+    if not source["fresh"]:
+        lines.append(f"Ownership not shown: {source['reason']}.")
+
     lines += ["", f"Transfer candidates over the next {weeks} gameweeks", ""]
     for i, r in enumerate(recommendations, 1):
         flag = {"tonight": "ACT TONIGHT", "soon": "watch price",
@@ -365,31 +461,16 @@ def render(context: dict[str, Any], recommendations: list[dict[str, Any]],
         lines.append(f"{i}. {r['in']['name']} ({r['in']['team']}) "
                      f"£{r['in']['now_cost'] / 10:.1f}m  for  {r['out']['name']} "
                      f"£{r['out']['selling_price'] / 10:.1f}m{bench}")
-        worth = (f"+{r['xp_delta']} xP over {weeks}gw "
-                 f"({r['out']['xp']} -> {r['in']['xp']})")
-        if r["out"]["slot"] == "bench":
-            worth += (f", discounted from +{r['raw_xp_delta']} because the bench "
-                      f"only scores through substitutions")
-        if r["hit_cost"]:
-            worth += (f"; net +{r['net_xp_delta']} after the "
-                      f"{r['hit_cost']}-point hit")
-        lines.append(f"   {worth}" + (f"   [{flag}]" if flag else ""))
+        worth, ownership = move_lines(r)
+        lines.append(f"   {worth} ({r['out']['xp']} -> {r['in']['xp']})"
+                     + (f"   [{flag}]" if flag else ""))
+        if source["fresh"]:
+            lines.append(f"   {ownership}")
         if r["urgency"] in ("tonight", "soon"):
             lines.append(f"   {r['affordability']['reason']}")
-
-        notes = []
         if r["in"].get("status") == "d":
-            notes.append(f"doubtful: {r['in']['chance']}% chance of playing, "
+            lines.append(f"   doubtful: {r['in']['chance']}% chance of playing, "
                          f"already priced into the xP above")
-        if r["in"]["league_eo"] is not None:
-            notes.append(f"in: {r['in']['profile']} "
-                         f"({r['in']['league_eo'] * 100:.0f}% EO in your leagues)")
-        if r["out"]["profile"] == "template":
-            notes.append(f"selling {r['out']['name']}, owned by "
-                         f"{r['out']['league_eo'] * 100:.0f}% of your leagues - "
-                         f"a haul costs you ground")
-        if notes:
-            lines.append(f"   {' | '.join(notes)}")
     return "\n".join(lines)
 
 
@@ -422,6 +503,9 @@ def record_decision(conn: sqlite3.Connection, recommendation: dict[str, Any],
         f"+{recommendation['xp_delta']} xP over {recommendation['horizon']} gameweeks"
         f"{cost_note}; {recommendation['affordability']['reason']}"
     )
+    # Who owned whom when the move was made is what the decision is read back against.
+    if recommendation.get("ownership") is not None:
+        rationale += f"; {move_lines(recommendation)[1]}"
     cur = conn.execute(
         """INSERT INTO decision (created_at, gameweek, model_version, kind, payload,
                                  rationale, urgency, xp_delta, status)

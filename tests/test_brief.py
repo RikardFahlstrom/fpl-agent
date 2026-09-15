@@ -694,6 +694,25 @@ class RenderBriefTests(BriefTestCase):
                         text.index("## Transfers ranked"))
         self.assertLess(text.index("## What needs you"), text.index("## Warehouse"))
 
+    def test_the_ranked_table_says_how_many_rivals_own_each_player(self):
+        """Ownership is measured against the people you race, so the table shows the
+        count for both sides of every move, and the fired trigger's body carries it."""
+        self.warehouse.healthy()
+        text = self.render()
+        self.assertIn("| rivals own |", text)
+        self.assertRegex(text, r"\| \d of 1 \|")
+        self.assertIn("owned by 0 of 1 rivals (0%)", text)
+        self.assertIn("from their gameweek 2 squads (1 rivals)", text)
+
+    def test_stale_rivals_leave_the_ownership_column_empty_and_say_why(self):
+        self.warehouse.healthy()
+        self.warehouse.fixtures(gameweek=GAMEWEEK, finished=True)
+        text = self.render()
+        self.assertIn("Ownership not shown: rivals were last captured for gameweek 2 "
+                      "and gameweek 3 has finished", text)
+        self.assertNotIn("rivals (", text)
+        self.assertRegex(text, r"\| - \| \S+ \| - \|")
+
     def test_nothing_firing_still_names_what_was_checked(self):
         """A wildcard week, days before the deadline: the exact state the real warehouse
         was in when this was written, and the one where an unexplained "nothing" would
