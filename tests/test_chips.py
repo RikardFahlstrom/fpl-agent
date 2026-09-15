@@ -278,7 +278,7 @@ class ValueTests(unittest.TestCase):
                          ["bboost", "3xc", "wildcard", "freehit"])
         self.assertTrue(verdicts[0].evaluated)
         self.assertEqual(verdicts[2].reason, "played in GW3")
-        self.assertIn("needs the squad rebuild", verdicts[3].reason)
+        self.assertIn("not FPL-shaped", verdicts[3].reason)      # 4 GKP in this fixture
         line = chips.chips_line(verdicts, GAMEWEEK)
         self.assertIn("bench boost hold (+4.0, bar 15)", line)
         self.assertIn("wildcard played in GW3 · free hit not evaluated", line)
@@ -396,3 +396,90 @@ class ChipTriggerTests(unittest.TestCase):
         self.assertEqual(payload["chip"], "bboost")
         self.assertEqual(payload["values"][0], {"gameweek": 3, "value": 18.0,
                                                 "note": "P12, P13, P14, P15"})
+
+
+class RebuildTests(unittest.TestCase):
+    """Free hit and wildcard: the best legal fifteen against the held one."""
+
+    #: An FPL-shaped squad from the test market (types cycle 1-4 by id).
+    SHAPED = [1, 5, 2, 6, 10, 14, 18, 3, 7, 11, 15, 19, 4, 8, 12]
+
+    def setUp(self):
+        self.conn = storage.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.warehouse = Warehouse(self.conn).healthy()
+        self.conn.execute("DELETE FROM my_squad")
+        self.warehouse.squad(self.SHAPED)
+        wall = [dict(c, stop_event=GAMEWEEK + 2) for c in FIRST_SET]
+        for c in wall:
+            c["status_for_entry"] = "available"
+            c["played_by_entry"] = []
+        self.warehouse.state(chips=json.dumps(wall))
+        self.conn.commit()
+
+    def project(self, gameweek, element_id, xp):
+        self.conn.execute(
+            "UPDATE projection SET expected_points = ? WHERE element_id = ? "
+            "AND gameweek = ? AND snapshot_id = ?",
+            (xp, element_id, gameweek, self.warehouse.snapshot_id))
+        self.conn.commit()
+
+    def evaluate(self):
+        return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False)
+
+    def verdict(self, name):
+        return next(v for v in self.evaluate().chips if v.state.name == name)
+
+    def test_a_flat_market_is_worth_little_and_under_the_bar(self):
+        fh = self.verdict("freehit")
+        self.assertTrue(fh.evaluated)
+        self.assertFalse(fh.play_now)
+        self.assertIn("under the 8 bar", fh.reason)
+        self.assertEqual([v.gameweek for v in fh.values], [3, 4, 5])
+
+    def test_a_week_where_the_market_leaves_the_squad_behind_fires_the_free_hit(self):
+        # Three unowned midfielders worth 8 each in GW4 only: a free hit buys them.
+        for e in (23, 27, 31):
+            self.project(GAMEWEEK + 1, e, 8.0)
+        fh = self.verdict("freehit")
+        self.assertFalse(fh.play_now)
+        self.assertIn("GW4 clears it", fh.reason)
+        week = next(v for v in fh.values if v.gameweek == GAMEWEEK + 1)
+        self.assertGreater(week.value, 8.0)
+        self.assertIn("P27", week.note)      # P23 is already in via the recommended move
+        self.assertEqual(len(week.squad), 15)
+
+    def test_a_free_hit_that_clears_the_bar_this_week_fires_and_shows_the_squad(self):
+        for e in (23, 27, 31):
+            self.project(GAMEWEEK, e, 8.0)
+        evaluation = self.evaluate()
+        fh = next(v for v in evaluation.chips if v.state.name == "freehit")
+        self.assertTrue(fh.play_now)
+        names = [t.headline for t in evaluation.triggers if t.name == "chip_worth_playing"]
+        self.assertTrue(any(h.startswith("Play your free hit this gameweek") for h in names))
+        text = brief.render_brief(self.conn, GAMEWEEK, now=NOW, evaluation=evaluation,
+                                  include_token=False, notifications_configured=False,
+                                  learnings_dir=Path(self.tmp.name))
+        self.assertIn("The free hit squad for GW3 (XI first, then bench): ", text)
+        self.assertIn("P23 £5.0m 8.0; P27 £5.0m 8.0; P31 £5.0m 8.0", text)
+
+    def test_the_wildcard_is_valued_over_its_horizon_capped_at_the_wall(self):
+        # The wall is GW5, so a GW3 wildcard spans 3-5 and a GW5 one just 5.
+        for e in (23, 27, 31):
+            for gw in (GAMEWEEK, GAMEWEEK + 1, GAMEWEEK + 2):
+                self.project(gw, e, 8.0)
+        wc = self.verdict("wildcard")
+        self.assertTrue(wc.play_now)
+        self.assertIn("clears the 15 bar", wc.reason)
+        by_week = {v.gameweek: v.value for v in wc.values}
+        self.assertGreater(by_week[3], by_week[5])       # three weeks of gain vs one
+        text = brief.render_brief(self.conn, GAMEWEEK, now=NOW, include_token=False,
+                                  notifications_configured=False,
+                                  learnings_dir=Path(self.tmp.name))
+        self.assertIn("moot if you play the wildcard (see Chips)", text)
+
+    def test_the_budget_is_bank_plus_selling_prices(self):
+        self.assertEqual(chips.rebuild_budget(self.conn, self.warehouse.snapshot_id),
+                         10 + 15 * 50)
