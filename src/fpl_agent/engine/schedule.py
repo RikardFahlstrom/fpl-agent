@@ -283,9 +283,10 @@ def _capture(settings: Settings, warehouse: Reading, *,
         steps.append(Step("snapshot", ("--backfill-only",),
                           "actuals feed the projection's per-90 rates, so they have to "
                           "land before it runs"))
-    steps.append(Step("project", ("--horizon", str(settings.horizon)),
+    steps.append(Step("project", ("--horizon", str(settings.horizon), "--chips"),
                       "a capture with no projection is an inconsistency `status` exits "
-                      "7 for, and projecting is cheap"))
+                      "7 for, and projecting is cheap; the chip window rides along so "
+                      "every week a chip could be played has a value"))
     standings, not_standings = _standings_or_skip(warehouse)
     steps += standings
     skipped = list(not_standings)

@@ -737,9 +737,11 @@ class RenderBriefTests(BriefTestCase):
         text = self.render()
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
-        self.assertEqual(labels[:8], ["- **Move", "- **Ownership", "- **Wildcard",
-                                      "- **Availability", "- **Deadline", "- **Push",
-                                      "- **Learnings", "- **Data"])
+        self.assertEqual(labels[:9], ["- **Move", "- **Ownership", "- **Captain",
+                                      "- **Wildcard", "- **Availability", "- **Deadline",
+                                      "- **Push", "- **Learnings", "- **Data"])
+        self.assertIn("- **Captain:** P1 (C01), 1.0 xP; next P2 1.0 - no armband captured",
+                      text)
         self.assertIn("- **Learnings:** none proposed", text)
 
     def test_the_learnings_line_groups_repeats_and_speaks_plainly(self):

@@ -101,7 +101,7 @@ class DailyTests(ScheduleTestCase):
         self.assertEqual(commands(plan)[:3], [
             "snapshot --force",
             "snapshot --backfill-only",
-            "project --horizon 3",
+            "project --horizon 3 --chips",
         ])
 
     def test_every_step_carries_a_reason(self):
@@ -120,7 +120,7 @@ class DailyTests(ScheduleTestCase):
     def test_nothing_to_grade_is_a_skip_with_a_reason_rather_than_silence(self):
         plan = self.due("daily")
         self.assertEqual(commands(plan), [
-            "snapshot --force", "snapshot --backfill-only", "project --horizon 3"] + TAIL)
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips"] + TAIL)
         self.assertTrue(any("grad" in skip.reason for skip in plan.skipped),
                         plan.skipped)
 
@@ -199,7 +199,7 @@ class DeadlineTests(ScheduleTestCase):
         plan = self.due("deadline")
         self.assertEqual(commands(plan), [
             "snapshot --force",
-            "project --horizon 3",
+            "project --horizon 3 --chips",
             "rivals",
             "recommend",
             "status",
@@ -239,7 +239,7 @@ class AutoTests(ScheduleTestCase):
         self.assertEqual(commands(plan), [
             "snapshot --force",
             "snapshot --backfill-only",
-            "project --horizon 3",
+            "project --horizon 3 --chips",
             "settle --gameweek 4 --learn",
             "rivals",
             "recommend",
@@ -252,7 +252,7 @@ class AutoTests(ScheduleTestCase):
         self.assertEqual(commands(plan), [
             "snapshot --force",
             "snapshot --backfill-only",
-            "project --horizon 3",
+            "project --horizon 3 --chips",
             "settle --gameweek 4 --learn",
         ] + TAIL)
         self.assertTrue(any("rank" in skip.what or "rank" in skip.reason
@@ -272,7 +272,7 @@ class PicksTests(ScheduleTestCase):
         self.conn.commit()
         plan = self.due("daily")
         self.assertEqual(commands(plan)[:5], [
-            "snapshot --force", "snapshot --backfill-only", "project --horizon 3",
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips",
             "rivals --standings-only", "rivals"])
         [step] = [s for s in plan.steps if s.invocation == "rivals"]
         self.assertIn("gameweek 1", step.reason)
@@ -341,14 +341,14 @@ class StandingsTests(ScheduleTestCase):
     def test_the_daily_capture_refreshes_the_table_after_projecting(self):
         self.known_league()
         self.assertEqual(commands(self.due("daily"))[:4], [
-            "snapshot --force", "snapshot --backfill-only", "project --horizon 3",
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips",
             self.STEP])
 
     def test_the_hourly_recapture_refreshes_it_too(self):
         self.known_league()
         self.kickoff(5)
         self.assertEqual(commands(self.due("deadline"))[:3], [
-            "snapshot --force", "project --horizon 3", self.STEP])
+            "snapshot --force", "project --horizon 3 --chips", self.STEP])
 
     def test_auto_refreshes_it_once(self):
         self.known_league()
@@ -431,7 +431,7 @@ class ReadingTests(unittest.TestCase):
         plan = self.due("daily")
         self.assertIsNone(plan.problem)
         self.assertEqual(commands(plan), [
-            "snapshot --force", "snapshot --backfill-only", "project --horizon 3"] + TAIL)
+            "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips"] + TAIL)
 
     def test_grading_is_the_readings_answer_in_the_readings_order(self):
         plan = self.due("daily", settleable=(4, 5))

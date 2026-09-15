@@ -49,7 +49,7 @@ from typing import Optional
 
 from .. import config
 from . import schedule, storage, warehouse
-from .projection import MODEL_VERSION
+from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION
 from .snapshot import SQUAD_SIZE
 
 logger = logging.getLogger("fpl_status")
@@ -205,8 +205,13 @@ def check_projections(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> 
         (snapshot.id, MODEL_VERSION)).fetchone()[0]
     others = ", ".join(f"{v} ({n})" for v, n in sorted(by_version.items())
                        if v != MODEL_VERSION)
+    # The transfer horizon is the first HORIZON_GAMEWEEKS; anything further is the chip
+    # window `project --chips` filled, said separately so 15 does not read as a horizon.
+    span = (f"{horizon}-gameweek horizon" if horizon <= HORIZON_GAMEWEEKS else
+            f"{HORIZON_GAMEWEEKS}-gameweek horizon plus the chip window to gameweek "
+            f"{gameweek + horizon - 1}")
     detail = (f"{by_version[MODEL_VERSION]} for gameweek {gameweek} under model "
-              f"{MODEL_VERSION}, {horizon}-gameweek horizon, snapshot {snapshot.id}")
+              f"{MODEL_VERSION}, {span}, snapshot {snapshot.id}")
     return Check("projections", OK,
                  detail + (f"; also stored: {others}" if others else ""))
 
