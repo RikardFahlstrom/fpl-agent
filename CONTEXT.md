@@ -154,3 +154,65 @@ wearing the code of whatever recoverable thing failed after it.
 Test through it rather than inventing a second one. In particular, nothing in the suite may
 run a Step for real: the production executor launches `fpl-agent snapshot`, which talks to
 the FPL API and writes a warehouse.
+
+The output terms below were settled by the rework of the brief and the push (September
+2026), when the brief gained its fixed opening block and the push its three states.
+
+## brief
+
+`logs/gwNN.md`: everything the warehouse knows that a person needs before a deadline,
+rewritten every run, read on a phone. It opens with the same block of lines in the same
+order regardless of what happened — the move, the ownership of that move, the wildcard,
+the availability of the squad, the deadline, the push, the learnings, the data — each
+line spelling out "none" or "not evaluated" when there is nothing, so that the reader
+looks at the same line every time rather than reading the whole page to find out that
+nothing happened. Beneath the block come the sections that show the working.
+
+The brief is written in plain English: no name from the code, no level, no slice id
+appears without its meaning beside it on first use. Internal names survive only where a
+command has to be typed. A reader who has to open the code to understand the brief will
+stop reading the brief.
+
+## push
+
+A message to the owner's phone about one trigger, and the record of whether it got there.
+Every trigger is in one of three states on every run, and the words are not
+interchangeable:
+
+- **did not fire** — the condition was not met. Most triggers, most days.
+- **sent** — the phone got it, now or on an earlier run (the fingerprint is in the
+  `notification` table); when, is part of the state.
+- **fired, not delivered** — the condition was met and the message did not reach the
+  phone: no topic configured, or the server refused. This is a *data* problem and is
+  reported as one, because a push that fired and went nowhere must never look like one
+  that had nothing to say.
+
+## stale ownership
+
+Ownership is *effective ownership*: the share of rival squads in the configured leagues
+that hold a player, which is what makes a differential a differential. It is fresh only
+when the rival picks it is measured from are for the last finished gameweek or later —
+picks for a round exist only after its deadline, so before the GW5 deadline the freshest
+possible picks are GW4's. Picks older than the last finished gameweek are **stale**, and
+stale ownership is not shown: not in the brief, the table, the push or the ranking. The
+line says instead which gameweek rivals were last captured for. Never captured is
+reported the same way. A number from two rounds ago is not a caveat, it is a wrong
+number at exactly the point the edge lives.
+
+## availability
+
+Whether each of the fifteen players you own can be expected to play, from two sources
+that disagree usefully: FPL's own flag (`i` injured, `s` suspended, `d` doubtful with a
+chance) and the predicted lineup, which catches rotation FPL never reports. "15 of 15"
+means neither source names anyone; otherwise the names, each with its reason.
+
+## learning
+
+One drafted finding from `settle --learn`: a calibration slice that deviated enough to
+be written down, filed in `learnings/` as `proposed`. It is a claim about the model, not
+about the gameweek, and it stays `proposed` until a person accepts it — a weight changes
+and `MODEL_VERSION` is bumped — or rejects it with a reason. Nothing accepts a learning
+on its own; the `/fpl-learn` skill does it when the owner says so, in plain words, one
+learning at a time. Two drafts naming the same slice in consecutive rounds are the
+signal a single draft asks the reader to wait for, and the brief says so when it
+happens.
