@@ -25,13 +25,13 @@ import json
 import logging
 import sqlite3
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
 from . import pricing, rivals, storage, warehouse
+from .warehouse import OwnershipSource
 from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
                          stored_horizon)
 
@@ -74,59 +74,17 @@ def ownership_profile(effective_ownership: Optional[float]) -> str:
     return "balanced"
 
 
-@dataclass(frozen=True)
-class OwnershipSource:
-    """Which rival picks ownership is measured from, and whether they are fresh.
-
-    Picks for a round exist only after its deadline, so before the GW5 deadline the
-    freshest possible picks are GW4's. Picks older than the last *finished* gameweek
-    are stale, and stale ownership is not shown anywhere - not in the brief, the table,
-    the push or the ranking - because a number from two rounds ago is not a caveat, it
-    is a wrong number at exactly the point the edge lives (`CONTEXT.md`, *stale
-    ownership*). Never captured reads the same way. `status.check_rivals` warns on the
-    identical comparison, so the two cannot disagree about what stale means.
-    """
-
-    gameweek: Optional[int]        # the rivals gameweek; None when never captured
-    last_finished: Optional[int]   # the ledger's last finished gameweek; None if none
-    managers: int = 0              # rivals in the configured leagues at that gameweek
-
-    @property
-    def fresh(self) -> bool:
-        if self.gameweek is None or not self.managers:
-            return False
-        return self.last_finished is None or self.gameweek >= self.last_finished
-
-    @property
-    def reason(self) -> Optional[str]:
-        """Why ownership is not shown, in the reader's words; None when it is."""
-        if self.fresh:
-            return None
-        if self.gameweek is None or not self.managers:
-            return "rivals have never been captured - run `make rivals`"
-        return (f"rivals were last captured for gameweek {self.gameweek} and gameweek "
-                f"{self.last_finished} has finished - run `make rivals`")
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"gameweek": self.gameweek, "last_finished": self.last_finished,
-                "managers": self.managers, "fresh": self.fresh, "reason": self.reason}
-
-
 def ownership_source(conn: sqlite3.Connection) -> tuple[OwnershipSource, dict[int, dict]]:
     """The source and, when it is fresh, the ownership map keyed by element id.
 
     The map is empty whenever the source is not fresh, so a caller cannot show a stale
     number by forgetting to check.
     """
-    row = conn.execute("SELECT MAX(gameweek) AS gw FROM rival_squad").fetchone()
-    gameweek = row["gw"] if row and row["gw"] else None
-    finished = warehouse.gameweeks(conn, MODEL_VERSION).finished()
-    last_finished = finished[-1] if finished else None
-    ownership = (rivals.league_ownership(conn, gameweek, rivals.configured_league_ids())
-                 if gameweek else {})
-    managers = next((e["managers"] for e in ownership.values()), 0)
-    source = OwnershipSource(gameweek, last_finished, managers)
-    return source, (ownership if source.fresh else {})
+    league_ids = config.rival_leagues()
+    source = warehouse.ownership(conn, warehouse.gameweeks(conn, MODEL_VERSION), league_ids)
+    if not source.fresh:
+        return source, {}
+    return source, rivals.league_ownership(conn, source.gameweek, league_ids)
 
 
 def _squad(conn: sqlite3.Connection, snapshot_id: int) -> list[sqlite3.Row]:

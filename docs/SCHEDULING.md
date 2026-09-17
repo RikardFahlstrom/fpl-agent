@@ -72,7 +72,7 @@ held for the previous one are *stale ownership*, which the brief withholds rathe
 shows. Left to the deadline window, the Ownership line read "not shown" from Tuesday to
 Friday every week. So `daily` (and `auto`) plans a full `rivals` whenever the picks are
 behind the last finished gameweek - the comparison `status` warns on and
-`recommend.OwnershipSource` withholds on - and skips it, saying the ownership is fresh,
+`warehouse.OwnershipSource` withholds on - and skips it, saying the ownership is fresh,
 otherwise. This one needs a session, which the daily snapshot has just used.
 
 A gameweek qualifies on three counts, and each was a bug before it was a condition:

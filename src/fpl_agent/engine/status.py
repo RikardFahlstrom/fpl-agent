@@ -343,19 +343,16 @@ def check_rivals(conn: sqlite3.Connection, ledger: warehouse.GameweekLedger) -> 
     unknown ownership instead of zero, which is the bug that discarded 165 of 200
     candidates at exactly the point the edge lives.
 
-    Rival picks and the league table are not gameweek facts, so those two reads stay
-    here; the ledger supplies only which gameweek last finished.
+    Whether the picks are fresh is `warehouse.ownership`'s answer, the one `recommend`
+    withholds on and the scheduler refreshes on. The league table is not a gameweek
+    fact and has its own age, so that read stays here.
     """
-    finished = ledger.finished()
-    row = conn.execute(
-        """SELECT gameweek, COUNT(DISTINCT entry_id) AS managers, COUNT(*) AS picks
-           FROM rival_squad GROUP BY gameweek ORDER BY gameweek DESC LIMIT 1""").fetchone()
-    if row is None:
+    source = warehouse.ownership(conn, ledger, config.rival_leagues())
+    if source.gameweek is None or not source.managers:
         return Check("rivals", WARN,
                      "no rival squads captured - effective ownership is unknown rather "
                      "than zero for every candidate. Run `make rivals`.")
-    detail = (f"{row['managers']} managers, {row['picks']} picks for gameweek "
-              f"{row['gameweek']}")
+    detail = f"{source.managers} managers' picks for gameweek {source.gameweek}"
     # The table is the cheap half and has its own age: it is refreshed by every capture,
     # not only by the picks capture behind the deadline window, so a stale one is one
     # request from current. A warning, never a fault - see issue #49 for the five days
@@ -364,10 +361,10 @@ def check_rivals(conn: sqlite3.Connection, ledger: warehouse.GameweekLedger) -> 
     hours = _age_hours(table["captured_at"]) if table else None
     if hours is not None:
         detail += f"; table {hours:.1f}h old"
-    if finished and row["gameweek"] < finished[-1]:
+    if not source.fresh:
         return Check("rivals", WARN,
-                     detail + f" - behind the last finished gameweek ({finished[-1]}), "
-                              f"so effective ownership is stale")
+                     detail + f" - behind the last finished gameweek "
+                              f"({source.last_finished}), so effective ownership is stale")
     if hours is not None and hours > STALE_AFTER_HOURS:
         return Check("rivals", WARN,
                      detail + " - the league standings are over a day and a half old; "

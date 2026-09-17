@@ -48,7 +48,7 @@ from .. import config
 
 from . import storage
 from .projection import MODEL_VERSION
-from .warehouse import gameweeks
+from .warehouse import OwnershipSource, gameweeks, ownership
 
 JOBS = ("daily", "deadline", "auto")
 
@@ -189,18 +189,14 @@ class Reading:
     #: Whether a first full `rivals` run has recorded the league, so its table can be
     #: refreshed.
     league_known: bool = False
-    #: The gameweek the rival picks were last captured for, and the last finished one.
-    #: Picks behind the last finished gameweek are stale ownership, which the brief
-    #: withholds - so the daily job refreshes them (`recommend.OwnershipSource`).
-    rivals_gameweek: Optional[int] = None
-    last_finished: Optional[int] = None
+    #: Which rival picks ownership is measured from, and whether they are fresh - the
+    #: warehouse's answer, the one `recommend` withholds on. Picks that are not fresh
+    #: are stale ownership, which the brief withholds - so the daily job refreshes them.
+    rivals: OwnershipSource = OwnershipSource(None, None)
 
     @property
     def picks_behind(self) -> bool:
-        """The same comparison `OwnershipSource.fresh` and `status.check_rivals` make."""
-        if self.last_finished is None:
-            return self.rivals_gameweek is None
-        return self.rivals_gameweek is None or self.rivals_gameweek < self.last_finished
+        return not self.rivals.fresh
 
     @property
     def readable(self) -> bool:
@@ -211,17 +207,15 @@ def read(conn: sqlite3.Connection) -> Reading:
     """Ask an open warehouse the three questions a Plan is decided from. Never writes.
 
     Each fact is read through its owner - `storage.next_deadline`, the ledger's
-    `settleable`, the `league` table - so nothing here is a second statement of a rule.
+    `settleable`, `warehouse.ownership`, the `league` table - so nothing here is a
+    second statement of a rule.
     """
     ledger = gameweeks(conn, MODEL_VERSION)
-    finished = ledger.finished()
-    picks = conn.execute("SELECT MAX(gameweek) FROM rival_squad").fetchone()[0]
     return Reading(
         next_deadline=storage.next_deadline(conn),
         settleable=tuple(ledger.settleable()),
         league_known=bool(conn.execute("SELECT COUNT(*) FROM league").fetchone()[0]),
-        rivals_gameweek=picks,
-        last_finished=finished[-1] if finished else None)
+        rivals=ownership(conn, ledger, config.rival_leagues()))
 
 
 def read_warehouse(path: Path | str) -> Reading:
@@ -308,18 +302,19 @@ def _picks_or_skip(warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
     if not warehouse.league_known:
         return [], [Skipped(what, "no league is known yet; a first `make rivals` inside "
                                   "a deadline window records them")]
+    picks = warehouse.rivals
     if not warehouse.picks_behind:
-        return [], [Skipped(what, f"rivals hold gameweek {warehouse.rivals_gameweek}, "
+        return [], [Skipped(what, f"rivals hold gameweek {picks.gameweek}, "
                                   f"the last finished one; ownership is fresh")]
-    if warehouse.last_finished is None:
+    if picks.last_finished is None:
         return [], [Skipped(what, "no gameweek has finished, so there are no picks to "
                                   "capture yet")]
     return [Step("rivals", (),
-                 f"rival picks are from gameweek {warehouse.rivals_gameweek} and "
-                 f"gameweek {warehouse.last_finished} has finished; ownership would be "
+                 f"rival picks are from gameweek {picks.gameweek} and "
+                 f"gameweek {picks.last_finished} has finished; ownership would be "
                  f"withheld as stale until they are refreshed"
-                 if warehouse.rivals_gameweek else
-                 f"no rival picks captured yet and gameweek {warehouse.last_finished} "
+                 if picks.gameweek and picks.managers else
+                 f"no rival picks captured yet and gameweek {picks.last_finished} "
                  f"has finished")], []
 
 

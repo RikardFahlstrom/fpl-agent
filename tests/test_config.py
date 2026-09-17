@@ -121,3 +121,34 @@ class ExampleFileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RivalLeaguesTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = os.environ.get(config.RIVAL_LEAGUES_ENV)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self._saved is None:
+            os.environ.pop(config.RIVAL_LEAGUES_ENV, None)
+        else:
+            os.environ[config.RIVAL_LEAGUES_ENV] = self._saved
+
+    def _set(self, value):
+        os.environ[config.RIVAL_LEAGUES_ENV] = value
+
+    def test_unset_means_every_capturable_league(self):
+        os.environ.pop(config.RIVAL_LEAGUES_ENV, None)
+        self.assertIsNone(config.rival_leagues())
+
+    def test_single_and_multiple_ids(self):
+        self._set("920863")
+        self.assertEqual(config.rival_leagues(), [920863])
+        self._set("920863, 18891")
+        self.assertEqual(config.rival_leagues(), [920863, 18891])
+
+    def test_junk_is_ignored_rather_than_fatal(self):
+        self._set("920863,not-an-id,")
+        self.assertEqual(config.rival_leagues(), [920863])
+        self._set("   ")
+        self.assertIsNone(config.rival_leagues())

@@ -1,4 +1,5 @@
 """Settling and calibration. Offline: actuals and projections are constructed locally."""
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -160,7 +161,9 @@ class SettleTests(unittest.TestCase):
             self.conn.backup(disk)
             disk.close()
             out = StringIO()
-            with redirect_stdout(out):
+            # `main` loads the real `fpl-agent.ini` into the environment, which
+            # outlives the test; restore whatever it set.
+            with redirect_stdout(out), mock.patch.dict(os.environ):
                 code = settle.main(["--db", str(path), "--list"])
         self.assertEqual(code, 0)
         self.assertEqual(out.getvalue().split(), ["3", "4"])
@@ -170,7 +173,8 @@ class SettleTests(unittest.TestCase):
         create one to find out."""
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope.db"
-            code = settle.main(["--db", str(missing), "--list"])
+            with mock.patch.dict(os.environ):
+                code = settle.main(["--db", str(missing), "--list"])
             self.assertNotEqual(code, 0)
             self.assertFalse(missing.exists(), "--list created the warehouse")
 

@@ -15,7 +15,6 @@ around 9.9 million entries.
 import argparse
 import asyncio
 import logging
-import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -27,6 +26,7 @@ from . import storage, warehouse
 from ..api.client import FPLClient
 from ..api.headless_auth import authenticated_client
 from ..api import account
+from .projection import MODEL_VERSION
 
 logger = logging.getLogger("fpl_rivals")
 
@@ -40,26 +40,6 @@ RIVAL_CONCURRENCY = 6
 # league under the cap. Narrowing this to the one league you actually care about makes
 # the ownership numbers mean something specific rather than averaging across leagues you
 # are not really competing in.
-RIVAL_LEAGUES_ENV = "FPL_RIVAL_LEAGUES"
-
-
-def configured_league_ids() -> Optional[list[int]]:
-    """League ids from FPL_RIVAL_LEAGUES, or None to mean 'all capturable'."""
-    raw = os.environ.get(RIVAL_LEAGUES_ENV, "").strip()
-    if not raw:
-        return None
-    ids = []
-    for part in raw.split(","):
-        part = part.strip()
-        if part:
-            try:
-                ids.append(int(part))
-            except ValueError:
-                logger.warning("ignoring non-numeric league id %r in %s",
-                               part, RIVAL_LEAGUES_ENV)
-    return ids or None
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -264,7 +244,7 @@ async def _refresh_only(args) -> int:
     client = FPLClient()
     try:
         refreshed = await refresh_known_standings(
-            conn, client, args.league or configured_league_ids(), args.max_rivals)
+            conn, client, args.league or config.rival_leagues(), args.max_rivals)
         if not refreshed:
             logger.error("no table was refreshed: either no league is known - run "
                          "`make rivals` once, inside a deadline window, to record them, "
@@ -291,17 +271,20 @@ async def _run(args) -> int:
             return 1
         own_entry = account.entry_id(client)
 
+        # The last finished gameweek, by the ledger: the same round `OwnershipSource`
+        # measures freshness against, so a capture here is what makes it fresh. The
+        # previous rule, the highest round holding actuals, could lag it by a backfill.
         gameweek = args.gameweek
         if gameweek is None:
-            row = conn.execute("SELECT MAX(round) AS r FROM player_gameweek").fetchone()
-            gameweek = row["r"] if row else None
+            finished = warehouse.gameweeks(conn, MODEL_VERSION).finished()
+            gameweek = finished[-1] if finished else None
         if gameweek is None:
-            logger.error("no completed gameweek to capture; run a backfill first")
+            logger.error("no gameweek has finished yet, so there are no picks to capture")
             return 1
 
         leagues = capturable_leagues(
             await account.leagues(client), args.max_rivals, args.include_global)
-        wanted = args.league or configured_league_ids()
+        wanted = args.league or config.rival_leagues()
         if wanted:
             leagues = [lg for lg in leagues if lg["id"] in set(wanted)]
         if not leagues:
@@ -326,7 +309,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--max-rivals", type=int, default=DEFAULT_MAX_RIVALS)
     parser.add_argument("--league", type=int, action="append",
                         help=f"restrict to these league ids "
-                             f"(default: ${RIVAL_LEAGUES_ENV}, else all capturable)")
+                             f"(default: ${config.RIVAL_LEAGUES_ENV}, else all capturable)")
     parser.add_argument("--include-global", action="store_true",
                         help="also consider FPL's global leagues (usually far too large)")
     parser.add_argument("--standings-only", action="store_true",

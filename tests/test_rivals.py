@@ -1,5 +1,4 @@
 """Rival capture and league-relative ownership."""
-import os
 import unittest
 
 from fpl_agent.engine import rivals, storage
@@ -122,37 +121,6 @@ class OwnershipTests(unittest.TestCase):
         self._squads({1: [(8, False)]}, gameweek=2)
         self.assertIn(7, rivals.league_ownership(self.conn, 1))
         self.assertNotIn(7, rivals.league_ownership(self.conn, 2))
-
-
-class ConfiguredLeagueTests(unittest.TestCase):
-    def setUp(self):
-        self._saved = os.environ.get(rivals.RIVAL_LEAGUES_ENV)
-        self.addCleanup(self._restore)
-
-    def _restore(self):
-        if self._saved is None:
-            os.environ.pop(rivals.RIVAL_LEAGUES_ENV, None)
-        else:
-            os.environ[rivals.RIVAL_LEAGUES_ENV] = self._saved
-
-    def _set(self, value):
-        os.environ[rivals.RIVAL_LEAGUES_ENV] = value
-
-    def test_unset_means_every_capturable_league(self):
-        os.environ.pop(rivals.RIVAL_LEAGUES_ENV, None)
-        self.assertIsNone(rivals.configured_league_ids())
-
-    def test_single_and_multiple_ids(self):
-        self._set("920863")
-        self.assertEqual(rivals.configured_league_ids(), [920863])
-        self._set("920863, 18891")
-        self.assertEqual(rivals.configured_league_ids(), [920863, 18891])
-
-    def test_junk_is_ignored_rather_than_fatal(self):
-        self._set("920863,not-an-id,")
-        self.assertEqual(rivals.configured_league_ids(), [920863])
-        self._set("   ")
-        self.assertIsNone(rivals.configured_league_ids())
 
 
 class ScopedOwnershipTests(unittest.TestCase):
