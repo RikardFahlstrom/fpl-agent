@@ -578,8 +578,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         gameweek = brief.default_gameweek(conn)
         if gameweek is not None:
             evaluation = brief.evaluate(conn, gameweek, include_token=False)
-            print("\n".join(brief.render_block(
-                conn, evaluation, brief.push_reports(conn, evaluation), markdown=False)))
+            print("\n".join(brief.render_block(evaluation, markdown=False)))
         print(render(context, recommendations, args.weeks))
 
         if args.record and args.chip:

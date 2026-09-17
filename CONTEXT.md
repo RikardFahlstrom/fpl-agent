@@ -176,6 +176,15 @@ appears without its meaning beside it on first use. Internal names survive only 
 command has to be typed. A reader who has to open the code to understand the brief will
 stop reading the brief.
 
+The brief is rendered from one value, `brief.Evaluation`: everything the page prints -
+the triggers and why each silent one stayed silent, the checks, the ranking, the chip
+verdicts, the captain, the ownership source, the price watch, the last settled
+gameweek, the learnings on disk and what became of each *push* - read once by
+`evaluate` and handed to `render_brief` and `render_block`, which take no connection,
+no clock and no directory. That is what keeps the opening block and the working beneath
+it from disagreeing: they cannot read different warehouses because neither reads one.
+`notify` evaluates the same way and sends from the same triggers.
+
 ## push
 
 A message to the owner's phone about one trigger, and the record of whether it got there.

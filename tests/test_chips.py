@@ -355,12 +355,12 @@ class ChipTriggerTests(unittest.TestCase):
         self.conn.commit()
 
     def evaluate(self):
-        return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False)
+        return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False,
+                              notifications_configured=False,
+                              learnings_dir=Path(self.tmp.name))
 
     def render(self, evaluation=None):
-        return brief.render_brief(self.conn, GAMEWEEK, now=NOW, evaluation=evaluation,
-                                  include_token=False, notifications_configured=False,
-                                  learnings_dir=Path(self.tmp.name))
+        return brief.render_brief(evaluation or self.evaluate())
 
     def test_a_bench_over_the_bar_fires_with_the_one_action(self):
         self.bench(4.5)                         # 18 > 15, and the best of the horizon
@@ -493,9 +493,7 @@ class RebuildTests(unittest.TestCase):
         self.assertTrue(fh.play_now)
         names = [t.headline for t in evaluation.triggers if t.name == "chip_worth_playing"]
         self.assertTrue(any(h.startswith("Play your free hit this gameweek") for h in names))
-        text = brief.render_brief(self.conn, GAMEWEEK, now=NOW, evaluation=evaluation,
-                                  include_token=False, notifications_configured=False,
-                                  learnings_dir=Path(self.tmp.name))
+        text = brief.render_brief(evaluation)
         self.assertIn("The free hit squad for GW3 (XI first, then bench): ", text)
         self.assertIn("P23 £5.0m 8.0; P27 £5.0m 8.0; P31 £5.0m 8.0", text)
 
@@ -509,9 +507,9 @@ class RebuildTests(unittest.TestCase):
         self.assertIn("clears the 15 bar", wc.reason)
         by_week = {v.gameweek: v.value for v in wc.values}
         self.assertGreater(by_week[3], by_week[5])       # three weeks of gain vs one
-        text = brief.render_brief(self.conn, GAMEWEEK, now=NOW, include_token=False,
-                                  notifications_configured=False,
-                                  learnings_dir=Path(self.tmp.name))
+        text = brief.render_brief(brief.evaluate(
+            self.conn, GAMEWEEK, now=NOW, include_token=False,
+            notifications_configured=False, learnings_dir=Path(self.tmp.name)))
         self.assertIn("moot if you play the wildcard (see Chips)", text)
 
     def test_the_budget_is_bank_plus_selling_prices(self):
