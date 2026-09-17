@@ -166,7 +166,7 @@ class StatusTestCase(unittest.TestCase):
 
     def _main(self, path, expected):
         buffer = io.StringIO()
-        with redirect_stdout(buffer):
+        with redirect_stdout(buffer), mock.patch.dict(os.environ):
             code = status.main(["--db", str(path), "--no-token"])
         self.assertEqual(code, expected, buffer.getvalue())
         return buffer.getvalue()
@@ -211,7 +211,7 @@ class CleanWarehouseTests(StatusTestCase):
         """An absent file must not be created and then called healthy."""
         with tempfile.TemporaryDirectory() as directory:
             absent = Path(directory) / "absent.db"
-            with redirect_stderr(io.StringIO()):
+            with redirect_stderr(io.StringIO()), mock.patch.dict(os.environ):
                 code = status.main(["--db", str(absent), "--no-token"])
             self.assertEqual(code, status.EXIT_UNREADABLE)
             self.assertFalse(absent.exists())
@@ -691,7 +691,8 @@ class UnreadableWarehouseTests(unittest.TestCase):
             path = Path(tmp) / "fpl.db"
             path.write_text("not a database")
             err = io.StringIO()
-            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            with (redirect_stderr(err), redirect_stdout(io.StringIO()),
+                  mock.patch.dict(os.environ)):
                 code = status.main(["--db", str(path)])
         self.assertEqual(code, status.EXIT_UNREADABLE)
         self.assertIn("could not read", err.getvalue())
@@ -729,7 +730,7 @@ class HoursToDeadlineTests(StatusTestCase):
             path = Path(tmp) / "fpl.db"
             self._dump_to(path)
             buffer = io.StringIO()
-            with redirect_stdout(buffer):
+            with redirect_stdout(buffer), mock.patch.dict(os.environ):
                 code = status.main(["--db", str(path), "--hours-to-deadline"])
         self.assertEqual(code, 0)
         self.assertEqual(buffer.getvalue().strip(), "8")

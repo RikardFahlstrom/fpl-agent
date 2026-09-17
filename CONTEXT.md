@@ -102,7 +102,8 @@ in the group for the mirror reason: gated with the rival picks behind the deadli
 window, it sat five days stale between deadlines.
 
 *Which* capture a later reader means is `engine/warehouse`'s question, and it has four
-answers, each a `Capture` value or None:
+answers, each a `Capture` value or None (a fifth question, which rival picks ownership
+is measured from, is under *stale ownership*):
 
 - `latest` — the one the pipeline is *in*: what `recommend` prices against, `brief`
   describes, `status` checks, `project` writes to. "The latest unless told otherwise"
@@ -200,6 +201,17 @@ stale ownership is not shown: not in the brief, the table, the push or the ranki
 line says instead which gameweek rivals were last captured for. Never captured is
 reported the same way. A number from two rounds ago is not a caveat, it is a wrong
 number at exactly the point the edge lives.
+
+Whether the picks are fresh is one answer, `warehouse.ownership(conn, ledger,
+league_ids) -> OwnershipSource`: the gameweek the picks are for, how many rivals in
+the configured leagues (`config.rival_leagues`) hold them, and the ledger's last
+finished gameweek. `recommend` withholds on it, `status` warns on it, the scheduler's
+*reading* carries it to decide the `rivals` step, and `rivals` captures the ledger's
+last finished gameweek so that the capture is what makes the answer fresh. None of
+the four holds a comparison of its own: three of them did, each docstring promising to
+match the others, and the capture followed a fourth rule (the highest round with
+actuals) that could lag the ledger by a backfill. Rivals captured for a league other
+than the configured ones count as never captured, which for the number shown they are.
 
 ## availability
 

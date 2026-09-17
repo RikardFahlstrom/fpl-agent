@@ -9,15 +9,17 @@ No test asserts that a helper was called. A Plan is the observable behaviour.
 """
 
 import io
+import os
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fpl_agent.engine import schedule, storage
+from fpl_agent.engine import schedule, storage, warehouse
 
 from test_status import WarehouseBuilder
 
@@ -306,13 +308,24 @@ class PicksTests(ScheduleTestCase):
         self.assertEqual(cmds.count("rivals"), 1)
         self.assertLess(cmds.index("rivals"), cmds.index("recommend"))
 
-    def test_the_reading_carries_both_gameweeks(self):
+    def test_the_reading_carries_the_warehouses_ownership_answer(self):
         self.w.rivals(1)
         self.conn.commit()
         reading = schedule.read(self.conn)
-        self.assertEqual((reading.rivals_gameweek, reading.last_finished), (1, 2))
+        self.assertEqual((reading.rivals.gameweek, reading.rivals.last_finished), (1, 2))
         self.assertTrue(reading.picks_behind)
-        self.assertFalse(schedule.Reading(rivals_gameweek=2, last_finished=2).picks_behind)
+        fresh = warehouse.OwnershipSource(gameweek=2, last_finished=2, managers=5)
+        self.assertFalse(schedule.Reading(rivals=fresh).picks_behind)
+
+    def test_picks_for_leagues_other_than_the_configured_ones_are_behind(self):
+        """Ownership is measured from the configured leagues, so picks captured for
+        another league only are never captured as far as the brief is concerned - and
+        the scheduler must not skip the capture saying they are fresh."""
+        self.w.rivals(2)
+        self.conn.commit()
+        with mock.patch.dict(os.environ, {"FPL_RIVAL_LEAGUES": "999"}):
+            plan = self.due("daily")
+        self.assertIn("rivals", commands(plan))
 
 
     def test_no_finished_gameweek_means_nothing_to_capture_yet(self):
@@ -744,7 +757,9 @@ class CommandTests(ScheduleTestCase):
 
     def _run(self, argv: list[str]) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
+        # `main` loads the real `fpl-agent.ini` into the environment, and the
+        # environment outlives the test. Every setting it may set is restored.
+        with redirect_stdout(out), redirect_stderr(err), mock.patch.dict(os.environ):
             code = schedule.main(argv)
         return code, out.getvalue(), err.getvalue()
 

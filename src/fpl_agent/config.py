@@ -17,6 +17,7 @@ import logging
 import os
 import stat
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger("fpl_config")
 
@@ -40,6 +41,30 @@ MAPPING: dict[tuple[str, str], str] = {
 }
 
 SECRET_ENV = {"FPL_PASSWORD", "FPL_EMAIL", "FPL_NTFY_TOPIC"}
+
+RIVAL_LEAGUES_ENV = "FPL_RIVAL_LEAGUES"
+
+
+def rival_leagues() -> Optional[list[int]]:
+    """League ids from FPL_RIVAL_LEAGUES, or None to mean 'all capturable'.
+
+    Every reader of ownership scopes to these - `rivals` when capturing, `warehouse`
+    when saying whether the picks are fresh - so a league configured after a capture
+    reads as never captured, which it is.
+    """
+    raw = os.environ.get(RIVAL_LEAGUES_ENV, "").strip()
+    if not raw:
+        return None
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                ids.append(int(part))
+            except ValueError:
+                logger.warning("ignoring non-numeric league id %r in %s",
+                               part, RIVAL_LEAGUES_ENV)
+    return ids or None
 
 
 def _warn_if_world_readable(path: Path) -> None:

@@ -7,7 +7,7 @@ modules, each with its own docstring explaining which snapshot it meant and why,
 `status` had to say in a comment that it deliberately copied `lineups`' query so the two
 would keep agreeing. This is that rule written once, so that agreement is by construction.
 
-Four questions, and the reason each is its own:
+Five questions, and the reason each is its own:
 
 - `latest` - the capture the pipeline is *in*: the one `recommend` prices against, `brief`
   describes and `status` checks. Highest id, because every capture is a new row.
@@ -21,6 +21,10 @@ Four questions, and the reason each is its own:
   *targeting* N with rows under the given model version. A projection of N made from a
   capture targeting N - 1 is a horizon row, not the decision-time record, and grading it
   would score the model on a question it was not answering.
+- `ownership` - which rival picks ownership is measured from, and whether they are fresh.
+  Not a capture but the same kind of question: before this it was three readings of
+  `MAX(gameweek) FROM rival_squad` compared to the ledger three ways, in `recommend`,
+  `status` and `schedule`, and a fourth rule in `rivals` for which round to capture.
 
 Every reader takes the connection and returns a `Capture` value or None; none of them
 writes. "None" is an answer, not an error - what it means is the caller's to say, because
@@ -38,7 +42,7 @@ of them holds a rule of its own.
 
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -214,3 +218,64 @@ def gameweeks(conn: sqlite3.Connection, model_version: str) -> GameweekLedger:
         rounds=tuple(Gameweek(round=r["round"], fixtures=r["fixtures"], played=r["played"],
                               actuals=r["actuals"], projected=bool(r["projected"]),
                               graded=bool(r["graded"])) for r in rows))
+
+
+@dataclass(frozen=True)
+class OwnershipSource:
+    """Which rival picks ownership is measured from, and whether they are fresh.
+
+    Picks for a round exist only after its deadline, so before the GW5 deadline the
+    freshest possible picks are GW4's. Picks older than the last *finished* gameweek
+    are stale, and stale ownership is not shown anywhere - not in the brief, the table,
+    the push or the ranking - because a number from two rounds ago is not a caveat, it
+    is a wrong number at exactly the point the edge lives (`CONTEXT.md`, *stale
+    ownership*). Never captured reads the same way.
+
+    `managers` counts the rivals in the leagues ownership is measured from; zero means
+    those leagues were never captured, however many other rivals the table holds.
+    """
+
+    gameweek: Optional[int]        # the rivals gameweek; None when never captured
+    last_finished: Optional[int]   # the ledger's last finished gameweek; None if none
+    managers: int = 0              # rivals in the measured leagues at that gameweek
+
+    @property
+    def fresh(self) -> bool:
+        if self.gameweek is None or not self.managers:
+            return False
+        return self.last_finished is None or self.gameweek >= self.last_finished
+
+    @property
+    def reason(self) -> Optional[str]:
+        """Why ownership is not shown, in the reader's words; None when it is."""
+        if self.fresh:
+            return None
+        if self.gameweek is None or not self.managers:
+            return "rivals have never been captured - run `make rivals`"
+        return (f"rivals were last captured for gameweek {self.gameweek} and gameweek "
+                f"{self.last_finished} has finished - run `make rivals`")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"gameweek": self.gameweek, "last_finished": self.last_finished,
+                "managers": self.managers, "fresh": self.fresh, "reason": self.reason}
+
+
+def ownership(conn: sqlite3.Connection, ledger: GameweekLedger,
+              league_ids: Optional[list[int]] = None) -> OwnershipSource:
+    """The rival picks ownership would be measured from, scoped to `league_ids` (None
+    means every captured rival), against the ledger's last finished gameweek.
+    """
+    scope, params = "", []
+    if league_ids:
+        placeholders = ",".join("?" * len(league_ids))
+        scope = (f" WHERE entry_id IN (SELECT entry_id FROM rival "
+                 f"WHERE league_id IN ({placeholders}))")
+        params = list(league_ids)
+    row = conn.execute(
+        f"""SELECT gameweek, COUNT(DISTINCT entry_id) AS managers FROM rival_squad{scope}
+            GROUP BY gameweek ORDER BY gameweek DESC LIMIT 1""", params).fetchone()
+    finished = ledger.finished()
+    return OwnershipSource(
+        gameweek=row["gameweek"] if row else None,
+        last_finished=finished[-1] if finished else None,
+        managers=row["managers"] if row else 0)
