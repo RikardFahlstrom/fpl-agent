@@ -176,12 +176,15 @@ def _header_value(text: str) -> str:
     truncates - would raise before the request left the process, and the notification
     would be lost to a name. ntfy reads RFC 2047 encoded words in `Title`, so anything
     outside ASCII goes out as `=?utf-8?b?...?=` and arrives intact.
+
+    `Header.encode` folds at 76 characters by default, and a folded value has a newline
+    in it, which httpx also refuses; `maxlinelen` keeps a long headline on one line.
     """
     text = " ".join(str(text).split())
     try:
         text.encode("ascii")
     except UnicodeEncodeError:
-        return Header(text, "utf-8").encode()
+        return Header(text, "utf-8", maxlinelen=10_000).encode()
     return text
 
 
