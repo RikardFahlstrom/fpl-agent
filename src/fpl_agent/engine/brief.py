@@ -213,8 +213,10 @@ class Evaluation:
     fire names the condition that stopped it, in the reader's words, and the brief prints
     those under the empty "What needs you".
 
-    The warehouse reads are carried along because `render_brief` needs the same ones and
-    reading them twice would let the two halves of a single brief disagree.
+    Everything the brief prints is read here, once, and carried: `render_block` and
+    `render_brief` take an Evaluation and nothing else - no connection, no clock, no
+    directory - so the opening block and the working beneath it cannot disagree, and
+    a layout can be tested from a hand-built value.
     """
 
     gameweek: int
@@ -229,6 +231,14 @@ class Evaluation:
     deadline: Optional[datetime]
     listing: dict[str, Any]
     chips: list[chips.Verdict]
+    #: Which rival picks ownership is measured from; shown when there is no move to
+    #: measure (a move carries its own copy, see `recommend.move_lines`).
+    ownership: warehouse.OwnershipSource
+    captain_picks: list[dict[str, Any]]   # the model's captain for the target gameweek
+    falling: list[pricing.PriceOutlook]   # held players FPL forecasts to fall
+    last_settled: Optional[dict[str, Any]]
+    learnings: list[settle.Learning]
+    reports: list["PushReport"]           # one per trigger, fired or not
 
 
 @dataclass(frozen=True)
@@ -250,8 +260,9 @@ class PushReport:
         return self.state == "fired, not delivered"
 
 
-def push_reports(conn: sqlite3.Connection, evaluation: "Evaluation", *,
-                 configured: Optional[bool] = None) -> list[PushReport]:
+def _push_reports(conn: sqlite3.Connection, triggers: list[Trigger],
+                  silent: dict[str, str], *,
+                  configured: Optional[bool] = None) -> list[PushReport]:
     """One report per trigger, fired or not, in reading order.
 
     "sent" is read from the `notification` table, never inferred: `notify` writes a row
@@ -263,13 +274,13 @@ def push_reports(conn: sqlite3.Connection, evaluation: "Evaluation", *,
     if configured is None:
         from . import notify     # notify imports this module; a local import breaks the cycle
         configured = notify.target_from_env() is not None
-    sent = storage.sent_notifications(conn, [t.fingerprint for t in evaluation.triggers])
+    sent = storage.sent_notifications(conn, [t.fingerprint for t in triggers])
     reports = []
     for name in TRIGGER_NAMES:
-        fired = [t for t in evaluation.triggers if t.name == name]
+        fired = [t for t in triggers if t.name == name]
         if not fired:
             reports.append(PushReport(name, TRIGGER_TITLES[name], "did not fire",
-                                      evaluation.silent.get(name, "not evaluated")))
+                                      silent.get(name, "not evaluated")))
             continue
         for trigger in fired:
             when = sent.get(trigger.fingerprint)
@@ -572,16 +583,12 @@ def _move_id(move: dict[str, Any]) -> str:
     return f"{move['out']['element_id']}->{move['in']['element_id']}"
 
 
-def _captain_line(conn: sqlite3.Connection, capture, gameweek: int,
-                  squad: list[dict[str, Any]]) -> list[str]:
+def _captain_line(picks: list[dict[str, Any]]) -> list[str]:
     """The push's captain line, on the captured XI: who, and one sentence why.
 
     Nothing when there is no squad or no projection - the push is about the move, and
     a captain line that says "not evaluated" would be noise on a lock screen.
     """
-    if not (capture and squad):
-        return []
-    picks = chips.captain_picks(conn, capture.id, gameweek, MODEL_VERSION)
     if not picks:
         return []
     why = chips.captain_why(picks, short=True)
@@ -607,12 +614,19 @@ def _hours(delta: timedelta) -> str:
 def evaluate(conn: sqlite3.Connection, gameweek: int, *,
              now: Optional[datetime] = None,
              min_net_xp: Optional[float] = None,
-             include_token: bool = True) -> Evaluation:
-    """Evaluate all four triggers once, recording why each silent one stayed silent.
+             include_token: bool = True,
+             notifications_configured: Optional[bool] = None,
+             learnings_dir: Path = settle.LEARNINGS_DIR) -> Evaluation:
+    """Evaluate all four triggers once, recording why each silent one stayed silent,
+    and read everything else the brief prints while at it.
 
     Triggers come out in the order they should be read: a broken warehouse first,
     because nothing below it can be trusted; then a player who cannot play, which is
     points already lost; then the deadline; then the standing recommendation.
+
+    `notifications_configured` and `learnings_dir` are the two facts that come from
+    outside the warehouse - whether a push can reach the phone, and where the drafted
+    learnings are - taken as arguments so that a test never reads the repo's own.
     """
     now = now or datetime.now(timezone.utc)
     threshold = worth_making_threshold() if min_net_xp is None else float(min_net_xp)
@@ -653,6 +667,9 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     listing = ranked_transfers(conn)
     moves = listing["moves"]
     top = moves[0] if moves else None
+    ownership, _ = recommend.ownership_source(conn)
+    captain_picks = (chips.captain_picks(conn, capture.id, gameweek, MODEL_VERSION)
+                     if capture and squad else [])
 
     # 2. squad_player_unavailable, one per player. Not batched into a single message:
     #    the owner acts on them one at a time, and a batched fingerprint would go stale
@@ -784,7 +801,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                 *(f"- {line}" for line in recommend.move_lines(top)),
                 f"- Net {top['net_xp_delta']:+.2f} clears the {threshold:.1f} bar. "
                 f"Price: {top['affordability']['reason']}",
-                *_captain_line(conn, capture, gameweek, squad),
+                *_captain_line(captain_picks),
                 _deadline_line(deadline, remaining),
             ]),
             action=(f"Make {top['in']['name']} for {top['out']['name']}, or record why "
@@ -833,10 +850,17 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             silent["chip_worth_playing"] = "; ".join(
                 f"{v.title} {v.reason}" for v in evaluated)
 
-    return Evaluation(gameweek=gameweek, now=now, threshold=threshold,
-                      triggers=triggers, silent=silent, checks=checks,
-                      capture=capture, squad=squad, state=state,
-                      deadline=deadline, listing=listing, chips=verdicts)
+    return Evaluation(
+        gameweek=gameweek, now=now, threshold=threshold,
+        triggers=triggers, silent=silent, checks=checks,
+        capture=capture, squad=squad, state=state,
+        deadline=deadline, listing=listing, chips=verdicts,
+        ownership=ownership, captain_picks=captain_picks,
+        falling=(falling_holdings(conn, capture.id, squad, now)
+                 if capture and squad else []),
+        last_settled=last_settled(conn),
+        learnings=settle.read_learnings(learnings_dir),
+        reports=_push_reports(conn, triggers, silent, configured=notifications_configured))
 
 
 def _runner_up(verdict: chips.Verdict) -> Optional[chips.ChipValue]:
@@ -891,9 +915,7 @@ def learnings_line(learnings: list[settle.Learning]) -> str:
     return f"{len(proposed)} proposed - " + "; ".join(claims)
 
 
-def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
-                 reports: list[PushReport], *, markdown: bool = True,
-                 learnings_dir: Path = settle.LEARNINGS_DIR) -> list[str]:
+def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     """The fixed opening block: the same lines in the same order, every run.
 
     Every line is present whether or not there is anything to say, and says "none" or
@@ -902,7 +924,7 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
     """
     state, squad, deadline = evaluation.state, evaluation.squad, evaluation.deadline
     remaining = None if deadline is None else deadline - evaluation.now
-    listing = evaluation.listing
+    listing, reports = evaluation.listing, evaluation.reports
     top = listing["moves"][0] if listing["moves"] else None
     threshold = evaluation.threshold
 
@@ -924,15 +946,13 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
     if top is not None:
         ownership = recommend.move_lines(top)[1].replace("Ownership not shown", "not shown")
     else:
-        source, _ = recommend.ownership_source(conn)
+        source = evaluation.ownership
         ownership = (f"rivals captured for gameweek {source.gameweek} "
                      f"({source.managers} rivals); no move to measure"
                      if source.fresh else f"not shown: {source.reason}")
 
     # Captain: the model's pick for the target gameweek from the captured XI.
-    capture = evaluation.capture
-    picks = (chips.captain_picks(conn, capture.id, evaluation.gameweek, MODEL_VERSION)
-             if capture and squad else [])
+    picks = evaluation.captain_picks
     captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
     why = chips.captain_why(picks)
     if why:
@@ -974,7 +994,7 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
     push = "; ".join(parts) if parts else f"nothing fired - all {len(reports)} triggers checked"
 
     # Learnings.
-    pending = learnings_line(settle.read_learnings(learnings_dir))
+    pending = learnings_line(evaluation.learnings)
 
     # Data.
     failed = [c.label for c in evaluation.checks if c.failed]
@@ -998,27 +1018,17 @@ def render_block(conn: sqlite3.Connection, evaluation: Evaluation,
     return [f"{label + ':':<{width}} {text}" for label, text in rows]
 
 
-def render_brief(conn: sqlite3.Connection, gameweek: int, *,
-                 now: Optional[datetime] = None,
-                 evaluation: Optional[Evaluation] = None,
-                 include_token: bool = True,
-                 notifications_configured: Optional[bool] = None,
-                 learnings_dir: Path = settle.LEARNINGS_DIR) -> str:
-    """The gameweek brief as markdown.
+def render_brief(evaluation: Evaluation) -> str:
+    """The gameweek brief as markdown, from one Evaluation and nothing else.
 
     Written for a person holding a phone at 07:00, so the order is what changed, what to
     do, then the evidence. The transfer-chip banner sits at the very top rather than in
     the transfers section, because an active wildcard changes how every recommendation
     below it should be read, and a reader who scrolls past it has been misled by the
     layout rather than by the numbers.
-
-    `evaluation` is accepted so a caller that has already run one does not run a second;
-    it is not a different brief, and reading the warehouse twice for one page is how the
-    two halves of it would come to disagree.
     """
-    if evaluation is None:
-        evaluation = evaluate(conn, gameweek, now=now, include_token=include_token)
-    reports = push_reports(conn, evaluation, configured=notifications_configured)
+    gameweek = evaluation.gameweek
+    reports = evaluation.reports
     now = evaluation.now
     triggers = evaluation.triggers
     capture = evaluation.capture
@@ -1048,7 +1058,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
                   f"priced as though no free transfer exists.", ""]
 
     # 0. The block. Same lines, same order, every run.
-    lines += render_block(conn, evaluation, reports, learnings_dir=learnings_dir)
+    lines += render_block(evaluation)
 
     # 1. What needs you.
     lines += ["## What needs you", ""]
@@ -1122,8 +1132,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
 
     # 4. Price watch. Not a trigger, and the brief says why.
     lines += ["## Price watch", ""]
-    falling = (falling_holdings(conn, capture.id, squad, now)
-               if capture and squad else [])
+    falling = evaluation.falling
     if falling:
         lines += _table(["player", "price", "predicted progress", "net transfers"],
                         ["---", "---:", "---:", "---:"],
@@ -1235,7 +1244,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
 
     # 6. Calibration.
     lines += ["## Last settled gameweek", ""]
-    settled = last_settled(conn)
+    settled = evaluation.last_settled
     if settled is None:
         lines += ["No gameweek has been graded yet - `outcome` is empty. Run "
                   "`make settle GW=n` after a gameweek finishes; until then the model "
@@ -1269,8 +1278,7 @@ def render_brief(conn: sqlite3.Connection, gameweek: int, *,
     return "\n".join(lines)
 
 
-def write_brief(conn: sqlite3.Connection, gameweek: int, root: Path = BRIEF_DIR,
-                **kwargs) -> Path:
+def write_brief(evaluation: Evaluation, root: Path = BRIEF_DIR) -> Path:
     """Render the brief and write it to `logs/gwNN.md`, creating `logs/` if needed.
 
     The same pattern `settle.draft_learning` follows: the directory is created by the
@@ -1278,9 +1286,9 @@ def write_brief(conn: sqlite3.Connection, gameweek: int, root: Path = BRIEF_DIR,
     claims a run has happened that has not. `logs/` is not gitignored, so the file is
     tracked once written - which is the point. The reasoning trail is committed.
     """
-    path = brief_path(gameweek, root)
+    path = brief_path(evaluation.gameweek, root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_brief(conn, gameweek, **kwargs))
+    path.write_text(render_brief(evaluation))
     return path
 
 
@@ -1328,7 +1336,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return EXIT_UNREADABLE
         evaluation = evaluate(conn, gameweek)
         triggers = evaluation.triggers
-        text = render_brief(conn, gameweek, evaluation=evaluation)
+        text = render_brief(evaluation)
         if args.dry_run:
             print(text)
             print(f"\n--- {len(triggers)} trigger(s) would fire ---", file=sys.stderr)
@@ -1342,7 +1350,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print(f"{name}  DID NOT FIRE\n  {evaluation.silent[name]}",
                           file=sys.stderr)
             return EXIT_OK
-        path = write_brief(conn, gameweek, args.logs, evaluation=evaluation)
+        path = write_brief(evaluation, args.logs)
         print(f"wrote {path} ({len(triggers)} trigger(s): "
               f"{', '.join(t.name for t in triggers) or 'none'})")
         return EXIT_OK

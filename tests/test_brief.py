@@ -192,6 +192,8 @@ class BriefTestCase(unittest.TestCase):
 
     def evaluate(self, **kwargs):
         kwargs.setdefault("now", NOW)
+        # Never the repo's own learnings/: the suite runs from the repo root.
+        kwargs.setdefault("learnings_dir", Path(self.tmp.name) / "learnings")
         return brief.evaluate(self.conn, GAMEWEEK, **kwargs)
 
     def fired(self, evaluation):
@@ -673,10 +675,7 @@ class AllTriggersTests(BriefTestCase):
 class RenderBriefTests(BriefTestCase):
 
     def render(self, **kwargs):
-        kwargs.setdefault("now", NOW)
-        # Never the repo's own learnings/: the suite runs from the repo root.
-        kwargs.setdefault("learnings_dir", Path(self.tmp.name) / "learnings")
-        return brief.render_brief(self.conn, GAMEWEEK, **kwargs)
+        return brief.render_brief(self.evaluate(**kwargs))
 
     def test_the_wildcard_banner_comes_before_anything_it_would_change(self):
         """It re-reads every recommendation under it, so a reader who scrolls past it has
@@ -804,7 +803,7 @@ class RenderBriefTests(BriefTestCase):
             storage.record_notification(self.conn, trigger.fingerprint, trigger.name,
                                         trigger.headline, "ntfy", GAMEWEEK)
         self.conn.commit()
-        text = self.render(evaluation=evaluation, notifications_configured=True)
+        text = self.render(notifications_configured=True)
         self.assertRegex(text, r"- \*\*Push:\*\* sent: A player you own cannot play "
                                r"\(\w{3} \d\d \w{3} \d\d:\d\d UTC\)")
         self.assertIn("— **sent**: ", text)
@@ -866,7 +865,7 @@ class RenderBriefTests(BriefTestCase):
     def test_an_empty_warehouse_renders_rather_than_raising(self):
         """A brief that crashes on a fresh clone is a brief nobody can use to find out
         why the clone is empty."""
-        text = brief.render_brief(self.conn, GAMEWEEK, now=NOW)
+        text = self.render()
         self.assertIn("# Gameweek 3 brief", text)
         self.assertIn("no snapshot captured", text)
 
@@ -883,11 +882,20 @@ class RenderBriefTests(BriefTestCase):
         self.assertIn("No squad captured", text)
         self.assertIn("no squad captured", text.lower())
 
-    def test_one_evaluation_serves_both_halves_of_the_page(self):
-        """Reading the warehouse twice for one page is how its two halves disagree."""
+    def test_the_page_is_rendered_from_the_evaluation_alone(self):
+        """Reading the warehouse twice for one page is how its two halves disagree, so
+        the renderer is handed a value and no connection: once evaluated, the warehouse
+        can change or go away and the page is the same page."""
         self.warehouse.healthy()
         evaluation = self.evaluate()
-        self.assertEqual(self.render(evaluation=evaluation), self.render())
+        before = brief.render_brief(evaluation)
+        self.conn.execute("DELETE FROM my_squad")
+        self.conn.execute("DELETE FROM rival_squad")
+        self.conn.commit()
+        self.conn.close()
+        self.assertEqual(brief.render_brief(evaluation), before)
+        for line in brief.render_block(evaluation, markdown=False):
+            self.assertTrue(line.split(":")[0] in before, line)
 
 
 # --------------------------------------------------------------------------
@@ -900,15 +908,15 @@ class WriteBriefTests(BriefTestCase):
         self.warehouse.healthy()
         root = Path(self.tmp.name) / "logs"
         self.assertFalse(root.exists())
-        path = brief.write_brief(self.conn, GAMEWEEK, root, now=NOW)
+        path = brief.write_brief(self.evaluate(), root)
         self.assertEqual(path, root / "gw03.md")
         self.assertIn("# Gameweek 3 brief", path.read_text())
 
     def test_a_second_run_replaces_the_file_rather_than_appending(self):
         self.warehouse.healthy()
         root = Path(self.tmp.name) / "logs"
-        first = brief.write_brief(self.conn, GAMEWEEK, root, now=NOW).read_text()
-        second = brief.write_brief(self.conn, GAMEWEEK, root, now=NOW).read_text()
+        first = brief.write_brief(self.evaluate(), root).read_text()
+        second = brief.write_brief(self.evaluate(), root).read_text()
         self.assertEqual(first, second)
 
     def test_the_brief_writes_nothing_to_the_warehouse(self):
@@ -923,7 +931,8 @@ class WriteBriefTests(BriefTestCase):
         # A read-only connection raises on any write, so a clean render is the proof.
         conn = status_module.connect_readonly(path)
         try:
-            text = brief.render_brief(conn, GAMEWEEK, now=NOW)
+            text = brief.render_brief(brief.evaluate(
+                conn, GAMEWEEK, now=NOW, learnings_dir=Path(self.tmp.name) / "learnings"))
         finally:
             conn.close()
         self.assertIn("# Gameweek 3 brief", text)
