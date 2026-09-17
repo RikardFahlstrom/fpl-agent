@@ -118,6 +118,14 @@ class MessageTest(unittest.TestCase):
         headers["Title"].encode("ascii")            # must not raise
         self.assertTrue(headers["Title"].startswith("=?utf-8?"), headers["Title"])
 
+    def test_a_long_non_ascii_headline_is_not_folded(self):
+        # Header.encode folds at 76 characters; the newline it inserts is as illegal in
+        # an HTTP header as the non-ASCII was (GW5: "João Pedro (CHE) is out of ...").
+        long = "João Pedro (CHE) is out of the predicted lineup and is in your XI for GW5"
+        title = notify.message_headers(trigger(headline=long))["Title"]
+        self.assertNotIn("\n", title)
+        self.assertNotIn("\r", title)
+
     def test_an_ascii_headline_is_left_alone(self):
         self.assertEqual(notify.message_headers(trigger())["Title"], "Swap P1 for P2")
 
