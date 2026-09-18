@@ -381,6 +381,17 @@ class SquadPlayerUnavailableTests(BriefTestCase):
         self.assertEqual(triggers[0].fingerprint,
                          f"squad_player_unavailable:gw{GAMEWEEK}:p4:i")
 
+    def test_a_benched_player_is_not_told_to_move_to_the_bench(self):
+        self.warehouse.healthy()
+        self.warehouse.flag(14, "i", news="Hamstring")
+        self.conn.commit()
+        triggers = [t for t in self.evaluate().triggers
+                    if t.name == "squad_player_unavailable"]
+        self.assertEqual(len(triggers), 1)
+        self.assertIn("on your bench", triggers[0].headline)
+        self.assertNotIn("move him to the bench", triggers[0].action)
+        self.assertIn("already on your bench", triggers[0].action)
+
     def test_a_suspension_fires(self):
         self.warehouse.healthy()
         self.warehouse.flag(4, "s", news="Suspended")

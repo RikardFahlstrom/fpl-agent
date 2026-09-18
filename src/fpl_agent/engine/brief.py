@@ -687,7 +687,10 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                     f"({player['slot']}): {player['reason']}.\n"
                     f"- FPL says: {note}"),
             action=(f"Replace {player['name']} or move him to the bench before the "
-                    f"GW{gameweek} deadline."),
+                    f"GW{gameweek} deadline." if player["slot"] == "XI" else
+                    f"{player['name']} is already on your bench, so he costs you "
+                    f"nothing unless an XI player drops out; replace him only if a "
+                    f"transfer is worth it."),
             fingerprint=(f"squad_player_unavailable:gw{gameweek}:"
                          f"p{player['element_id']}:{player['reason_code']}"),
         ))
