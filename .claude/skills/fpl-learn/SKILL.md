@@ -16,23 +16,34 @@ something waiting; it never applies anything.
 grep -l "status: proposed" learnings/*.md
 ```
 
-Read each file whole. Group drafts that name the same `metric` and `slice`: two of them
-in different gameweeks are the "direction holds" signal a single draft asks you to wait
-for, and a lone draft from one gameweek is mostly variance (`/fpl-settle` says so).
+Read each file whole. Group drafts that name the same `metric` and `slice`, and count
+them - that count is the evidence bar, and this is the one place it is set:
+
+- **One** draft is a sample. Say it exists; do not propose anything.
+- **Two** with the same sign is worth noticing. Tell the owner the direction is
+  repeating and that one more settled gameweek decides it - still nothing to apply.
+- **Three** with the same sign is a finding. Trace it (step 2) and propose (step 3).
+
+A slice of 218 players looks like a lot of evidence, but the players are the same 218
+every week and one week's fixtures move all of them together; the independent samples
+are gameweeks, not players. Three is the smallest number where a sign that held every
+time is unlikely to be the fixture list. A draft whose sign flips resets the count.
 
 ## 2. Trace the number before proposing anything
 
-Every projection stores its components. Before suggesting a weight, find which term
-produced the bias - do not guess from the slice name:
+Every projection stores its components, and the actuals decompose into the same
+categories. Run the trace on each draft in the group:
 
 ```bash
-.venv/bin/python - <<'PY'
-import sqlite3, json
-conn = sqlite3.connect("data/fpl.db"); conn.row_factory = sqlite3.Row
-# components of graded projections in the slice, against actuals - adapt the join to
-# the slice (position, price band, p_start band) named in the learning
-PY
+.venv/bin/python .claude/skills/fpl-learn/scripts/trace_slice.py learnings/0002-*.md
 ```
+
+It prints predicted, actual and bias per component for the slice, largest gap first,
+and a totals line that must match the learning's own numbers - if it does not, stop.
+Read the trace for all three gameweeks side by side. A slice-level bias is often several
+small gaps that change order week to week rather than one term that is wrong; only a
+component that carries the gap **every** time names a weight. If nothing does, the
+learning is real but not actionable yet - say so and leave it `proposed`.
 
 The candidate weights live at the top of `src/fpl_agent/engine/projection.py`
 (`BASE_START_PROB`, `LINEUP_STARTER_PROB`, `BONUS_PRIOR_APPEARANCES`, the priors, …).
@@ -43,11 +54,16 @@ Scoring weights are **not** candidates - they come from `game_config` and are FP
 Say what happened, what you would change, and what you would expect to see - no engine
 vocabulary without its meaning:
 
-> Players almost certain to start scored about half a point more per game than the model
-> expected, two gameweeks running (218 players each time). The bonus term is where the
-> gap is: predicted starters earn bonus more often than the prior assumes. I would raise
-> `BONUS_PRIOR_APPEARANCES` from 3.0 to 2.0, which lifts their projection by about 0.4.
-> Apply it?
+> Defenders have scored about 0.3 more per game than the model expected in each of the
+> last three gameweeks. The trace puts nearly all of it in one place: the model expects
+> them to concede more than they do, so the goals-conceded penalty is too heavy. I would
+> soften that term by a quarter, which lifts a typical defender's projection by about
+> 0.2 and leaves the other positions alone. Apply it?
+
+The shape matters more than the words: the observation, the component the trace blamed,
+the specific constant and its new value, and the size of the move it should produce. The
+example is invented - the slice waiting in `learnings/` will name its own term, and only
+the trace can say which.
 
 Wait for **yes** or **no** on each. Do not batch the questions and do not apply on a
 "looks fine" - the answer has to be to a specific change.

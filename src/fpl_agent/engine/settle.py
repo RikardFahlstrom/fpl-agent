@@ -333,9 +333,10 @@ def draft_learning(slices: dict[str, list[Slice]], gameweek: int,
         "",
         "## Next",
         "",
-        "One gameweek is one sample. Confirm the direction holds before changing a "
-        "weight, and bump `model_version` when you do, so the change can be measured "
-        "against this baseline rather than replacing it.",
+        "One gameweek is one sample. Change a weight only once three drafts on this slice "
+        "agree on the sign; two is worth noticing, not acting on. Bump `model_version` "
+        "when you do, so the change can be measured against this baseline rather than "
+        "replacing it. The deciding is `/fpl-learn`.",
         "",
     ]
     path.write_text("\n".join(lines))

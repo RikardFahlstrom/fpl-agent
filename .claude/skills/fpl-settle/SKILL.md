@@ -53,10 +53,11 @@ The drafted file is a **hypothesis with evidence**, `status: proposed`. It is no
 
 Before changing a weight:
 
-- One gameweek is mostly variance. Confirm the direction holds across at least three
-  before fitting anything.
+- One gameweek is mostly variance. How many drafts on a slice it takes before a weight
+  moves is set in `/fpl-learn`, and only there - do not restate a number here.
 - Ask which term produces the bias. The components are stored on every projection for
-  exactly this - trace the number rather than guessing at it.
+  exactly this, and `/fpl-learn` has the script that reads them - trace the number
+  rather than guessing at it.
 - When a weight does change, **bump `MODEL_VERSION`** and set the learning's `status` to
   `applied` with the version in `action`. Both model versions then sit in the warehouse
   and can be compared against the same gameweeks.
