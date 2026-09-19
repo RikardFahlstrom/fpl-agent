@@ -53,7 +53,7 @@ class ChipState:
     def describe(self, gameweek: int) -> str:
         """The state in the reader's words, for the block."""
         if self.status == "played":
-            return f"played" + (f" in GW{self.played_in}" if self.played_in else "")
+            return "played" + (f" in GW{self.played_in}" if self.played_in else "")
         if self.status == "active":
             return "active this gameweek"
         if self.status == "available" and not self.open_in(gameweek):
