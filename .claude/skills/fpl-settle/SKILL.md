@@ -6,7 +6,9 @@ description: Grade projections against a finished gameweek, read the calibration
 # Settle a finished gameweek
 
 Run `make settle GW=n`. It backfills actuals, grades the decision-time projections, prints
-calibration slices and drafts a learning file.
+calibration slices and drafts a learning file. `make now` does the same when the
+warehouse says a gameweek is ready, after a fresh capture - reach for it when you are not
+sure a gameweek is settleable yet, and for `make settle` when you know which one.
 
 ## Check the warehouse first
 

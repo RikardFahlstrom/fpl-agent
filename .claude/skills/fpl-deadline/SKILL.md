@@ -15,7 +15,9 @@ gives and is not a failure. `make deadline DRY=--dry-run` shows the decision wit
 on it, and prints the reason each step is due or was skipped.
 
 It deliberately does not backfill actuals: this half is refreshing a market, not learning a
-result. `make now` is the one that does both.
+result. `make now` is the one that does both, and it is the one to reach for when you are
+not sure which half is due - it asks the warehouse and runs `deadline` itself when a
+deadline is near, so the answer is the same and nothing is missed on the way.
 
 Then interpret. The numbers are not the answer.
 
@@ -34,17 +36,17 @@ normal - ranked moves, prices, gains - because every one of those numbers is com
 whether or not the inputs are sound. That is exactly the failure this project keeps
 hitting: a confident answer to a question the data could not support.
 
-What has to be true before a recommendation means anything, and why each one poisons the
-output when it is not. Whatever `status` does not cover, check by hand:
+**Read the lines, not just the exit code.** `status` already checks the things a
+recommendation rests on - that the squad was captured (no squad, no selling prices, so
+the budget and everything on it is wrong), that the projection targets this gameweek
+under the current model (the one settle will grade later), and that rival squads exist
+(a player in no rival squad is owned by 0%, but only if rivals were captured at all).
+The first two are `FAIL` and move the exit code. **Rivals are a `WARN`**: stale or absent
+ownership sits behind an exit 0, so find that line before weighing any differential.
 
-- **The squad was captured.** Without it there are no selling prices, so the budget is
-  wrong and so is every recommendation resting on it. A snapshot that failed to log in
-  still captures the market half, so the run looks like it worked.
-- **The projection targets this gameweek.** That is the one settle will grade later. A
-  projection carried over from an earlier gameweek is not a decision-time projection.
-- **Rivals are captured for the most recent finished gameweek.** Ownership necessarily
-  lags: rival squads only become public after a deadline, so you are seeing what the
-  league owned last week. Say so rather than implying it is current.
+Ownership necessarily lags even when the line is `ok`: rival squads only become public
+after a deadline, so you are seeing what the league owned last week. Say so rather than
+implying it is current.
 
 ## Reading the output
 
