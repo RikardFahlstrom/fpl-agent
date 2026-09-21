@@ -114,6 +114,7 @@ class Gameweek:
     actuals: int       # player_gameweek rows for the round
     projected: bool    # a capture targeting the round projected it under the version
     graded: bool       # outcome rows exist under the version
+    settled_earlier: bool = False   # outcome rows exist under some other version
 
     @property
     def finished(self) -> bool:
@@ -210,14 +211,18 @@ def gameweeks(conn: sqlite3.Connection, model_version: str) -> GameweekLedger:
                       AS projected,
                   EXISTS (SELECT 1 FROM outcome
                            WHERE gameweek = r.round AND model_version = :version)
-                      AS graded
+                      AS graded,
+                  EXISTS (SELECT 1 FROM outcome
+                           WHERE gameweek = r.round AND model_version != :version)
+                      AS settled_earlier
              FROM rounds r ORDER BY r.round""",
         {"version": model_version}).fetchall()
     return GameweekLedger(
         model_version=model_version,
         rounds=tuple(Gameweek(round=r["round"], fixtures=r["fixtures"], played=r["played"],
                               actuals=r["actuals"], projected=bool(r["projected"]),
-                              graded=bool(r["graded"])) for r in rows))
+                              graded=bool(r["graded"]),
+                              settled_earlier=bool(r["settled_earlier"])) for r in rows))
 
 
 @dataclass(frozen=True)
