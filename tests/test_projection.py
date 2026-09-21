@@ -5,7 +5,8 @@ import unittest
 
 from fpl_agent.engine import projection, storage
 from fpl_agent.engine.projection import (
-    availability, clean_sheet_probability, project_player, shrink, start_rate,
+    availability, clean_sheet_probability, expected_conceded_penalties, project_player,
+    shrink, start_rate,
 )
 from fpl_agent.engine.scoring import Scoring
 from test_scoring import WEIGHTS
@@ -143,6 +144,15 @@ class ShrinkageTests(unittest.TestCase):
         self.assertAlmostEqual(clean_sheet_probability(0.0), 1.0)
         self.assertAlmostEqual(clean_sheet_probability(1.4), math.exp(-1.4))
         self.assertLess(clean_sheet_probability(3.0), clean_sheet_probability(1.0))
+
+    def test_conceded_penalties_is_expected_floor_of_half(self):
+        # FPL docks one point per two goals, so the expectation is E[floor(X/2)], which is
+        # below X/2 - the straight-line version charged 0.75 at 1.5 goals (learning 0003).
+        self.assertAlmostEqual(expected_conceded_penalties(0.0), 0.0)
+        # Poisson(1.5): P(2)+P(3) + 2*(P(4)+P(5)) + 3*(P(6)+P(7)) + ... = 0.5124
+        self.assertAlmostEqual(expected_conceded_penalties(1.5), 0.5124, places=3)
+        self.assertLess(expected_conceded_penalties(1.5), 0.75)
+        self.assertLess(expected_conceded_penalties(1.0), expected_conceded_penalties(3.0))
 
 
 class ProjectPlayerTests(unittest.TestCase):
