@@ -31,7 +31,7 @@ from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.5.0"
+MODEL_VERSION = "0.5.1"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
@@ -62,8 +62,10 @@ BENCH_CAMEO_PROB = 0.35
 NEUTRAL_DIFFICULTY = 3.0
 DIFFICULTY_SENSITIVITY = 0.25
 # Bonus is modelled from realised bonus per appearance, damped toward zero early in the
-# season when the sample is tiny.
-BONUS_PRIOR_APPEARANCES = 3.0
+# season when the sample is tiny. Learning 0001-0003: at 3.0 the damping halved a regular
+# starter's bonus through GW3-5 (predicted ~0.14/game against ~0.27 paid); 1.0 keeps one
+# lucky game from reading as a rate without hiding a real one.
+BONUS_PRIOR_APPEARANCES = 1.0
 # Minutes of evidence required before a per-90 rate is taken at face value. Below this a
 # rate is pulled toward its positional prior, in proportion to how thin the sample is.
 # Without this, 2 goals in 63 minutes reads as an xG90 of 2.0, and a player with no
