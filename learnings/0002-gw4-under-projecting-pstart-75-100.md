@@ -5,8 +5,8 @@ model_version: 0.5.0
 metric: bias_by_start_probability
 slice: P(start) 75-100%
 observation: under-projected by 0.54 points across 218 players
-status: proposed
-action: none yet
+status: applied
+action: BONUS_PRIOR_APPEARANCES 3.0 -> 1.0 (bonus damping toward zero was halving starters' bonus), model 0.5.1
 ---
 
 # P(start) 75-100%: under-projected by 0.54 in gameweek 4
