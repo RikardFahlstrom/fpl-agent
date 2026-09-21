@@ -31,7 +31,7 @@ from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.5.1"
+MODEL_VERSION = "0.5.2"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
@@ -197,6 +197,22 @@ def clean_sheet_probability(expected_conceded: float) -> float:
     return math.exp(-max(0.0, expected_conceded))
 
 
+def expected_conceded_penalties(expected_conceded: float) -> float:
+    """E[floor(X/2)] for Poisson X: the goals-conceded deductions FPL will actually apply.
+
+    Learning 0003: charging expected_conceded / 2 overstated the penalty by half across
+    GW3-5, because a single goal costs nothing and the line ignores that.
+    """
+    lam = max(0.0, expected_conceded)
+    if lam == 0.0:
+        return 0.0
+    total, p_k = 0.0, math.exp(-lam)
+    for k in range(1, 40):
+        p_k *= lam / k
+        total += (k // 2) * p_k
+    return total
+
+
 def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
                    history: dict[str, float], scoring: Scoring,
                    priors: dict[str, float], team_conceded: float,
@@ -238,7 +254,8 @@ def project_player(snap: sqlite3.Row, position: str, fixtures: list[dict],
         p_cs = clean_sheet_probability(expected_conceded) * p_start
         components["clean_sheet"] += p_cs * scoring.clean_sheet(position)
         components["goals_conceded"] += (
-            (expected_conceded / 2.0) * p_start * scoring.goal_conceded(position)
+            expected_conceded_penalties(expected_conceded) * p_start
+            * scoring.goal_conceded(position)
         )
 
         if DC_THRESHOLDS.get(position) is not None:
