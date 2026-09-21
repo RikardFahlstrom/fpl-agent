@@ -439,6 +439,27 @@ class GradingTests(StatusTestCase):
         self.assertNotIn("make settle", grading.detail)
         self.assertClean()
 
+    def test_a_gameweek_settled_under_an_earlier_version_is_not_called_unreachable(self):
+        """CLAUDE.md: a settled gameweek keeps its projection. After a MODEL_VERSION bump
+        the old grades stay under the old version and are not redone - which is not the
+        same as the round having predated the warehouse. Gameweek 1 was graded under
+        the version before this one; gameweek 2 never had a snapshot at all."""
+        self.conn.execute("UPDATE outcome SET model_version = '0.0.1-old' WHERE gameweek = 1")
+        self.conn.execute("UPDATE projection SET model_version = '0.0.1-old' "
+                          "WHERE gameweek = 1")
+        self.conn.execute("DELETE FROM outcome WHERE gameweek = 2")
+        self.conn.execute("DELETE FROM projection WHERE gameweek = 2")
+        self.conn.commit()
+
+        grading = self.by_label()["grading"]
+
+        self.assertEqual(grading.level, status.OK)
+        self.assertIn("gameweek(s) 1 settled under an earlier model version", grading.detail)
+        self.assertIn("gameweek(s) 2 finished before this warehouse", grading.detail)
+        self.assertNotIn("1, 2", grading.detail)
+        self.assertNotIn("make settle", grading.detail)
+        self.assertClean()
+
     def test_a_settleable_gameweek_still_warns_and_names_the_unreachable_ones(self):
         """One of each: gameweek 1 is beyond reach, gameweek 2 is waiting to be settled."""
         self.conn.execute("DELETE FROM outcome")

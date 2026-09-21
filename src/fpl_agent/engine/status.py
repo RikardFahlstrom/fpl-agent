@@ -319,20 +319,34 @@ def check_grading(ledger: warehouse.GameweekLedger) -> Check:
                      f"model {ledger.model_version}")
 
     settleable = ledger.settleable()
-    unreachable = [gw for gw in ungraded if gw not in settleable]
+    # Two ways a finished gameweek can be beyond settle's reach, and only one is a gap:
+    # a round settled under an earlier MODEL_VERSION keeps that grade (CLAUDE.md, "a
+    # settled gameweek keeps its projection"), whereas a round with no snapshot ever
+    # targeting it was never capturable.
+    superseded = [gw for gw in ungraded
+                  if gw not in settleable and ledger.get(gw).settled_earlier]
+    unreachable = [gw for gw in ungraded
+                   if gw not in settleable and gw not in superseded]
+
+    asides = []
+    if superseded:
+        asides.append(f"gameweek(s) {_gameweeks(superseded)} settled under an earlier "
+                      f"model version and keep that grade")
+    if unreachable:
+        asides.append(f"gameweek(s) {_gameweeks(unreachable)} finished before this "
+                      f"warehouse had a snapshot targeting them, so they can never be "
+                      f"graded")
 
     if not settleable:
         return Check("grading", OK,
-                     f"gameweek(s) {_gameweeks(unreachable)} finished before this "
-                     f"warehouse had a snapshot targeting them, so they can never be "
-                     f"graded - nothing to do, and nothing lost that is recoverable")
+                     "; ".join(asides) + " - nothing to do, and nothing lost that is "
+                     "recoverable")
 
     detail = (f"gameweek(s) {_gameweeks(settleable)} have finished but carry no outcome "
               f"rows under model {ledger.model_version} - run `make settle "
               f"GW={settleable[-1]}`")
-    if unreachable:
-        detail += (f" (gameweek(s) {_gameweeks(unreachable)} predate the warehouse and "
-                   f"can never be graded)")
+    if asides:
+        detail += f" ({'; '.join(asides)})"
     return Check("grading", WARN, detail)
 
 
