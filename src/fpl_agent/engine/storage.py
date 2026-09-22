@@ -352,8 +352,8 @@ def connect_readonly(path: Path | str) -> sqlite3.Connection:
 
 
 # FPL's deadline is 90 minutes before the first kickoff of the round, the rule FPL states
-# on its own help pages. The one statement of it: the brief's deadline and the
-# scheduler's are both derived from this.
+# on its own help pages. The one statement of it: `warehouse.deadline` applies it, and
+# the brief, the scheduler and `status` all read the deadline from there.
 DEADLINE_BEFORE_KICKOFF = timedelta(minutes=90)
 
 
@@ -377,27 +377,6 @@ def parse_utc(stamp: Optional[str]) -> Optional[datetime]:
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
-def next_deadline(conn: sqlite3.Connection) -> Optional[datetime]:
-    """When the next gameweek deadline falls, or None when no fixture is unplayed.
-
-    Derived from the stored fixtures rather than fetched, so it is free to ask hourly.
-    Caveat: a postponed opening fixture moves the kickoff but not the real deadline;
-    `bootstrap-static` carries an authoritative `deadline_time` and the warehouse does
-    not store it yet.
-
-    It lives here, beside `connect_readonly`, because two callers need it and neither
-    should have to import the other: `status` reports the hours left and `schedule`
-    decides a window from them. A second statement of "when is the deadline" is how the
-    scheduler and the engine came to disagree once already.
-    """
-    row = conn.execute(
-        """SELECT MIN(kickoff_time) AS kickoff FROM fixture
-            WHERE finished = 0
-              AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0)""").fetchone()
-    kickoff = parse_utc(None if row is None else row["kickoff"])
-    return None if kickoff is None else kickoff - DEADLINE_BEFORE_KICKOFF
-
-
 def hours_until(deadline: Optional[datetime], now: datetime) -> Optional[int]:
     """Whole hours from `now` until `deadline`, or None when there is no deadline.
 
@@ -415,17 +394,6 @@ def hours_until(deadline: Optional[datetime], now: datetime) -> Optional[int]:
     if deadline is None:
         return None
     return math.floor((deadline - now).total_seconds() / 3600)
-
-
-def hours_to_deadline(conn: sqlite3.Connection,
-                      now: Optional[datetime] = None) -> Optional[int]:
-    """Hours from `now` until the next deadline, or None when no fixture is unplayed.
-
-    `next_deadline` and `hours_until`, composed. It lives here for the same reason
-    `next_deadline` does: `status` reports the number and `schedule` acts on it, and two
-    conversions agreeing today is how they came to disagree last time.
-    """
-    return hours_until(next_deadline(conn), now or datetime.now(timezone.utc))
 
 
 def target_gameweek(bootstrap: dict) -> Optional[int]:

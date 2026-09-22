@@ -48,7 +48,7 @@ from .. import config
 
 from . import storage
 from .projection import MODEL_VERSION
-from .warehouse import OwnershipSource, gameweeks, ownership
+from .warehouse import OwnershipSource, gameweeks, ownership, target
 
 JOBS = ("daily", "deadline", "auto")
 
@@ -150,8 +150,8 @@ class Plan:
     steps: tuple[Step, ...] = ()
     skipped: tuple[Skipped, ...] = ()
     problem: Optional[str] = None
-    #: Hours to the next deadline as this Plan was decided, or None when the warehouse
-    #: could not be asked or no fixture is left to play. Carried because a caller that
+    #: Hours to the target gameweek's deadline as this Plan was decided, or None when the
+    #: warehouse could not be asked or no deadline can be derived. Carried because a caller that
     #: summarises a Plan should not have to ask the question a second time and risk a
     #: different answer - which is the whole failure this module was built out of.
     hours_to_deadline: Optional[int] = None
@@ -183,7 +183,8 @@ class Reading:
     decided in one place from one clock.
     """
     problem: Optional[str] = None
-    next_deadline: Optional[datetime] = None
+    #: When the target gameweek locks - `warehouse.target`'s answer.
+    deadline: Optional[datetime] = None
     #: Every gameweek `settle` would grade, oldest first - the ledger's rule, answered.
     settleable: tuple[int, ...] = ()
     #: Whether a first full `rivals` run has recorded the league, so its table can be
@@ -206,13 +207,14 @@ class Reading:
 def read(conn: sqlite3.Connection) -> Reading:
     """Ask an open warehouse the three questions a Plan is decided from. Never writes.
 
-    Each fact is read through its owner - `storage.next_deadline`, the ledger's
+    Each fact is read through its owner - `warehouse.target`, the ledger's
     `settleable`, `warehouse.ownership`, the `league` table - so nothing here is a
     second statement of a rule.
     """
     ledger = gameweeks(conn, MODEL_VERSION)
+    reading = target(conn)
     return Reading(
-        next_deadline=storage.next_deadline(conn),
+        deadline=None if reading is None else reading.deadline,
         settleable=tuple(ledger.settleable()),
         league_known=bool(conn.execute("SELECT COUNT(*) FROM league").fetchone()[0]),
         rivals=ownership(conn, ledger, config.rival_leagues()))
@@ -376,11 +378,11 @@ def _ranking_or_skip(warehouse: Reading, hours: Optional[int],
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
     if hours is None:
-        return [], [Skipped(what, "no fixture is left to play, so there is no deadline "
-                                  "to rank against")]
+        return [], [Skipped(what, "the target gameweek has no kickoff recorded, so there "
+                                  "is no deadline to rank against")]
     if hours < 0:
-        return [], [Skipped(what, f"the last deadline passed {-hours}h ago and the round "
-                                  f"is not confirmed finished yet")]
+        return [], [Skipped(what, f"the last deadline passed {-hours}h ago and no capture "
+                                  f"since has moved on to the next gameweek")]
     if hours > settings.deadline_within_hours:
         return [], [Skipped(what, f"the next deadline is {hours}h away, further out than "
                                   f"{settings.deadline_within_hours}h; lineups are not "
@@ -443,7 +445,7 @@ def due(job: str, *, now: datetime, warehouse: Reading,
 
     steps: list[Step] = []
     skipped: list[Skipped] = []
-    hours = storage.hours_until(warehouse.next_deadline, now)
+    hours = storage.hours_until(warehouse.deadline, now)
 
     if job in ("daily", "auto"):
         # The capture is due whatever the warehouse says - on a host that has none, it is

@@ -6,6 +6,7 @@ These are the rules the callers used to each state for themselves - `brief`, `st
 own tests check what they say about the answer; this file checks the answer.
 """
 import unittest
+from datetime import datetime, timezone
 
 from fpl_agent.engine import storage, warehouse
 from fpl_agent.engine.projection import MODEL_VERSION
@@ -40,6 +41,61 @@ class LatestTests(WarehouseTestCase):
         """The season may be over; that is the caller's call, not a missing capture."""
         self.w.snapshot(gameweek=None)
         self.assertIsNone(warehouse.latest(self.conn).gameweek)
+
+
+class DeadlineTests(WarehouseTestCase):
+    """When a gameweek locks, derived from its fixtures - the warehouse keeps no
+    `deadline_time`."""
+
+    def kickoff(self, fixture_id, gameweek, stamp, finished=False):
+        storage.upsert_fixtures(self.conn, [
+            {"id": fixture_id, "event": gameweek, "kickoff_time": stamp,
+             "finished": finished}])
+
+    def test_the_deadline_is_ninety_minutes_before_the_first_kickoff(self):
+        self.kickoff(300, 3, "2026-09-06T14:00:00Z")
+        self.kickoff(301, 3, "2026-09-05T15:00:00Z")
+        self.assertEqual(warehouse.deadline(self.conn, 3),
+                         datetime(2026, 9, 5, 13, 30, tzinfo=timezone.utc))
+
+    def test_played_fixtures_do_not_move_it(self):
+        """The bug this rule replaced: the earliest *unplayed* kickoff walked forward
+        through a gameweek under way, putting a deadline before every remaining match."""
+        self.kickoff(300, 3, "2026-09-05T15:00:00Z", finished=True)
+        self.kickoff(301, 3, "2026-09-07T20:00:00Z")
+        self.assertEqual(warehouse.deadline(self.conn, 3),
+                         datetime(2026, 9, 5, 13, 30, tzinfo=timezone.utc))
+
+    def test_no_fixtures_means_no_deadline_rather_than_a_guess(self):
+        """Absence of fixtures is absence of evidence, the rule settle already follows."""
+        self.assertIsNone(warehouse.deadline(self.conn, 3))
+
+    def test_a_trailing_z_is_read_as_utc(self):
+        self.kickoff(300, 3, "2026-09-05T15:00:00Z")
+        self.assertEqual(warehouse.deadline(self.conn, 3).tzinfo, timezone.utc)
+
+
+class TargetTests(WarehouseTestCase):
+    """The gameweek decisions are made for, and when it locks, in one read."""
+
+    def test_an_empty_warehouse_has_no_target(self):
+        self.assertIsNone(warehouse.target(self.conn))
+
+    def test_it_is_the_latest_captures_gameweek_and_that_gameweeks_deadline(self):
+        storage.upsert_fixtures(self.conn, [
+            {"id": 300, "event": 3, "kickoff_time": "2026-09-05T15:00:00Z"},
+            {"id": 400, "event": 4, "kickoff_time": "2026-09-12T15:00:00Z"}])
+        self.w.snapshot(gameweek=3)
+        newest = self.w.snapshot(gameweek=4)
+        target = warehouse.target(self.conn)
+        self.assertEqual(target.capture.id, newest)
+        self.assertEqual(target.gameweek, 4)
+        self.assertEqual(target.deadline,
+                         datetime(2026, 9, 12, 13, 30, tzinfo=timezone.utc))
+
+    def test_a_capture_with_no_target_gameweek_has_no_deadline(self):
+        self.w.snapshot(gameweek=None)
+        self.assertIsNone(warehouse.target(self.conn).deadline)
 
 
 class WithLineupsTests(WarehouseTestCase):

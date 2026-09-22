@@ -473,11 +473,16 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
     return checks
 
 
-# Both live in `storage`, next to the fixtures they read, because `schedule` needs them
-# too and neither module should have to import the other. Re-exported because callers and
-# tests reach for this one by this name - `deploy/fpl-cron.sh` through
-# `status --hours-to-deadline`.
-hours_to_deadline = storage.hours_to_deadline
+def hours_to_deadline(conn: sqlite3.Connection,
+                      now: Optional[datetime] = None) -> Optional[int]:
+    """Hours until the target gameweek's deadline, or None when none can be derived.
+
+    `warehouse.target` and `storage.hours_until`, the same two `schedule` decides its
+    window from, so `status --hours-to-deadline` and the schedule cannot disagree.
+    """
+    reading = warehouse.target(conn)
+    return storage.hours_until(None if reading is None else reading.deadline,
+                               now or datetime.now(timezone.utc))
 
 
 
@@ -550,7 +555,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="skip the token cache check (the cache is only ever read, "
                              "never exchanged)")
     parser.add_argument("--hours-to-deadline", action="store_true",
-                        help="print the hours until the next deadline and exit; this is "
+                        help="print the hours until the target gameweek's deadline and exit; this is "
                              "what deploy/fpl-cron.sh consumes so the schedule and the "
                              "engine cannot disagree about when to project")
     args = parser.parse_args(argv)
@@ -570,7 +575,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.hours_to_deadline:
         # Quiet and machine-readable, like `settle --list`: the scheduler substitutes
         # this into a shell variable, so nothing but the number reaches stdout, and an
-        # empty answer (no unplayed fixture) prints nothing rather than a word.
+        # empty answer (no deadline to derive) prints nothing rather than a word.
         try:
             hours = hours_to_deadline(conn)
         finally:

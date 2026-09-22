@@ -29,7 +29,7 @@ Answering it is **a function of its arguments** — no writes, no subprocesses, 
 and no clock of its own. The time, the reading and the settings are arguments, which is
 what makes "what would run tonight" an assertion in a test rather than a dry run against
 a live database. `due` never decides what is gradeable or when a deadline falls: the
-reading carries the *ledger*'s answer (`settleable`) and `storage.next_deadline`'s, and
+reading carries the *ledger*'s answer (`settleable`) and the *target gameweek*'s deadline, and
 `due` applies `storage.hours_until` to the latter with the `now` it was given, because
 those rules already exist and a second statement of one is how the scheduler and the
 engine came to disagree.
@@ -37,7 +37,8 @@ engine came to disagree.
 ## reading
 
 What the warehouse said when asked the three questions a Plan is decided from, or the
-reason it could not be asked: `schedule.Reading` — `problem`, `next_deadline`,
+reason it could not be asked: `schedule.Reading` — `problem`, `deadline` (the *target
+gameweek*'s, from `warehouse.target`),
 `settleable`, `league_known`. `schedule.read(conn)` produces one from an open
 connection, through the owner of each fact; `schedule.read_warehouse(path)` opens the
 file read-only, reads, and closes it before returning, turning a missing or foreign file
@@ -52,7 +53,8 @@ the SQLite-backed tests are there to prove `read` asks the right questions.
 
 The answer `due` returns: the ordered `Step`s that are due, every `Skipped` item with the
 reason it was skipped, the job and the time it was decided at, why the warehouse could not
-be read if it could not, and the hours to the next deadline it decided from.
+be read if it could not, and the hours to the *target gameweek*'s deadline it decided
+from.
 
 A Plan is data. Nothing about holding one runs anything — `run` does that, separately and
 later. Two of its parts carry weight beyond their obvious use:
@@ -121,6 +123,20 @@ Readers ask the module rather than the `snapshot` table, so that `status` and `l
 agree on the lineup source by construction rather than by a comment saying they should.
 `engine/warehouse` is where "what the warehouse holds" lives; a reader that wants a fact
 about a capture or a gameweek asks it there, not the tables.
+
+## target gameweek
+
+The gameweek decisions are being made for: the latest capture's gameweek, which is FPL's
+`is_next` when it was taken — the one `recommend` prices, `brief` describes and `status`
+checks. `warehouse.target(conn)` reads the capture, its gameweek and that gameweek's
+deadline together, and `warehouse.deadline(conn, n)` is the one statement of when a
+gameweek locks: `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff, played or
+not. `schedule`, `status --hours-to-deadline` and `brief` all read it there.
+
+It is not "the lowest gameweek with a fixture to play". That was the scheduler's rule
+until #97, and mid-round it put a deadline before each remaining match. Between the
+deadline passing and the next capture, the target's deadline is in the past; the hourly
+job reads that as "passed" and ranks nothing, which is the intended skip.
 
 ## ledger
 
