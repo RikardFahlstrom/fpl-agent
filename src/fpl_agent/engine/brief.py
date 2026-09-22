@@ -1042,9 +1042,7 @@ def render_brief(evaluation: Evaluation) -> str:
     else:
         when = deadline.isoformat(timespec="minutes")
         if remaining >= timedelta(0):
-            lines.append(f"- Deadline **{when}**, {_hours(remaining)} away "
-                         f"({storage.DEADLINE_BEFORE_KICKOFF.seconds // 60} minutes before "
-                         f"the first kickoff).")
+            lines.append(f"- Deadline **{when}**, {_hours(remaining)} away.")
         else:
             lines.append(f"- Deadline **{when}** has passed ({_hours(-remaining)} ago). "
                          f"Transfers made now land in the next gameweek.")

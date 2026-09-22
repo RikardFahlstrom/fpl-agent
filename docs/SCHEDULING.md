@@ -410,9 +410,10 @@ token_cache = /srv/fpl-agent/state/session.json
 
 - **Transfers are never executed.** By design: the client has no method for it. The
   agent tells you what to do; you do it.
-- **The deadline is derived, not fetched.** 90 minutes before the first stored kickoff,
-  which a postponed opening fixture would move. `bootstrap-static`'s `deadline_time` is
-  authoritative and the warehouse does not store it yet.
+- **The deadline is only as fresh as the last capture.** Each capture stores FPL's
+  `deadline_time` for the gameweek it targets; a gameweek no capture has targeted yet,
+  or one targeted only before that column existed, falls back to 90 minutes before its
+  first stored kickoff, which a postponed opening fixture would move.
 
 `deploy/fpl-cron.sh --dry-run daily` and `--dry-run deadline` print what
 each job would do without touching anything, which is the quickest way to see what

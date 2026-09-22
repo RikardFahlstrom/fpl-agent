@@ -130,8 +130,9 @@ The gameweek decisions are being made for: the latest capture's gameweek, which 
 `is_next` when it was taken — the one `recommend` prices, `brief` describes and `status`
 checks. `warehouse.target(conn)` reads the capture, its gameweek and that gameweek's
 deadline together, and `warehouse.deadline(conn, n)` is the one statement of when a
-gameweek locks: `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff, played or
-not. `schedule`, `status --hours-to-deadline` and `brief` all read it there.
+gameweek locks: FPL's `deadline_time` as the latest capture targeting `n` stored it,
+else `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff, played or not.
+`schedule`, `status --hours-to-deadline` and `brief` all read it there.
 
 A command that cannot proceed without a gameweek asks `warehouse.require_target(conn,
 gameweek)` instead: the same read, refusing in one wording when nothing is captured or

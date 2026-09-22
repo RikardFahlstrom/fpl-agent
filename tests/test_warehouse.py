@@ -44,13 +44,56 @@ class LatestTests(WarehouseTestCase):
 
 
 class DeadlineTests(WarehouseTestCase):
-    """When a gameweek locks, derived from its fixtures - the warehouse keeps no
-    `deadline_time`."""
+    """When a gameweek locks: FPL's `deadline_time` where a capture stored it, derived
+    from the fixtures where none did."""
 
     def kickoff(self, fixture_id, gameweek, stamp, finished=False):
         storage.upsert_fixtures(self.conn, [
             {"id": fixture_id, "event": gameweek, "kickoff_time": stamp,
              "finished": finished}])
+
+    def capture(self, gameweek, deadline_time):
+        """A capture as `snapshot` takes it, from `bootstrap-static`'s events."""
+        return storage.create_snapshot(self.conn, {"events": [
+            {"id": gameweek - 1, "is_current": True, "deadline_time": "2026-08-29T10:00:00Z"},
+            {"id": gameweek, "is_next": True, "deadline_time": deadline_time}]})
+
+    def test_a_capture_stores_its_target_gameweeks_deadline(self):
+        snapshot_id = self.capture(3, "2026-09-05T10:00:00Z")
+        row = self.conn.execute("SELECT deadline_time FROM snapshot WHERE id = ?",
+                                (snapshot_id,)).fetchone()
+        self.assertEqual(row["deadline_time"], "2026-09-05T10:00:00Z")
+
+    def test_a_postponed_opening_fixture_does_not_move_a_stored_deadline(self):
+        """The case deriving gets wrong: the first kickoff moved to Sunday, FPL's
+        deadline stayed on Saturday."""
+        self.kickoff(300, 3, "2026-09-06T14:00:00Z")
+        self.capture(3, "2026-09-05T10:00:00Z")
+        self.assertEqual(warehouse.deadline(self.conn, 3),
+                         datetime(2026, 9, 5, 10, 0, tzinfo=timezone.utc))
+        self.assertEqual(warehouse.target(self.conn).deadline,
+                         datetime(2026, 9, 5, 10, 0, tzinfo=timezone.utc))
+
+    def test_the_latest_capture_targeting_the_gameweek_wins(self):
+        self.capture(3, "2026-09-05T10:00:00Z")
+        self.capture(3, "2026-09-05T11:00:00Z")
+        self.assertEqual(warehouse.deadline(self.conn, 3),
+                         datetime(2026, 9, 5, 11, 0, tzinfo=timezone.utc))
+
+    def test_a_capture_without_a_stored_deadline_keeps_the_derived_one(self):
+        """Every capture taken before the column existed."""
+        self.kickoff(300, 3, "2026-09-05T15:00:00Z")
+        self.w.snapshot(gameweek=3)
+        self.assertEqual(warehouse.deadline(self.conn, 3),
+                         datetime(2026, 9, 5, 13, 30, tzinfo=timezone.utc))
+
+    def test_a_warehouse_without_the_column_keeps_the_derived_one(self):
+        """`status`, `brief` and the scheduler open read-only and never migrate."""
+        self.kickoff(300, 3, "2026-09-05T15:00:00Z")
+        self.w.snapshot(gameweek=3)
+        self.conn.execute("ALTER TABLE snapshot DROP COLUMN deadline_time")
+        self.assertEqual(warehouse.deadline(self.conn, 3),
+                         datetime(2026, 9, 5, 13, 30, tzinfo=timezone.utc))
 
     def test_the_deadline_is_ninety_minutes_before_the_first_kickoff(self):
         self.kickoff(300, 3, "2026-09-06T14:00:00Z")
