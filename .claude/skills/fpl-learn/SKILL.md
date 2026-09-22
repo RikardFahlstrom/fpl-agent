@@ -74,15 +74,17 @@ Wait for **yes** or **no** on each. Do not batch the questions and do not apply 
 2. **Bump `MODEL_VERSION`** (`engine/projection.py`). Both versions then sit in the
    warehouse and can be compared against the same gameweeks; a settled gameweek keeps its
    projection (CLAUDE.md invariants).
-3. In the learning file set `status: applied` and `action: <what changed>, model
-   <new version>`.
+3. In the learning file set `status: applied` and `action: '<what changed>, model
+   <new version>'`. Always single-quote `action:` and double any `'` inside it: it is
+   free text, and an unquoted `: ` breaks the frontmatter as YAML (GitHub won't render it).
 4. `make test`, then `make project` so the new version is in the warehouse, and read
    `fpl-agent brief --dry-run` to see the projections move the way you said they would.
 5. Commit the weight, the version and the learning file together, on a branch.
 
 ## 5. On no
 
-Set `status: rejected` and put the owner's reason in `action:` - one line, their words.
+Set `status: rejected` and put the owner's reason in `action:` - one line, their words,
+single-quoted as in §4.
 A rejected learning is kept, not deleted: the next draft on the same slice should be read
 against it.
 
