@@ -351,8 +351,30 @@ def connect_readonly(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
-# FPL's deadline is 90 minutes before the first kickoff of the round.
+# FPL's deadline is 90 minutes before the first kickoff of the round, the rule FPL states
+# on its own help pages. The one statement of it: the brief's deadline and the
+# scheduler's are both derived from this.
 DEADLINE_BEFORE_KICKOFF = timedelta(minutes=90)
+
+
+def parse_utc(stamp: Optional[str]) -> Optional[datetime]:
+    """Parse an FPL timestamp, which is UTC whether or not it says so; None if unreadable.
+
+    The one parser for every stamp the engine reads - kickoffs, price locks, capture
+    times. The API writes `...Z`, which `datetime.fromisoformat` only accepts from 3.11,
+    and the floor is 3.10; a naive value is UTC, not local. Returning None rather than
+    raising leaves each caller to say what an unreadable stamp means to it.
+    """
+    if not stamp:
+        return None
+    text = str(stamp).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def next_deadline(conn: sqlite3.Connection) -> Optional[datetime]:
@@ -372,18 +394,8 @@ def next_deadline(conn: sqlite3.Connection) -> Optional[datetime]:
         """SELECT MIN(kickoff_time) AS kickoff FROM fixture
             WHERE finished = 0
               AND event = (SELECT MIN(event) FROM fixture WHERE finished = 0)""").fetchone()
-    kickoff = None if row is None else row["kickoff"]
-    if not kickoff:
-        return None
-    # The API writes `...Z`, which datetime.fromisoformat only accepts from 3.11.
-    text = kickoff[:-1] + "+00:00" if kickoff.endswith("Z") else kickoff
-    try:
-        when = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return when - DEADLINE_BEFORE_KICKOFF
+    kickoff = parse_utc(None if row is None else row["kickoff"])
+    return None if kickoff is None else kickoff - DEADLINE_BEFORE_KICKOFF
 
 
 def hours_until(deadline: Optional[datetime], now: datetime) -> Optional[int]:

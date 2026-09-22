@@ -252,6 +252,17 @@ class SnapshotTests(StatusTestCase):
         self.assertEqual(self.by_label()["snapshot"].level, status.WARN)
         self.assertClean()
 
+    def test_a_trailing_z_capture_time_still_reports_an_age(self):
+        """The engine writes `+00:00`, the API writes `Z`; on 3.10 `fromisoformat`
+        refused the second and the age line silently said nothing."""
+        self.conn.execute(
+            "UPDATE snapshot SET captured_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+            (self.snapshot_id,))
+        self.conn.commit()
+        check = self.by_label()["snapshot"]
+        self.assertEqual(check.level, status.WARN)
+        self.assertRegex(check.detail, r"\(\d+\.\dh old\)")
+
 
 class SquadTests(StatusTestCase):
     def test_a_missing_squad_fails_and_names_itself(self):

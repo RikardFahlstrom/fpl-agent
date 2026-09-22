@@ -107,14 +107,9 @@ STALE_AFTER_HOURS = 36
 
 def _age_hours(captured_at: Optional[str]) -> Optional[float]:
     """Hours since an ISO timestamp, or None if it cannot be read."""
-    if not captured_at:
+    when = storage.parse_utc(captured_at)
+    if when is None:
         return None
-    try:
-        when = datetime.fromisoformat(captured_at)
-    except ValueError:
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - when).total_seconds() / 3600
 
 

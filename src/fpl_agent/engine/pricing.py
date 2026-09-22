@@ -42,7 +42,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import warehouse
+from . import storage, warehouse
 
 # FPL's documented rule: Predicted Progress over 100% is "Very Likely" to change.
 VERY_LIKELY_PROGRESS = 100.0
@@ -123,16 +123,9 @@ def is_locked(locked_until: Optional[str], now: Optional[datetime] = None) -> bo
     """
     if not locked_until:
         return False
-    text = str(locked_until).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        expiry = datetime.fromisoformat(text)
-    except ValueError:
+    expiry = storage.parse_utc(locked_until)
+    if expiry is None:
         return True
-    if expiry.tzinfo is None:
-        # FPL stamps these in UTC; a naive value is not a local one.
-        expiry = expiry.replace(tzinfo=timezone.utc)
     return expiry > (now or datetime.now(timezone.utc))
 
 
