@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from fpl_agent.engine import status, storage
+from fpl_agent.engine import status, storage, warehouse
 from fpl_agent.engine.projection import MODEL_VERSION
 from fpl_agent.engine.snapshot import SQUAD_SIZE
 
@@ -755,6 +755,24 @@ class HoursToDeadlineTests(StatusTestCase):
         # A round played but not yet confirmed finished by FPL sits here for hours.
         self._kickoff(3, -5)
         self.assertLess(status.hours_to_deadline(self.conn), 0)
+
+    def test_a_gameweek_under_way_reports_the_next_gameweeks_deadline(self):
+        # Saturday played, Monday still to come, and the capture already targets 4. The
+        # hours are to gameweek 4's deadline, the one the brief shows, not to Monday's
+        # kickoff.
+        stamp = lambda hours: (datetime.now(timezone.utc) + timedelta(hours=hours)
+                               ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.conn.execute("UPDATE fixture SET finished = 1, kickoff_time = ? WHERE id = 300",
+                          (stamp(-48),))
+        self.conn.execute("UPDATE fixture SET kickoff_time = ? WHERE id = 301", (stamp(5),))
+        self.w.fixtures(4, finished=False)
+        self._kickoff(4, 24 * 5)
+        self.w.snapshot(gameweek=4)
+        self.conn.commit()
+        hours = status.hours_to_deadline(self.conn)
+        self.assertEqual(hours, 24 * 5 - 2)
+        self.assertEqual(hours, storage.hours_until(warehouse.deadline(self.conn, 4),
+                                                    datetime.now(timezone.utc)))
 
     def test_the_flag_prints_only_the_number(self):
         self._kickoff(3, 10)

@@ -42,9 +42,11 @@ script consumes it, so the rule lives in exactly one place — the per-gameweek 
 read. Three statements of one rule is how
 the scheduler and the engine came to disagree in the first place.
 
-"When is the next deadline" is now asked the same way. It was the script's own SQL until
-it became `storage.next_deadline` and `storage.hours_to_deadline`, which `status` re-exports
-and the schedule decides its window from, because a scheduler and an engine that disagree
+"When is the next deadline" is now asked the same way. It was the script's own SQL, then
+`storage.next_deadline` - the earliest *unplayed* kickoff, which mid-round put a deadline
+before each remaining match while the brief showed the real one. It is now the *target
+gameweek*'s deadline, `warehouse.target`, which the schedule decides its window from and
+`status --hours-to-deadline` reports, because a scheduler and an engine that disagree
 about when to project will disagree quietly and on a matchday. The hours are rounded
 *down*, so a deadline half an hour gone reads as past rather than as "0h away" — which
 every window that tests `hours < 0` would have let through. The 26-hour cutoff is
@@ -100,8 +102,8 @@ committed or discarded.
 `engine/schedule.py` answers what a job is due to do. `due(job, now=..., warehouse=...,
 settings=...)` returns a **Plan**: the ordered **Step**s, why each one is due, and every
 **Skipped** item with the reason it was skipped. The warehouse arrives already read — a
-`Reading` from `schedule.read_warehouse(path)`: the next deadline, what is settleable,
-whether a league is known, or the reason none of that could be read — so a Plan is a
+`Reading` from `schedule.read_warehouse(path)`: the target gameweek's deadline, what is
+settleable, whether a league is known, or the reason none of that could be read — so a Plan is a
 function of its arguments with no writes, no subprocesses, and no clock of its own, and a
 deadline window is testable without waiting for one or seeding a database.
 

@@ -196,6 +196,35 @@ class DeadlineTests(ScheduleTestCase):
         self.assertEqual(plan.steps, ())
         self.assertTrue(any("passed" in skip.reason for skip in plan.skipped), plan.skipped)
 
+    def test_a_gameweek_under_way_is_not_a_deadline_before_each_remaining_match(self):
+        # Gameweek 3 is under way: Saturday's games played, Monday's kicks off in five
+        # hours, and the latest capture already targets 4, which starts in five days.
+        # Ninety minutes before Monday's kickoff is not a deadline anybody can act on.
+        self.fixtures(3, finished=True, hours_from_now=-48)
+        storage.upsert_fixtures(self.conn, [
+            {"id": 399, "event": 3, "team_h": 1, "team_a": 2, "team_h_difficulty": 3,
+             "team_a_difficulty": 3, "finished": False,
+             "kickoff_time": (NOW + timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")}])
+        self.kickoff(24 * 5, gameweek=4)
+        self.w.snapshot(gameweek=4)
+        self.conn.commit()
+        plan = self.due("deadline")
+        self.assertEqual(plan.steps, ())
+        self.assertEqual(plan.hours_to_deadline, 24 * 5 - 2)
+        self.assertEqual(
+            plan.hours_to_deadline,
+            storage.hours_until(warehouse.deadline(self.conn, 4), NOW))
+
+    def test_a_target_gameweek_whose_deadline_has_passed_ranks_nothing(self):
+        # Between the deadline and the next capture, the latest capture still targets
+        # the round that has just locked. The skip is the intended answer, not an error.
+        self.kickoff(-5)
+        plan = self.due("deadline")
+        self.assertEqual(plan.steps, ())
+        self.assertIsNone(plan.problem)
+        self.assertTrue(any("deadline passed 7h ago" in skip.reason
+                            for skip in plan.skipped), plan.skipped)
+
     def test_inside_the_window_it_recaptures_ranks_and_ends_on_status(self):
         self.kickoff(5)
         plan = self.due("deadline")
@@ -235,8 +264,9 @@ class AutoTests(ScheduleTestCase):
     """Both halves, for a person at a terminal who does not want to know which day it is."""
 
     def test_both_halves_hang_off_a_single_capture(self):
-        self.kickoff(5)
         self.settleable_gameweek(4)
+        self.w.snapshot(gameweek=5)     # the pipeline has moved on to 5, which is near
+        self.kickoff(5, gameweek=5)
         plan = self.due("auto")
         self.assertEqual(commands(plan), [
             "snapshot --force",
@@ -407,14 +437,15 @@ class ReadOnlyTests(ScheduleTestCase):
     """Reading the warehouse for a Plan is a read. Nothing about it may touch the file."""
 
     def test_a_reading_is_what_the_warehouse_holds(self):
-        self.kickoff(5)
         self.settleable_gameweek(4)
+        self.w.snapshot(gameweek=5)     # the pipeline has moved on to 5, which is near
+        self.kickoff(5, gameweek=5)
         self.w.rivals(2)
         self.conn.commit()
         reading = schedule.read(self.conn)
         self.assertEqual(reading.settleable, (4,))
         self.assertTrue(reading.league_known)
-        self.assertEqual(reading.next_deadline, NOW + timedelta(hours=3.5))
+        self.assertEqual(reading.deadline, NOW + timedelta(hours=3.5))
         self.assertTrue(reading.readable)
 
     def test_a_plan_can_be_produced_over_a_read_only_connection(self):
@@ -455,18 +486,18 @@ class ReadingTests(unittest.TestCase):
         deadline = NOW + timedelta(hours=26, minutes=30)
         # 26h30 away floors to 26, which is inside a 26h window; asked an hour earlier,
         # the same reading is 27h out and nothing is due. The reading did not change.
-        self.assertTrue(self.due("deadline", next_deadline=deadline).steps)
+        self.assertTrue(self.due("deadline", deadline=deadline).steps)
         self.assertEqual(self.due("deadline", now=NOW - timedelta(hours=1),
-                                  next_deadline=deadline).steps, ())
+                                  deadline=deadline).steps, ())
 
     def test_a_deadline_gone_by_a_minute_reads_as_gone(self):
-        plan = self.due("deadline", next_deadline=NOW - timedelta(minutes=1))
+        plan = self.due("deadline", deadline=NOW - timedelta(minutes=1))
         self.assertEqual(plan.steps, ())
         self.assertTrue(any("passed 1h ago" in skip.reason for skip in plan.skipped),
                         plan.skipped)
 
     def test_the_hours_carried_on_the_plan_are_the_ones_it_decided_from(self):
-        plan = self.due("deadline", next_deadline=NOW + timedelta(hours=3, minutes=30))
+        plan = self.due("deadline", deadline=NOW + timedelta(hours=3, minutes=30))
         self.assertEqual(plan.hours_to_deadline, 3)
 
     def test_a_problem_makes_the_reading_unreadable_whatever_else_it_carries(self):

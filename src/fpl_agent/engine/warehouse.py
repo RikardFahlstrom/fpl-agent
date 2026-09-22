@@ -7,7 +7,7 @@ modules, each with its own docstring explaining which snapshot it meant and why,
 `status` had to say in a comment that it deliberately copied `lineups`' query so the two
 would keep agreeing. This is that rule written once, so that agreement is by construction.
 
-Five questions, and the reason each is its own:
+Six questions, and the reason each is its own:
 
 - `latest` - the capture the pipeline is *in*: the one `recommend` prices against, `brief`
   describes and `status` checks. Highest id, because every capture is a new row.
@@ -17,6 +17,10 @@ Five questions, and the reason each is its own:
   and a Tuesday capture legitimately holds none.
 - `with_squad` - the latest capture that logged in. A market-only capture records no
   `my_state` row, and the entry id and selling prices live nowhere else.
+- `target` - the gameweek decisions are made for and when it locks: the latest capture,
+  its gameweek, and that gameweek's `deadline`, in one read. `schedule`, `status` and
+  `brief` all take the deadline from here; it used to have two statements, and mid-round
+  they disagreed (see `deadline`).
 - `projected` - the capture whose projections of gameweek N are graded: the most recent one
   *targeting* N with rows under the given model version. A projection of N made from a
   capture targeting N - 1 is a horizon row, not the decision-time record, and grading it
@@ -42,7 +46,10 @@ of them holds a rule of its own.
 
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
+
+from . import storage
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,54 @@ def _capture(conn: sqlite3.Connection, where: str, params: tuple = ()) -> Option
 def latest(conn: sqlite3.Connection) -> Optional[Capture]:
     """The most recent capture, or None if the warehouse has never been captured."""
     return _capture(conn, "1 = 1")
+
+
+def deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[datetime]:
+    """When `gameweek` locks: `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff.
+
+    The first kickoff of every fixture in the round, played or not. The rule this
+    replaced took the earliest *unplayed* kickoff, which walked forward through a round
+    under way and put a "deadline" ninety minutes before each remaining match - near and
+    positive, so the hourly job opened its ranking window for a deadline nobody could act
+    on, while the brief showed the real one.
+
+    Derived because the warehouse does not store FPL's `deadline_time`, so a postponed
+    opening fixture moves the kickoff but not the real deadline. A gameweek with no
+    kickoff recorded has no derivable deadline, and None is returned rather than a guess:
+    absence of fixtures is absence of evidence, the rule `Gameweek.finished` follows.
+    """
+    row = conn.execute(
+        "SELECT MIN(kickoff_time) AS first FROM fixture WHERE event = ?",
+        (gameweek,)).fetchone()
+    kickoff = storage.parse_utc(row["first"] if row else None)
+    return None if kickoff is None else kickoff - storage.DEADLINE_BEFORE_KICKOFF
+
+
+@dataclass(frozen=True)
+class Target:
+    """The target gameweek: the latest capture's, and when it locks."""
+    capture: Capture
+    deadline: Optional[datetime]
+
+    @property
+    def gameweek(self) -> Optional[int]:
+        return self.capture.gameweek
+
+
+def target(conn: sqlite3.Connection) -> Optional[Target]:
+    """The target gameweek and its deadline, or None if nothing has been captured.
+
+    The latest capture's gameweek is FPL's `is_next` when it was taken - the gameweek
+    `recommend` prices, `brief` describes and `status` checks - so the deadline is that
+    gameweek's. Clock-free: between the deadline passing and the next capture it is in the
+    past, which a caller reads as "passed", not as a fault.
+    """
+    capture = latest(conn)
+    if capture is None:
+        return None
+    return Target(capture=capture,
+                  deadline=None if capture.gameweek is None
+                  else deadline(conn, capture.gameweek))
 
 
 def with_lineups(conn: sqlite3.Connection, gameweek: int) -> Optional[Capture]:

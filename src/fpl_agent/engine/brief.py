@@ -359,23 +359,6 @@ def default_gameweek(conn: sqlite3.Connection) -> Optional[int]:
     return capture.gameweek if capture else None
 
 
-def gameweek_deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[datetime]:
-    """The gameweek's transfer deadline, derived from its first kickoff.
-
-    FPL publishes no deadline in anything this warehouse stores - there is no `event`
-    table, only fixtures - so it is `storage.DEADLINE_BEFORE_KICKOFF` before the first
-    kickoff. Derived, therefore approximate, therefore never used to *permit* an action:
-    it says how much time is left and refuses a move that can no longer be made. A gameweek with no fixtures recorded has no
-    derivable deadline, and None is returned rather than a guess - absence of fixtures is
-    absence of evidence, the same rule `warehouse.Gameweek.finished` follows.
-    """
-    row = conn.execute(
-        "SELECT MIN(kickoff_time) AS first FROM fixture WHERE event = ?",
-        (gameweek,)).fetchone()
-    kickoff = storage.parse_utc(row["first"] if row else None)
-    return None if kickoff is None else kickoff - storage.DEADLINE_BEFORE_KICKOFF
-
-
 def squad_availability(conn: sqlite3.Connection, snapshot_id: int,
                        gameweek: int) -> list[dict[str, Any]]:
     """Every squad player, with both availability signals attached.
@@ -642,7 +625,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
 
     capture = warehouse.latest(conn)
     state = transfer_state(conn)
-    deadline = gameweek_deadline(conn, gameweek)
+    deadline = warehouse.deadline(conn, gameweek)
     remaining = None if deadline is None else deadline - now
     squad = squad_availability(conn, capture.id, gameweek) if capture else []
     listing = ranked_transfers(conn)

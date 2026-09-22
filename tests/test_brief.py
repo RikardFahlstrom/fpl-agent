@@ -276,30 +276,6 @@ class ThresholdTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
-# The deadline, which the warehouse does not store
-# --------------------------------------------------------------------------
-
-class DeadlineTests(BriefTestCase):
-
-    def test_the_deadline_is_ninety_minutes_before_the_first_kickoff(self):
-        self.warehouse.fixtures(kickoff="2026-09-05T15:00:00Z")
-        self.warehouse.fixtures(gameweek=GAMEWEEK, kickoff="2026-09-06T14:00:00Z",
-                                count=1)
-        self.assertEqual(
-            brief.gameweek_deadline(self.conn, GAMEWEEK),
-            datetime(2026, 9, 5, 13, 30, tzinfo=timezone.utc))
-
-    def test_no_fixtures_means_no_deadline_rather_than_a_guess(self):
-        """Absence of fixtures is absence of evidence, the rule settle already follows."""
-        self.assertIsNone(brief.gameweek_deadline(self.conn, GAMEWEEK))
-
-    def test_a_trailing_z_is_read_as_utc(self):
-        self.warehouse.fixtures(kickoff="2026-09-05T15:00:00Z", count=1)
-        self.assertEqual(brief.gameweek_deadline(self.conn, GAMEWEEK).tzinfo,
-                         timezone.utc)
-
-
-# --------------------------------------------------------------------------
 # Trigger 1: status_failed
 # --------------------------------------------------------------------------
 
