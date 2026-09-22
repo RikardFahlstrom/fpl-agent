@@ -6,7 +6,7 @@ metric: bias_by_start_probability
 slice: P(start) 75-100%
 observation: under-projected by 0.78 points across 218 players
 status: applied
-action: BONUS_PRIOR_APPEARANCES 3.0 -> 1.0 (bonus damping toward zero was halving starters' bonus), model 0.5.1; goals-conceded term E[floor(X/2)] instead of X/2, model 0.5.2; clean-sheet calibration declined for now - owner: "remind me after the next gameweek" (revisit once GW6 settles under 0.5.2)
+action: 'BONUS_PRIOR_APPEARANCES 3.0 -> 1.0 (bonus damping toward zero was halving starters'' bonus), model 0.5.1; goals-conceded term E[floor(X/2)] instead of X/2, model 0.5.2; clean-sheet calibration declined for now - owner: "remind me after the next gameweek" (revisit once GW6 settles under 0.5.2)'
 ---
 
 # P(start) 75-100%: under-projected by 0.78 in gameweek 5
