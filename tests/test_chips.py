@@ -7,7 +7,7 @@ values (`chip_states`, `window_end`, `captain_line`) with hand-built inputs.
 import json
 import unittest
 
-from fpl_agent.engine import chips, projection, storage
+from fpl_agent.engine import chips, held, projection, storage, warehouse
 from fpl_agent.engine.projection import MODEL_VERSION
 
 from test_brief import GAMEWEEK, Warehouse
@@ -294,20 +294,28 @@ class ValueTests(unittest.TestCase):
         week = next(v for v in values if v.gameweek == GAMEWEEK + 1)
         self.assertEqual((week.value, week.note), (9.6, "P7, 2 fixtures"))
 
+    def held(self):
+        return held.read(self.conn, warehouse.latest(self.conn))
+
     def test_the_post_move_squad_puts_the_incoming_player_in_the_outgoing_slot(self):
-        move = {"out": {"element_id": 1}, "in": {"element_id": 17}}
-        after = chips.apply_move(self.squad, move)
-        self.assertEqual(after[0]["element_id"], 17)
-        self.assertEqual(after[0]["position"], 1)
-        self.assertEqual(chips.apply_move(self.squad, None), self.squad)
-        stranger = {"out": {"element_id": 99}, "in": {"element_id": 17}}
-        self.assertEqual(chips.apply_move(self.squad, stranger), self.squad)
+        before = self.held()
+        move = {"out": {"element_id": 1},
+                "in": {"element_id": 17, "name": "P17", "team_id": 17, "now_cost": 60}}
+        after = before.with_move(move)
+        first = after.players[0]
+        self.assertEqual((first.element_id, first.position, first.team_id), (17, 1, 17))
+        self.assertEqual(first.element_type, before.players[0].element_type)
+        # Bought at today's price, paid from the bank: the budget a rebuild has is the same.
+        self.assertEqual(after.bank, before.bank + 50 - 60)
+        self.assertEqual(after.budget, before.budget)
+        self.assertEqual(before.with_move(None), before)
+        stranger = dict(move, out={"element_id": 99})
+        self.assertEqual(before.with_move(stranger), before)
 
     def test_evaluate_reports_every_chip_in_fpls_order(self):
         self.warehouse.state(chips=json.dumps(FIRST_SET))
         self.conn.commit()
-        verdicts = chips.evaluate(self.conn, self.warehouse.snapshot_id, GAMEWEEK,
-                                  MODEL_VERSION, self.squad)
+        verdicts = chips.evaluate(self.conn, GAMEWEEK, MODEL_VERSION, self.held())
         self.assertEqual([v.state.name for v in verdicts],
                          ["bboost", "3xc", "wildcard", "freehit"])
         self.assertTrue(verdicts[0].evaluated)
@@ -319,8 +327,8 @@ class ValueTests(unittest.TestCase):
         self.assertIn("set expires after GW19 (17 weeks left)", line)
 
     def test_no_chips_captured_is_said_not_guessed(self):
-        self.assertEqual(chips.evaluate(self.conn, self.warehouse.snapshot_id, GAMEWEEK,
-                                        MODEL_VERSION, self.squad), [])
+        self.assertEqual(chips.evaluate(self.conn, GAMEWEEK, MODEL_VERSION, self.held()),
+                         [])
         self.assertIn("no chips captured", chips.chips_line([], GAMEWEEK))
 
 
@@ -513,5 +521,43 @@ class RebuildTests(unittest.TestCase):
         self.assertIn("moot if you play the wildcard (see Chips)", text)
 
     def test_the_budget_is_bank_plus_selling_prices(self):
-        self.assertEqual(chips.rebuild_budget(self.conn, self.warehouse.snapshot_id),
+        self.assertEqual(held.read(self.conn, warehouse.latest(self.conn)).budget,
                          10 + 15 * 50)
+
+    def one_club_worth_buying(self, club=5):
+        """P23, P27 and P31 moved into a club the squad already holds two of (P1, P5),
+        and made the best buys in every week."""
+        self.conn.execute(
+            "UPDATE player SET team_id = ? WHERE element_id IN (1, 23, 27, 31)", (club,))
+        for e in (23, 27, 31):
+            for gw in (GAMEWEEK, GAMEWEEK + 1, GAMEWEEK + 2):
+                self.project(gw, e, 8.0)
+        return {r["element_id"] for r in self.conn.execute(
+            "SELECT element_id FROM player WHERE team_id = ?", (club,))}
+
+    def most_from_one_club(self, verdict, club_ids):
+        return max(sum(1 for line in v.squad if int(line.split()[0][1:]) in club_ids)
+                   for v in verdict.values)
+
+    def most_after_a_move(self):
+        holding = held.read(self.conn, warehouse.latest(self.conn))
+        return max(max(holding.with_move(m).club_counts().values())
+                   for m in recommend.recommend(self.conn, limit=50))
+
+    def test_a_club_is_filled_to_the_limit_when_it_is_worth_it(self):
+        club = self.one_club_worth_buying()
+        self.assertEqual(self.most_from_one_club(self.verdict("freehit"), club), 3)
+        self.assertEqual(self.most_after_a_move(), 3)
+
+    def test_rebuilds_and_transfers_honour_game_configs_club_limit(self):
+        """FPL publishes the club limit; at 2, neither rebuild holds a third from one
+        club and the transfer ranking does not propose one either."""
+        club = self.one_club_worth_buying()
+        self.conn.execute("""UPDATE game_config SET rules = '{"squad_team_limit": 2}'""")
+        self.conn.commit()
+        evaluation = self.evaluate()
+        for name in ("freehit", "wildcard"):
+            verdict = next(v for v in evaluation.chips if v.state.name == name)
+            self.assertTrue(verdict.values, name)
+            self.assertLessEqual(self.most_from_one_club(verdict, club), 2, name)
+        self.assertEqual(self.most_after_a_move(), 2)

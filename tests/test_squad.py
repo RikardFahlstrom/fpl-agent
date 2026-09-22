@@ -61,6 +61,14 @@ class BestSquadTests(unittest.TestCase):
         clubs = [p.team_id for p in chosen.players]
         self.assertLessEqual(clubs.count(7), 3)
 
+    def test_pruning_keeps_as_many_per_club_as_the_limit_it_is_given(self):
+        """Dominated players are kept only for the club limit, so the count kept must be
+        the limit in force - a hardcoded 3 starved a looser limit of candidates."""
+        # Six midfielders from one club, each dearer and worse than the last.
+        dominated = [player(i, 3, 40 + i, 10.0 - i, team=1) for i in range(1, 7)]
+        for limit in (2, 3, 5):
+            self.assertEqual(len(squad._prune(dominated, limit)), limit)
+
     def test_with_money_to_burn_it_buys_the_best_fifteen(self):
         market = a_market(clubs=100)      # no club limit in the way
         chosen = squad.best_squad(market, budget=10_000)
@@ -85,7 +93,7 @@ class BestSquadTests(unittest.TestCase):
 
     def test_the_swap_pass_improves_on_the_cheapest_start(self):
         market = a_market()
-        start = squad.cheapest_legal(squad._prune(market), 900, 3)
+        start = squad.cheapest_legal(squad._prune(market, 3), 900, 3)
         chosen = squad.best_squad(market, budget=900)
         self.assertGreater(chosen.objective, squad._make(start).objective)
 
