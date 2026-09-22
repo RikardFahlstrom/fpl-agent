@@ -1,7 +1,7 @@
 """Chips: what FPL says you hold, the window they define, and the captain pick.
 
 Tested through the seeded warehouse the brief tests use, plus the pure functions over
-values (`chip_states`, `window_end`, `captain_line`) with hand-built inputs.
+values (`held.chip_states`, `window_end`, `captain_line`) with hand-built inputs.
 """
 
 import json
@@ -31,42 +31,42 @@ SECOND_SET = [dict(c, played_by_entry=[], start_event=20, stop_event=38,
 class ChipStateTests(unittest.TestCase):
 
     def test_the_payload_is_read_as_states_with_their_windows(self):
-        states = {s.name: s for s in chips.chip_states(json.dumps(FIRST_SET))}
+        states = {s.name: s for s in held.chip_states(json.dumps(FIRST_SET))}
         self.assertEqual(set(states), {"bboost", "3xc", "wildcard", "freehit"})
         self.assertEqual(states["wildcard"].status, "played")
         self.assertEqual(states["wildcard"].played_in, 3)
         self.assertEqual((states["bboost"].start_event, states["bboost"].stop_event), (1, 19))
 
     def test_only_an_available_chip_inside_its_window_is_evaluable(self):
-        first = {s.name: s for s in chips.chip_states(json.dumps(FIRST_SET))}
+        first = {s.name: s for s in held.chip_states(json.dumps(FIRST_SET))}
         self.assertTrue(first["bboost"].evaluable(5))
         self.assertFalse(first["wildcard"].evaluable(5))           # played
         self.assertFalse(first["bboost"].evaluable(20))            # expired
-        second = chips.chip_states(json.dumps(SECOND_SET))[0]
+        second = held.chip_states(json.dumps(SECOND_SET))[0]
         self.assertFalse(second.evaluable(5))                      # not open yet
         self.assertTrue(second.evaluable(20))
 
     def test_states_are_described_in_the_readers_words(self):
-        first = {s.name: s for s in chips.chip_states(json.dumps(FIRST_SET))}
+        first = {s.name: s for s in held.chip_states(json.dumps(FIRST_SET))}
         self.assertEqual(first["wildcard"].describe(5), "played in GW3")
         self.assertEqual(first["bboost"].describe(5), "available")
         self.assertEqual(first["bboost"].describe(20), "expired")
-        second = chips.chip_states(json.dumps(SECOND_SET))[0]
+        second = held.chip_states(json.dumps(SECOND_SET))[0]
         self.assertEqual(second.describe(5), "not until GW20")
 
     def test_the_window_end_is_the_wall_of_the_set_in_play(self):
-        both = chips.chip_states(json.dumps(FIRST_SET + SECOND_SET))
+        both = held.chip_states(json.dumps(FIRST_SET + SECOND_SET))
         self.assertEqual(chips.window_end(both, 5), 19)
         self.assertEqual(chips.window_end(both, 20), 38)
         self.assertEqual(chips.window_end(both, 19), 19)
         # a set with every chip played still defines the range
-        played = [chips.ChipState("bboost", "played", 1, 19, 4)]
+        played = [held.ChipState("bboost", "played", 1, 19, 4)]
         self.assertEqual(chips.window_end(played, 5), 19)
 
     def test_garbage_and_nothing_read_as_no_chips(self):
-        self.assertEqual(chips.chip_states(None), [])
-        self.assertEqual(chips.chip_states("not json"), [])
-        self.assertEqual(chips.chip_states('{"name": "bboost"}'), [])
+        self.assertEqual(held.chip_states(None), ())
+        self.assertEqual(held.chip_states("not json"), ())
+        self.assertEqual(held.chip_states('{"name": "bboost"}'), ())
         self.assertIsNone(chips.window_end([], 5))
 
 
@@ -133,8 +133,8 @@ class CaptainTests(unittest.TestCase):
         self.conn.commit()
 
     def picks(self):
-        return chips.captain_picks(self.conn, self.warehouse.snapshot_id, GAMEWEEK,
-                                   MODEL_VERSION)
+        return chips.captain_picks(self.conn, GAMEWEEK, MODEL_VERSION,
+                                   held.read(self.conn, warehouse.latest(self.conn)))
 
     def test_the_xi_is_ranked_by_the_gameweeks_projection(self):
         picks = self.picks()
@@ -207,8 +207,8 @@ def value(gw, v, note="x"):
     return chips.ChipValue(gw, v, note)
 
 
-BB = chips.ChipState("bboost", "available", 1, 19, None)
-TC = chips.ChipState("3xc", "available", 1, 19, None)
+BB = held.ChipState("bboost", "available", 1, 19, None)
+TC = held.ChipState("3xc", "available", 1, 19, None)
 
 
 class DecideTests(unittest.TestCase):
@@ -262,8 +262,6 @@ class ValueTests(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.warehouse = Warehouse(self.conn).healthy()
         self.conn.commit()
-        self.squad = [dict(r) for r in self.conn.execute(
-            "SELECT element_id, position, multiplier FROM my_squad")]
 
     def project(self, gameweek, element_id, xp, fixtures=1):
         self.conn.execute(
@@ -276,13 +274,14 @@ class ValueTests(unittest.TestCase):
 
     def by_week(self, first=GAMEWEEK, last=GAMEWEEK + 2):
         return chips.squad_projections(self.conn, self.warehouse.snapshot_id,
-                                       MODEL_VERSION, [p["element_id"] for p in self.squad],
+                                       MODEL_VERSION,
+                                       [p.element_id for p in self.held().players],
                                        first, last)
 
     def test_bench_boost_is_the_bench_summed_week_by_week(self):
         for e in (12, 13, 14, 15):
             self.project(GAMEWEEK + 1, e, 4.0)
-        values = chips.bench_boost_values(self.by_week(), self.squad)
+        values = chips.bench_boost_values(self.by_week(), self.held())
         self.assertEqual([(v.gameweek, v.value) for v in values],
                          [(3, 4.0), (4, 16.0), (5, 4.0)])
         self.assertEqual(values[0].note, "P12, P13, P14, P15")
@@ -290,7 +289,7 @@ class ValueTests(unittest.TestCase):
     def test_triple_captain_is_the_best_xi_player_with_his_fixtures(self):
         self.project(GAMEWEEK + 1, 7, 9.6, fixtures=2)
         self.project(GAMEWEEK + 1, 14, 20.0)        # bench: never the captain
-        values = chips.triple_captain_values(self.by_week(), self.squad)
+        values = chips.triple_captain_values(self.by_week(), self.held())
         week = next(v for v in values if v.gameweek == GAMEWEEK + 1)
         self.assertEqual((week.value, week.note), (9.6, "P7, 2 fixtures"))
 

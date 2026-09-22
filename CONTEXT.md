@@ -261,14 +261,21 @@ happens.
 The fifteen you own and the rules they are held under, read once from a capture:
 `held.read(conn, capture) -> HeldSquad` - each player's squad position, element type,
 club, selling price and multiplier; the bank, free transfers and the hit; the chip
-payload; and the club limit from `game_config`. None for a capture that logged no
-squad. `budget` is the bank plus selling prices, what a rebuild can spend.
+payload, parsed once into `ChipState`s; the entry id; and the club limit from
+`game_config`. None for a capture that logged no squad. `budget` is the bank plus
+selling prices, what a rebuild can spend; `xi` and `bench` split it at `STARTING_XI`;
+`active_transfer_chip` is the chip that suspends hits this gameweek.
 
-It is a value: the transfer ranking and the *chip value*s both take it rather than
-querying `my_squad`, `my_state` and `game_config` themselves, which is how the chip
-rebuilds came to ignore the club limit the transfers honoured. `with_move` is the held
-squad after a recommended transfer - the incoming player in the outgoing one's slot,
-bought at today's price - which is the squad chips are valued over.
+It is a value: the transfer ranking, the *chip value*s, the captain pick, the brief's
+availability table and `rivals`' own-entry lookup all take it rather than querying
+`my_squad`, `my_state` and `game_config` themselves, which is how the chip rebuilds came
+to ignore the club limit the transfers honoured. `with_move` is the held squad after a
+recommended transfer - the incoming player in the outgoing one's slot, bought at today's
+price - which is the squad chips are valued over.
+
+The rules a squad is held under are stated in `engine/held` once: `STARTING_XI`,
+`BENCH_VALUE` (what a bench slot is worth, to a transfer and to a rebuilt squad alike),
+`BUYABLE` (FPL statuses `a` and `d`) and `DEFAULT_TEAM_LIMIT`.
 
 ## chip
 

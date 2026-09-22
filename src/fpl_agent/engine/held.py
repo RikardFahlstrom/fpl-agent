@@ -9,6 +9,10 @@ limit the transfers already honoured.
 
 The club limit is the same kind of rule as the scoring weights: FPL publishes it and can
 change it between seasons, so it is read from `game_config` - here, and nowhere else.
+
+The rules a squad is held under are stated here once - who starts, what a bench slot is
+worth, who can be bought, what the chip payload says - and `recommend`, `chips`, `squad`,
+`brief` and `rivals` read them from here rather than each writing its own.
 """
 
 import json
@@ -16,8 +20,109 @@ import sqlite3
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
-from . import squad as squads
 from .warehouse import Capture
+
+#: Squad positions 1-11 start; 12-15 are the bench.
+STARTING_XI = 11
+#: A bench player only scores through an automatic substitution, so a bench slot is worth
+#: a fraction of the same points in the XI - to a transfer and to a rebuilt squad alike.
+#: Without it the recommender happily proposes a large "gain" on a reserve goalkeeper,
+#: which returns nothing. A stated assumption, to be fitted once outcomes exist.
+BENCH_VALUE = 0.15
+#: FPL statuses a player can be bought in: `a` available, `d` doubtful. The doubtful are
+#: already discounted by FPL's own percentage in the projection; `i`, `s`, `u` and `n`
+#: carry no percentage, project to zero, and are left out rather than trusted to.
+BUYABLE = ("a", "d")
+#: The club limit when no `game_config` was captured or it does not say.
+DEFAULT_TEAM_LIMIT = 3
+
+#: FPL's chip names, and what a person calls them.
+CHIP_TITLES = {"bboost": "bench boost", "3xc": "triple captain",
+               "freehit": "free hit", "wildcard": "wildcard"}
+
+
+@dataclass(frozen=True)
+class ChipState:
+    """One chip as FPL reports it for the entry."""
+    name: str
+    status: str                  # available | active | played | unavailable
+    start_event: Optional[int]
+    stop_event: Optional[int]
+    played_in: Optional[int]     # the gameweek it was played, if played
+    chip_type: Optional[str] = None   # "transfer" or "team", when the payload says
+
+    @property
+    def title(self) -> str:
+        return CHIP_TITLES.get(self.name, self.name)
+
+    @property
+    def suspends_hits(self) -> bool:
+        """A transfer chip. Keyed on `chip_type` so a chip FPL adds keeps the
+        distinction, with the two known names for a payload that omits the type. An
+        active bench boost or triple captain changes what the squad scores, not what a
+        move costs."""
+        return self.chip_type == "transfer" or self.name in ("wildcard", "freehit")
+
+    def open_in(self, gameweek: int) -> bool:
+        """Whether the chip's window covers this gameweek."""
+        after_start = self.start_event is None or gameweek >= self.start_event
+        before_stop = self.stop_event is None or gameweek <= self.stop_event
+        return after_start and before_stop
+
+    def evaluable(self, gameweek: int) -> bool:
+        """Available and inside its window: the only state worth a value."""
+        return self.status == "available" and self.open_in(gameweek)
+
+    def describe(self, gameweek: int) -> str:
+        """The state in the reader's words, for the block."""
+        if self.status == "played":
+            return "played" + (f" in GW{self.played_in}" if self.played_in else "")
+        if self.status == "active":
+            return "active this gameweek"
+        if self.status == "available" and not self.open_in(gameweek):
+            if self.start_event and gameweek < self.start_event:
+                return f"not until GW{self.start_event}"
+            return "expired"
+        return self.status
+
+
+def chip_states(chips_json: Optional[str]) -> tuple[ChipState, ...]:
+    """Every chip in FPL's `my-team` payload, in FPL's order; empty when nothing was
+    stored or it cannot be read.
+
+    The one parse of `my_state.chips`, which is stored verbatim: a list of objects
+    carrying `name`, `chip_type`, `status_for_entry` ("unavailable", "available",
+    "active" - the gameweek it is being used in - or "played"), `start_event`,
+    `stop_event` and `played_by_entry`.
+    """
+    if not chips_json:
+        return ()
+    try:
+        chips = json.loads(chips_json)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(chips, list):
+        return ()
+    states = []
+    for chip in chips:
+        if not isinstance(chip, dict) or "name" not in chip:
+            continue
+        played = chip.get("played_by_entry") or []
+        states.append(ChipState(
+            name=str(chip["name"]),
+            status=str(chip.get("status_for_entry") or "unavailable"),
+            start_event=_int(chip.get("start_event")),
+            stop_event=_int(chip.get("stop_event")),
+            played_in=_int(played[0]) if played else None,
+            chip_type=chip.get("chip_type")))
+    return tuple(states)
+
+
+def _int(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -30,6 +135,10 @@ class HeldPlayer:
     selling_price: int      # tenths of a million
     multiplier: Optional[int]   # FPL's: 0 on the bench, 1 starting, 2 or 3 captained
 
+    @property
+    def starts(self) -> bool:
+        return (self.position or 99) <= STARTING_XI
+
 
 @dataclass(frozen=True)
 class HeldSquad:
@@ -38,8 +147,23 @@ class HeldSquad:
     bank: int
     free_transfers: Optional[int]        # None when the capture did not record it
     transfer_cost: Optional[int]
-    chips: Optional[str]                 # FPL's `my-team` chip payload, verbatim
+    chips: tuple[ChipState, ...]         # FPL's `my-team` chip payload, parsed
     team_limit: int                      # FPL's `squad_team_limit`
+    entry_id: Optional[int] = None       # the FPL entry the capture logged in as
+
+    @property
+    def xi(self) -> tuple[HeldPlayer, ...]:
+        return tuple(p for p in self.players if p.starts)
+
+    @property
+    def bench(self) -> tuple[HeldPlayer, ...]:
+        return tuple(p for p in self.players if not p.starts)
+
+    @property
+    def active_transfer_chip(self) -> Optional[str]:
+        """The transfer chip in play this gameweek, if any - the one that suspends hits."""
+        return next((c.name for c in self.chips
+                     if c.status == "active" and c.suspends_hits), None)
 
     @property
     def budget(self) -> int:
@@ -80,8 +204,8 @@ def team_limit(conn: sqlite3.Connection) -> int:
     row = conn.execute(
         "SELECT rules FROM game_config ORDER BY captured_at DESC LIMIT 1").fetchone()
     if not row:
-        return squads.DEFAULT_TEAM_LIMIT
-    return int(json.loads(row["rules"]).get("squad_team_limit", squads.DEFAULT_TEAM_LIMIT))
+        return DEFAULT_TEAM_LIMIT
+    return int(json.loads(row["rules"]).get("squad_team_limit", DEFAULT_TEAM_LIMIT))
 
 
 def read(conn: sqlite3.Connection, capture: Capture) -> Optional[HeldSquad]:
@@ -104,5 +228,6 @@ def read(conn: sqlite3.Connection, capture: Capture) -> Optional[HeldSquad]:
         bank=(state["bank"] if state and state["bank"] is not None else 0),
         free_transfers=state["free_transfers"] if state else None,
         transfer_cost=state["transfer_cost"] if state else None,
-        chips=state["chips"] if state else None,
-        team_limit=team_limit(conn))
+        chips=chip_states(state["chips"] if state else None),
+        team_limit=team_limit(conn),
+        entry_id=state["entry_id"] if state else None)

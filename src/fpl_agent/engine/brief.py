@@ -359,9 +359,9 @@ def default_gameweek(conn: sqlite3.Connection) -> Optional[int]:
     return capture.gameweek if capture else None
 
 
-def squad_availability(conn: sqlite3.Connection, snapshot_id: int,
+def squad_availability(conn: sqlite3.Connection, holding: held.HeldSquad,
                        gameweek: int) -> list[dict[str, Any]]:
-    """Every squad player, with both availability signals attached.
+    """Every held player, with both availability signals attached.
 
     Two independent sources, kept apart because they answer different questions and
     disagree usefully. FPL's `status` is the club's own word and only moves when there is
@@ -376,17 +376,13 @@ def squad_availability(conn: sqlite3.Connection, snapshot_id: int,
     source = warehouse.with_lineups(conn, gameweek)
     lineup_snapshot = source.id if source else None
 
-    rows = conn.execute(
-        """SELECT ms.position, ms.element_id, ms.multiplier, p.web_name,
-                  t.short_name AS team, ps.status, ps.news,
+    # FPL's word on each held player, from the squad's own capture.
+    market = {r["element_id"]: r for r in conn.execute(
+        """SELECT ps.element_id, ps.status, ps.news,
                   ps.chance_of_playing_next_round AS chance
-           FROM my_squad ms
-           JOIN player p ON p.element_id = ms.element_id
-           LEFT JOIN team t ON t.id = p.team_id
-           LEFT JOIN player_snapshot ps ON ps.snapshot_id = ms.snapshot_id
-                                       AND ps.element_id = ms.element_id
-           WHERE ms.snapshot_id = ?
-           ORDER BY ms.position""", (snapshot_id,)).fetchall()
+           FROM player_snapshot ps WHERE ps.snapshot_id = ?""", (holding.snapshot_id,))}
+    teams = {r["id"]: r["short_name"] for r in conn.execute(
+        "SELECT id, short_name FROM team")}
 
     lineup: dict[int, sqlite3.Row] = {}
     if lineup_snapshot is not None:
@@ -395,21 +391,22 @@ def squad_availability(conn: sqlite3.Connection, snapshot_id: int,
             (lineup_snapshot, gameweek))}
 
     out = []
-    for row in rows:
-        entry = lineup.get(row["element_id"])
+    for player in holding.players:
+        row = market.get(player.element_id)
+        entry = lineup.get(player.element_id)
         # `UNAVAILABLE` is imported rather than restated: it is the set `lineups` already
         # derives from the scraper's own table, plus the suspension code that table
         # misses. A code added there must not quietly stop counting here.
         listed_out = bool(entry) and entry["injury"] in lineups.UNAVAILABLE
         out.append({
-            "element_id": row["element_id"],
-            "name": row["web_name"],
-            "team": row["team"],
-            "position": row["position"],
-            "slot": "XI" if (row["position"] or 99) <= recommend.STARTING_XI else "bench",
-            "status": row["status"],
-            "chance": row["chance"],
-            "news": (row["news"] or "").strip(),
+            "element_id": player.element_id,
+            "name": player.name,
+            "team": teams.get(player.team_id),
+            "position": player.position,
+            "slot": "XI" if player.starts else "bench",
+            "status": row["status"] if row else None,
+            "chance": row["chance"] if row else None,
+            "news": ((row["news"] if row else None) or "").strip(),
             "in_lineup": entry is not None,
             "lineup_starter": bool(entry["is_starter"]) if entry else None,
             "lineup_injury": entry["injury"] if entry else None,
@@ -627,13 +624,15 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     state = transfer_state(conn)
     deadline = warehouse.deadline(conn, gameweek)
     remaining = None if deadline is None else deadline - now
-    squad = squad_availability(conn, capture.id, gameweek) if capture else []
+    # The held squad, read once: availability, the captain and the chips all take it.
+    holding = held.read(conn, capture) if capture else None
+    squad = squad_availability(conn, holding, gameweek) if holding else []
     listing = ranked_transfers(conn)
     moves = listing["moves"]
     top = moves[0] if moves else None
     ownership, _ = recommend.ownership_source(conn)
-    captain_picks = (chips.captain_picks(conn, capture.id, gameweek, MODEL_VERSION)
-                     if capture and squad else [])
+    captain_picks = (chips.captain_picks(conn, gameweek, MODEL_VERSION, holding)
+                     if holding else [])
 
     # 2. squad_player_unavailable, one per player. Not batched into a single message:
     #    the owner acts on them one at a time, and a batched fingerprint would go stale
@@ -778,7 +777,6 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
 
     # 5. chip_worth_playing, one per chip that clears its bar this week. Valued on the
     #    squad after the recommended move, so this and the move advice agree.
-    holding = held.read(conn, capture) if capture else None
     verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION, holding.with_move(top))
                 if holding else [])
     playable = [v for v in verdicts if v.play_now]
