@@ -1,6 +1,7 @@
 """Tests for the SQLite warehouse. All local: nothing here touches the FPL API."""
 import json
 import unittest
+from datetime import datetime, timezone
 
 from fpl_agent.engine import storage
 
@@ -244,6 +245,25 @@ class StorageTests(unittest.TestCase):
         self.assertFalse(storage.snapshot_taken_today(self.conn))
         storage.create_snapshot(self.conn, _bootstrap())
         self.assertTrue(storage.snapshot_taken_today(self.conn))
+
+
+class ParseUtcTests(unittest.TestCase):
+    """The one parser for every FPL stamp the engine reads."""
+
+    WHEN = datetime(2026, 9, 5, 15, 0, tzinfo=timezone.utc)
+
+    def test_a_trailing_z_is_utc(self):
+        self.assertEqual(storage.parse_utc("2026-09-05T15:00:00Z"), self.WHEN)
+
+    def test_an_explicit_offset_is_kept(self):
+        self.assertEqual(storage.parse_utc("2026-09-05T15:00:00+00:00"), self.WHEN)
+
+    def test_a_naive_stamp_is_utc_not_local(self):
+        self.assertEqual(storage.parse_utc("2026-09-05T15:00:00"), self.WHEN)
+
+    def test_nothing_or_nonsense_is_none_rather_than_a_raise(self):
+        for stamp in (None, "", "whenever"):
+            self.assertIsNone(storage.parse_utc(stamp))
 
 
 if __name__ == "__main__":

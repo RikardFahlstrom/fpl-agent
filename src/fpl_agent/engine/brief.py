@@ -81,14 +81,6 @@ logger = logging.getLogger("fpl_brief")
 
 BRIEF_DIR = Path("logs")
 
-# FPL publishes no deadline in anything this warehouse stores - there is no `event`
-# table, only fixtures - so the deadline is derived from the rule FPL states on its own
-# help pages: the deadline is 90 minutes before the first kickoff of the gameweek.
-# Derived, therefore approximate, therefore never used to *permit* an action: it is used
-# to say how much time is left and to refuse to recommend a move that can no longer be
-# made. If it is wrong it is wrong in the direction of saying less, not more.
-DEADLINE_BEFORE_FIRST_KICKOFF = timedelta(minutes=90)
-
 # "The deadline is near" for trigger 3. An hourly job that only fires inside the last
 # hour would miss a deadline the moment one run is skipped; a day gives the owner an
 # evening and a morning to act in.
@@ -302,7 +294,7 @@ def _push_reports(conn: sqlite3.Connection, triggers: list[Trigger],
 
 
 def _when(stamp: str) -> str:
-    parsed = _parse_utc(stamp)
+    parsed = storage.parse_utc(stamp)
     return parsed.strftime("%a %d %b %H:%M UTC") if parsed else stamp
 
 
@@ -366,33 +358,21 @@ def default_gameweek(conn: sqlite3.Connection) -> Optional[int]:
     return capture.gameweek if capture else None
 
 
-def _parse_utc(stamp: Optional[str]) -> Optional[datetime]:
-    """Parse an FPL timestamp, which is UTC whether or not it says so."""
-    if not stamp:
-        return None
-    text = str(stamp).strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        when = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
-
-
 def gameweek_deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[datetime]:
     """The gameweek's transfer deadline, derived from its first kickoff.
 
-    See DEADLINE_BEFORE_FIRST_KICKOFF: the warehouse stores fixtures, not events, so
-    there is no published deadline to read. A gameweek with no fixtures recorded has no
+    FPL publishes no deadline in anything this warehouse stores - there is no `event`
+    table, only fixtures - so it is `storage.DEADLINE_BEFORE_KICKOFF` before the first
+    kickoff. Derived, therefore approximate, therefore never used to *permit* an action:
+    it says how much time is left and refuses a move that can no longer be made. A gameweek with no fixtures recorded has no
     derivable deadline, and None is returned rather than a guess - absence of fixtures is
     absence of evidence, the same rule `warehouse.Gameweek.finished` follows.
     """
     row = conn.execute(
         "SELECT MIN(kickoff_time) AS first FROM fixture WHERE event = ?",
         (gameweek,)).fetchone()
-    kickoff = _parse_utc(row["first"] if row else None)
-    return None if kickoff is None else kickoff - DEADLINE_BEFORE_FIRST_KICKOFF
+    kickoff = storage.parse_utc(row["first"] if row else None)
+    return None if kickoff is None else kickoff - storage.DEADLINE_BEFORE_KICKOFF
 
 
 def squad_availability(conn: sqlite3.Connection, snapshot_id: int,
@@ -1089,7 +1069,8 @@ def render_brief(evaluation: Evaluation) -> str:
         when = deadline.isoformat(timespec="minutes")
         if remaining >= timedelta(0):
             lines.append(f"- Deadline **{when}**, {_hours(remaining)} away "
-                         f"(90 minutes before the first kickoff).")
+                         f"({storage.DEADLINE_BEFORE_KICKOFF.seconds // 60} minutes before "
+                         f"the first kickoff).")
         else:
             lines.append(f"- Deadline **{when}** has passed ({_hours(-remaining)} ago). "
                          f"Transfers made now land in the next gameweek.")
