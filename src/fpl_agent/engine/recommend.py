@@ -106,10 +106,7 @@ def transfer_price(free_transfers: Optional[int], transfer_cost: Optional[int],
 
 def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
     """The transfer budget the latest snapshot's recommendations are priced against."""
-    capture = warehouse.latest(conn)
-    if not capture:
-        raise LookupError("no snapshot captured yet")
-    holding = held.read(conn, capture)
+    holding = held.read(conn, warehouse.require_target(conn).capture)
     free = holding.free_transfers if holding else None
     cost = holding.transfer_cost if holding else None
     chip = holding.active_transfer_chip if holding else None
@@ -118,7 +115,7 @@ def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
-              limit: int = 10) -> list[dict[str, Any]]:
+              limit: int = 10, gameweek: Optional[int] = None) -> list[dict[str, Any]]:
     """Rank transfers by net gain over the horizon, flagging closing windows.
 
     Net means after the points hit the move would cost. See `transfer_price` for why
@@ -138,13 +135,19 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     percentage to scale by (`i`, `s`, `u`, `n` - injured, suspended, unavailable, on
     loan) project to zero anyway and are excluded outright, so the whitelist stays
     explicit rather than trusting a status code FPL has not invented yet.
-    """
-    capture = warehouse.latest(conn)
-    if not capture:
-        raise LookupError("no snapshot captured yet")
 
-    if capture.gameweek is None:
-        raise LookupError("no target gameweek on the latest snapshot; the season may be over")
+    `gameweek` other than the latest capture's target is refused, not priced. Bank, free
+    transfers, selling prices and the hit are the latest capture's and exist for no
+    other moment, so a ranking "for" another gameweek would be the target's ranking
+    under a different label - which is what `brief --gameweek N` used to print.
+    """
+    target = warehouse.require_target(conn)
+    capture = target.capture
+    if gameweek is not None and gameweek != target.gameweek:
+        raise LookupError(
+            f"transfers are priced from the latest snapshot, which targets gameweek "
+            f"{target.gameweek}; its bank, free transfers and selling prices say nothing "
+            f"about gameweek {gameweek}")
 
     holding = held.read(conn, capture)
     if holding is None:
@@ -481,6 +484,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
     conn = storage.connect(args.db)
     try:
+        target = warehouse.require_target(conn)
         context = transfer_context(conn)
         try:
             recommendations = recommend(conn, args.weeks, args.top)
@@ -494,17 +498,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         # is the brief's, not a copy: `brief` imports this module, so it is reached here
         # locally rather than at the top.
         from . import brief
-        gameweek = brief.default_gameweek(conn)
-        if gameweek is not None:
-            evaluation = brief.evaluate(conn, gameweek, include_token=False)
-            print("\n".join(brief.render_block(evaluation, markdown=False)))
+        evaluation = brief.evaluate(conn, target.gameweek, include_token=False)
+        print("\n".join(brief.render_block(evaluation, markdown=False)))
         print(render(context, recommendations, args.weeks))
 
         if args.record and args.chip:
             from . import chips
-            capture = warehouse.latest(conn)
-            holding = held.read(conn, capture)
-            verdicts = (chips.evaluate(conn, capture.gameweek, MODEL_VERSION,
+            holding = held.read(conn, target.capture)
+            verdicts = (chips.evaluate(conn, target.gameweek, MODEL_VERSION,
                                        holding.with_move(recommendations[0]
                                                          if recommendations else None))
                         if holding else [])

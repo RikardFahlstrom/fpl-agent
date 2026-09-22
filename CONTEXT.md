@@ -133,6 +133,16 @@ deadline together, and `warehouse.deadline(conn, n)` is the one statement of whe
 gameweek locks: `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff, played or
 not. `schedule`, `status --hours-to-deadline` and `brief` all read it there.
 
+A command that cannot proceed without a gameweek asks `warehouse.require_target(conn,
+gameweek)` instead: the same read, refusing in one wording when nothing is captured or
+the capture has no gameweek, and carrying a gameweek the caller named rather than
+swapping it for the capture's. `project`, `recommend`, `brief` and `notify` all resolve
+through it. Whether the latest capture can answer for a named gameweek is the caller's
+call: `project` projects any gameweek from it, while `recommend` refuses any but the
+target's, because bank, free transfers and selling prices exist only for the moment
+the capture was taken — so `brief --gameweek N` for another N says no move is priced
+rather than showing the target's.
+
 It is not "the lowest gameweek with a fixture to play". That was the scheduler's rule
 until #97, and mid-round it put a deadline before each remaining match. Between the
 deadline passing and the next capture, the target's deadline is in the past; the hourly

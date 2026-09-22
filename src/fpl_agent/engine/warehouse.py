@@ -20,7 +20,9 @@ Six questions, and the reason each is its own:
 - `target` - the gameweek decisions are made for and when it locks: the latest capture,
   its gameweek, and that gameweek's `deadline`, in one read. `schedule`, `status` and
   `brief` all take the deadline from here; it used to have two statements, and mid-round
-  they disagreed (see `deadline`).
+  they disagreed (see `deadline`). `require_target` is the same read for a command that
+  cannot proceed without a gameweek: it refuses in one wording, and carries a gameweek
+  the caller named instead of swapping it for the capture's.
 - `projected` - the capture whose projections of gameweek N are graded: the most recent one
   *targeting* N with rows under the given model version. A projection of N made from a
   capture targeting N - 1 is a horizon row, not the decision-time record, and grading it
@@ -99,13 +101,11 @@ def deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[datetime]:
 
 @dataclass(frozen=True)
 class Target:
-    """The target gameweek: the latest capture's, and when it locks."""
+    """The gameweek a command works on, the capture it reads, and when that gameweek
+    locks. The latest capture's own gameweek unless a caller named another."""
     capture: Capture
+    gameweek: Optional[int]
     deadline: Optional[datetime]
-
-    @property
-    def gameweek(self) -> Optional[int]:
-        return self.capture.gameweek
 
 
 def target(conn: sqlite3.Connection) -> Optional[Target]:
@@ -119,9 +119,35 @@ def target(conn: sqlite3.Connection) -> Optional[Target]:
     capture = latest(conn)
     if capture is None:
         return None
-    return Target(capture=capture,
+    return Target(capture=capture, gameweek=capture.gameweek,
                   deadline=None if capture.gameweek is None
                   else deadline(conn, capture.gameweek))
+
+
+NO_CAPTURE = "no snapshot captured yet; run `fpl-agent snapshot`"
+NO_TARGET = "no target gameweek on the latest snapshot; the season may be over"
+
+
+def require_target(conn: sqlite3.Connection,
+                   gameweek: Optional[int] = None) -> Target:
+    """The gameweek a command works on, or the refusal to guess one.
+
+    What `target` answers with None, a command that cannot proceed without a gameweek
+    refuses with, and the two refusals are stated here once rather than by each command.
+    `gameweek` is the one a caller was explicitly given: it is carried through with its
+    own deadline, still on the latest capture, never silently swapped for the target.
+    Whether the latest capture can answer for it is the caller's to say - `project` can
+    project any gameweek from it; `recommend` can price only its own.
+    """
+    found = target(conn)
+    if found is None:
+        raise LookupError(NO_CAPTURE)
+    if gameweek is None or gameweek == found.gameweek:
+        if found.gameweek is None:
+            raise LookupError(NO_TARGET)
+        return found
+    return Target(capture=found.capture, gameweek=gameweek,
+                  deadline=deadline(conn, gameweek))
 
 
 def with_lineups(conn: sqlite3.Connection, gameweek: int) -> Optional[Capture]:

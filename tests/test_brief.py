@@ -605,6 +605,29 @@ class MoveWorthMakingTests(BriefTestCase):
 # Every trigger, together
 # --------------------------------------------------------------------------
 
+class AnotherGameweekTests(BriefTestCase):
+    """`brief --gameweek N` for N other than the target: transfers are not priced.
+
+    It used to rank the target's moves under N's heading, so a brief for gameweek 4
+    offered gameweek 3's transfers as if they were gameweek 4's.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.warehouse.healthy()
+
+    def test_no_move_is_offered_and_the_brief_says_why(self):
+        evaluation = brief.evaluate(self.conn, GAMEWEEK + 1, now=NOW,
+                                    learnings_dir=Path(self.tmp.name) / "learnings")
+        self.assertEqual(evaluation.listing["moves"], [])
+        self.assertIn(f"targets gameweek {GAMEWEEK}", evaluation.listing["reason"])
+        self.assertNotIn("move_worth_making", self.fired(evaluation))
+        self.assertNotIn("deadline_with_move", self.fired(evaluation))
+
+    def test_the_target_itself_is_still_priced(self):
+        self.assertTrue(self.evaluate().listing["moves"])
+
+
 class AllTriggersTests(BriefTestCase):
 
     def all_four(self):

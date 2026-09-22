@@ -348,17 +348,6 @@ def brief_path(gameweek: int, root: Path = Path("logs")) -> Path:
     return Path(root) / f"gw{int(gameweek):02d}.md"
 
 
-def default_gameweek(conn: sqlite3.Connection) -> Optional[int]:
-    """The gameweek a brief is about when nobody says: the latest snapshot's target.
-
-    The same gameweek `recommend` prices against and `status` checks, so a brief with no
-    `--gameweek` describes the state the rest of the pipeline is in rather than a
-    calendar the warehouse may not have caught up with.
-    """
-    capture = warehouse.latest(conn)
-    return capture.gameweek if capture else None
-
-
 def squad_availability(conn: sqlite3.Connection, holding: held.HeldSquad,
                        gameweek: int) -> list[dict[str, Any]]:
     """Every held player, with both availability signals attached.
@@ -513,17 +502,20 @@ def transfer_state(conn: sqlite3.Connection) -> dict[str, Any]:
                 "hit_cost": None, "known": False, "reason": str(e)}
 
 
-def ranked_transfers(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
+def ranked_transfers(conn: sqlite3.Connection, gameweek: Optional[int] = None,
+                     weeks: int = HORIZON_GAMEWEEKS,
                      limit: int = BRIEF_RECOMMENDATIONS) -> dict[str, Any]:
-    """The recommender's list, or the reason there is not one.
+    """The recommender's list for `gameweek`, or the reason there is not one.
 
     Every way `recommend` legitimately declines - no squad captured, no projected
-    horizon, no snapshot - is a sentence the brief should print, not a traceback. The
+    horizon, no snapshot, a gameweek other than the one the latest snapshot can price -
+    is a sentence the brief should print, not a traceback. The
     reason is carried alongside so the reader is told which command was skipped rather
     than being shown an empty table.
     """
     try:
-        return {"moves": recommend.recommend(conn, weeks, limit), "reason": None}
+        return {"moves": recommend.recommend(conn, weeks, limit, gameweek),
+                "reason": None}
     except HorizonMissing as e:
         return {"moves": [], "reason": f"the horizon is not projected: {e}"}
     except LookupError as e:
@@ -627,7 +619,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     # The held squad, read once: availability, the captain and the chips all take it.
     holding = held.read(conn, capture) if capture else None
     squad = squad_availability(conn, holding, gameweek) if holding else []
-    listing = ranked_transfers(conn)
+    listing = ranked_transfers(conn, gameweek)
     moves = listing["moves"]
     top = moves[0] if moves else None
     ownership, _ = recommend.ownership_source(conn)
@@ -1295,10 +1287,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return EXIT_UNREADABLE
 
     try:
-        gameweek = args.gameweek if args.gameweek is not None else default_gameweek(conn)
-        if gameweek is None:
-            print("no snapshot carries a target gameweek, and none was given; "
-                  "pass --gameweek or run `make snapshot`.", file=sys.stderr)
+        try:
+            gameweek = warehouse.require_target(conn, args.gameweek).gameweek
+        except LookupError as e:
+            print(e, file=sys.stderr)
             return EXIT_UNREADABLE
         evaluation = evaluate(conn, gameweek)
         triggers = evaluation.triggers
