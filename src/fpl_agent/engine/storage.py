@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS snapshot (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     captured_at TEXT NOT NULL,
     gameweek    INTEGER,
-    kind        TEXT NOT NULL DEFAULT 'manual'
+    kind        TEXT NOT NULL DEFAULT 'manual',
+    deadline_time TEXT
 );
 
 CREATE TABLE IF NOT EXISTS team (
@@ -310,6 +311,7 @@ def _i(value: Any) -> Optional[int]:
 # before this column existed", which is not the same as any value the column can hold.
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("projection", "difficulties", "TEXT"),
+    ("snapshot", "deadline_time", "TEXT"),
 )
 
 
@@ -352,8 +354,9 @@ def connect_readonly(path: Path | str) -> sqlite3.Connection:
 
 
 # FPL's deadline is 90 minutes before the first kickoff of the round, the rule FPL states
-# on its own help pages. The one statement of it: `warehouse.deadline` applies it, and
-# the brief, the scheduler and `status` all read the deadline from there.
+# on its own help pages. The one statement of it: `warehouse.deadline` applies it when a
+# capture did not store FPL's own `deadline_time`, and the brief, the scheduler and
+# `status` all read the deadline from there.
 DEADLINE_BEFORE_KICKOFF = timedelta(minutes=90)
 
 
@@ -412,9 +415,20 @@ def target_gameweek(bootstrap: dict) -> Optional[int]:
 
 
 def create_snapshot(conn: sqlite3.Connection, bootstrap: dict, kind: str = "manual") -> int:
+    """A new capture row: when, which gameweek it targets, and FPL's deadline for it.
+
+    The deadline is FPL's published `deadline_time`, kept because `bootstrap-static` has
+    no history: derived from the first kickoff instead, a postponed opening fixture
+    would move it.
+    """
+    gameweek = target_gameweek(bootstrap)
+    deadline_time = next((event.get("deadline_time")
+                          for event in bootstrap.get("events") or []
+                          if event.get("id") == gameweek), None)
     cur = conn.execute(
-        "INSERT INTO snapshot (captured_at, gameweek, kind) VALUES (?, ?, ?)",
-        (_now(), target_gameweek(bootstrap), kind),
+        "INSERT INTO snapshot (captured_at, gameweek, kind, deadline_time) "
+        "VALUES (?, ?, ?, ?)",
+        (_now(), gameweek, kind, deadline_time),
     )
     return cur.lastrowid
 

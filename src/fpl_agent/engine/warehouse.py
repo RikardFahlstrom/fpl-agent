@@ -79,24 +79,48 @@ def latest(conn: sqlite3.Connection) -> Optional[Capture]:
 
 
 def deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[datetime]:
-    """When `gameweek` locks: `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff.
+    """When `gameweek` locks: FPL's own `deadline_time`, as the latest capture targeting
+    it stored it, else `storage.DEADLINE_BEFORE_KICKOFF` before its first kickoff.
 
-    The first kickoff of every fixture in the round, played or not. The rule this
-    replaced took the earliest *unplayed* kickoff, which walked forward through a round
-    under way and put a "deadline" ninety minutes before each remaining match - near and
-    positive, so the hourly job opened its ranking window for a deadline nobody could act
-    on, while the brief showed the real one.
+    Stored wins because it is FPL's word. Derived is wrong in one known case - a
+    postponed opening fixture moves the first kickoff but not the real deadline - and is
+    kept for gameweeks no capture stored one for: those targeted before the column
+    existed, and any gameweek beyond the one a capture targets.
 
-    Derived because the warehouse does not store FPL's `deadline_time`, so a postponed
-    opening fixture moves the kickoff but not the real deadline. A gameweek with no
-    kickoff recorded has no derivable deadline, and None is returned rather than a guess:
-    absence of fixtures is absence of evidence, the rule `Gameweek.finished` follows.
+    Derived, it is the first kickoff of every fixture in the round, played or not. The
+    rule this replaced took the earliest *unplayed* kickoff, which walked forward
+    through a round under way and put a "deadline" ninety minutes before each remaining
+    match - near and positive, so the hourly job opened its ranking window for a
+    deadline nobody could act on, while the brief showed the real one. A gameweek with
+    no kickoff recorded has no derivable deadline, and None is returned rather than a
+    guess: absence of fixtures is absence of evidence, the rule `Gameweek.finished`
+    follows.
     """
+    stored = storage.parse_utc(_stored_deadline(conn, gameweek))
+    if stored is not None:
+        return stored
     row = conn.execute(
         "SELECT MIN(kickoff_time) AS first FROM fixture WHERE event = ?",
         (gameweek,)).fetchone()
     kickoff = storage.parse_utc(row["first"] if row else None)
     return None if kickoff is None else kickoff - storage.DEADLINE_BEFORE_KICKOFF
+
+
+def _stored_deadline(conn: sqlite3.Connection, gameweek: int) -> Optional[str]:
+    """FPL's `deadline_time` for `gameweek` from the latest capture targeting it, if any.
+
+    The column is missing from a warehouse no writer has opened since it was added:
+    `status`, `brief` and the scheduler open read-only and never migrate, and a
+    missing column there means "none stored", not a broken warehouse.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(snapshot)")}
+    if "deadline_time" not in columns:
+        return None
+    row = conn.execute(
+        """SELECT deadline_time FROM snapshot
+            WHERE gameweek = ? AND deadline_time IS NOT NULL
+            ORDER BY id DESC LIMIT 1""", (gameweek,)).fetchone()
+    return row["deadline_time"] if row else None
 
 
 @dataclass(frozen=True)
