@@ -98,10 +98,10 @@ def _make(players: list[Candidate]) -> Squad:
     return Squad(tuple(players), best_xi(players), sum(p.cost for p in players))
 
 
-def _prune(candidates: Iterable[Candidate]) -> list[Candidate]:
+def _prune(candidates: Iterable[Candidate], team_limit: int) -> list[Candidate]:
     """Drop every candidate another of the same position and club-agnostic dominates:
     no cheaper-or-equal player with more-or-equal points. Dominated players can still
-    matter for the club limit, so the pruning keeps the best three per club per
+    matter for the club limit, so the pruning keeps the first `team_limit` per club per
     position regardless."""
     by_type: dict[int, list[Candidate]] = {}
     for c in candidates:
@@ -114,7 +114,7 @@ def _prune(candidates: Iterable[Candidate]) -> list[Candidate]:
         per_club: dict[int, int] = {}
         for c in group:
             per_club[c.team_id] = per_club.get(c.team_id, 0) + 1
-            if c.xp > best_xp_so_far or per_club[c.team_id] <= DEFAULT_TEAM_LIMIT:
+            if c.xp > best_xp_so_far or per_club[c.team_id] <= team_limit:
                 kept.append(c)
                 best_xp_so_far = max(best_xp_so_far, c.xp)
     return kept
@@ -149,7 +149,7 @@ def best_squad(candidates: Iterable[Candidate], budget: int,
 
     Cheapest legal squad first, then best-improvement swaps until none improves.
     """
-    pool = _prune(candidates)
+    pool = _prune(candidates, team_limit)
     start = cheapest_legal(pool, budget, team_limit)
     if start is None:
         return None

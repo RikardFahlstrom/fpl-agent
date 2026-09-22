@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import pricing, rivals, storage, warehouse
+from . import held, pricing, rivals, storage, warehouse
 from .warehouse import OwnershipSource
 from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
                          stored_horizon)
@@ -38,7 +38,6 @@ from .projection import (HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing,
 logger = logging.getLogger("fpl_recommend")
 
 ACTIONS_LOG = Path("logs/actions.jsonl")
-DEFAULT_TEAM_LIMIT = 3
 
 # Effective ownership *within your leagues*, not globally. Above the template line a
 # player is owned by so much of your field that not owning him is itself the risk;
@@ -85,28 +84,6 @@ def ownership_source(conn: sqlite3.Connection) -> tuple[OwnershipSource, dict[in
     if not source.fresh:
         return source, {}
     return source, rivals.league_ownership(conn, source.gameweek, league_ids)
-
-
-def _squad(conn: sqlite3.Connection, snapshot_id: int) -> list[sqlite3.Row]:
-    return conn.execute(
-        """SELECT ms.*, p.web_name, p.element_type, p.team_id
-           FROM my_squad ms JOIN player p ON p.element_id = ms.element_id
-           WHERE ms.snapshot_id = ? ORDER BY ms.position""",
-        (snapshot_id,),
-    ).fetchall()
-
-
-def _state(conn: sqlite3.Connection, snapshot_id: int) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        "SELECT * FROM my_state WHERE snapshot_id = ?", (snapshot_id,)).fetchone()
-
-
-def _team_limit(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT rules FROM game_config ORDER BY captured_at DESC LIMIT 1").fetchone()
-    if not row:
-        return DEFAULT_TEAM_LIMIT
-    return int(json.loads(row["rules"]).get("squad_team_limit", DEFAULT_TEAM_LIMIT))
 
 
 def active_transfer_chip(chips_json: Optional[str]) -> Optional[str]:
@@ -188,12 +165,12 @@ def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
     capture = warehouse.latest(conn)
     if not capture:
         raise LookupError("no snapshot captured yet")
-    state = _state(conn, capture.id)
-    free = state["free_transfers"] if state else None
-    cost = state["transfer_cost"] if state else None
-    chip = active_transfer_chip(state["chips"] if state else None)
+    holding = held.read(conn, capture)
+    free = holding.free_transfers if holding else None
+    cost = holding.transfer_cost if holding else None
+    chip = active_transfer_chip(holding.chips if holding else None)
     return {"free_transfers": free, "transfer_cost": cost, "chip": chip,
-            "wildcard": chip_status(state["chips"] if state else None),
+            "wildcard": chip_status(holding.chips if holding else None),
             "hit_cost": transfer_price(free, cost, chip)}
 
 
@@ -226,28 +203,25 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     if capture.gameweek is None:
         raise LookupError("no target gameweek on the latest snapshot; the season may be over")
 
-    squad = _squad(conn, capture.id)
-    if not squad:
+    holding = held.read(conn, capture)
+    if holding is None:
         raise LookupError(
             "no squad captured; an authenticated snapshot is needed to recommend transfers")
-    state = _state(conn, capture.id)
-    bank = (state["bank"] if state and state["bank"] is not None else 0)
+    bank = holding.bank
 
     context = transfer_context(conn)
     hit_cost, chip = context["hit_cost"], context["chip"]
 
     totals = stored_horizon(conn, capture.id, capture.gameweek, weeks)
     outlooks = pricing.price_outlooks(conn, capture.id)
-    team_limit = _team_limit(conn)
+    team_limit = holding.team_limit
 
     # Ownership comes from the most recent gameweek rivals were captured for, and only
     # when that is not behind the last finished gameweek - see `OwnershipSource`.
     source, ownership = ownership_source(conn)
 
-    owned = {row["element_id"] for row in squad}
-    club_counts: dict[int, int] = {}
-    for row in squad:
-        club_counts[row["team_id"]] = club_counts.get(row["team_id"], 0) + 1
+    owned = {p.element_id for p in holding.players}
+    club_counts = holding.club_counts()
 
     # 'a' available, 'd' doubtful. See the docstring for why the doubtful belong here:
     # their projection has already been cut by FPL's own percentage.
@@ -263,22 +237,22 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     ).fetchall()
 
     recommendations = []
-    for out_row in squad:
-        starts = (out_row["position"] or 99) <= STARTING_XI
+    for out_row in holding.players:
+        starts = (out_row.position or 99) <= STARTING_XI
         slot_value = 1.0 if starts else BENCH_VALUE
-        out_xp = totals.get(out_row["element_id"], 0.0)
-        selling = out_row["selling_price"] or 0
+        out_xp = totals.get(out_row.element_id, 0.0)
+        selling = out_row.selling_price
         budget = bank + selling
-        out_hold = outlooks.get(out_row["element_id"])
+        out_hold = outlooks.get(out_row.element_id)
 
         for cand in candidates:
             if cand["element_id"] in owned:
                 continue
-            if cand["element_type"] != out_row["element_type"]:
+            if cand["element_type"] != out_row.element_type:
                 continue          # squad structure is fixed; swaps are like-for-like
             # The club limit counts the squad after the swap.
             after = club_counts.get(cand["team_id"], 0) + (
-                -1 if cand["team_id"] == out_row["team_id"] else 0)
+                -1 if cand["team_id"] == out_row.team_id else 0)
             if after >= team_limit:
                 continue
 
@@ -302,12 +276,13 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
             recommendations.append({
                 "gameweek": capture.gameweek,
                 "horizon": weeks,
-                "out": {"element_id": out_row["element_id"], "name": out_row["web_name"],
+                "out": {"element_id": out_row.element_id, "name": out_row.name,
                         "selling_price": selling, "xp": round(out_xp, 2),
                         "slot": "xi" if starts else "bench",
-                        **_ownership_fields(ownership, out_row["element_id"])},
+                        **_ownership_fields(ownership, out_row.element_id)},
                 "in": {"element_id": cand["element_id"], "name": cand["web_name"],
-                       "team": cand["team"], "now_cost": cand["now_cost"],
+                       "team": cand["team"], "team_id": cand["team_id"],
+                       "now_cost": cand["now_cost"],
                        "xp": round(totals.get(cand["element_id"], 0.0), 2),
                        # A doubt already discounted the xP above; it is carried through
                        # so the reader is told, not so it can be charged again.
@@ -584,10 +559,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.record and args.chip:
             from . import chips
             capture = warehouse.latest(conn)
-            squad = [dict(r) for r in _squad(conn, capture.id)]
-            verdicts = chips.evaluate(conn, capture.id, capture.gameweek, MODEL_VERSION,
-                                      chips.apply_move(squad, recommendations[0]
-                                                       if recommendations else None))
+            holding = held.read(conn, capture)
+            verdicts = (chips.evaluate(conn, capture.gameweek, MODEL_VERSION,
+                                       holding.with_move(recommendations[0]
+                                                         if recommendations else None))
+                        if holding else [])
             verdict = next((v for v in verdicts if v.state.name == args.chip), None)
             if verdict is None:
                 print(f"\n{args.chip} is not in the captured chips; nothing recorded",

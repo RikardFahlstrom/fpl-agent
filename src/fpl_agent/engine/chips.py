@@ -16,11 +16,12 @@ the held squad, free hit and wildcard from a rebuilt one).
 
 import json
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 from . import squad as squads
 from . import warehouse
+from .held import HeldSquad
 
 #: FPL's chip names, and what a person calls them.
 CHIP_TITLES = {"bboost": "bench boost", "3xc": "triple captain",
@@ -366,18 +367,6 @@ def squad_projections(conn: sqlite3.Connection, snapshot_id: int, model_version:
     return by_week
 
 
-def apply_move(squad: list[dict[str, Any]], move: Optional[dict[str, Any]]
-               ) -> list[dict[str, Any]]:
-    """The squad after the recommended transfer: the incoming player takes the
-    outgoing one's slot. No move, or a move for a player not held, changes nothing."""
-    if not move:
-        return list(squad)
-    out_id, in_id = move["out"]["element_id"], move["in"]["element_id"]
-    if not any(p["element_id"] == out_id for p in squad):
-        return list(squad)
-    return [dict(p, element_id=in_id) if p["element_id"] == out_id else p for p in squad]
-
-
 def bench_boost_values(by_week, squad) -> list[ChipValue]:
     """The bench's projected points, week by week: what the chip adds."""
     bench = [p["element_id"] for p in squad if (p.get("position") or 99) > STARTING_XI]
@@ -542,57 +531,36 @@ def not_evaluated(state: ChipState, gameweek: int, why: str) -> Verdict:
                    else state.describe(gameweek))
 
 
-def _element_type(conn: sqlite3.Connection, element_id: int) -> int:
-    row = conn.execute("SELECT element_type FROM player WHERE element_id = ?",
-                       (element_id,)).fetchone()
-    return int(row["element_type"]) if row else 0
-
-
-def rebuild_budget(conn: sqlite3.Connection, snapshot_id: int) -> int:
-    """Bank plus what the held players sell for - never squad value, which is
-    purchase-based and overstates it."""
-    bank = conn.execute("SELECT bank FROM my_state WHERE snapshot_id = ?",
-                        (snapshot_id,)).fetchone()
-    selling = conn.execute("SELECT COALESCE(SUM(selling_price), 0) FROM my_squad "
-                           "WHERE snapshot_id = ?", (snapshot_id,)).fetchone()[0]
-    return int((bank["bank"] if bank and bank["bank"] is not None else 0) + selling)
-
-
-def evaluate(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
-             model_version: str, squad: list[dict[str, Any]],
-             states: Optional[list[ChipState]] = None,
-             team_limit: int = squads.DEFAULT_TEAM_LIMIT) -> list[Verdict]:
+def evaluate(conn: sqlite3.Connection, gameweek: int, model_version: str,
+             held: HeldSquad) -> list[Verdict]:
     """Every chip's verdict for the gameweek, in FPL's order.
 
-    `squad` is the one the values are summed over - the post-move squad, by the owner's
-    choice, so the chip advice and the transfer advice agree. Chips that are played,
-    expired or not yet open are reported as such and not valued; free hit and wildcard
-    are "not evaluated" until the rebuild optimiser exists (issue #76, steps 3-4).
+    `held` is the squad the values are summed over - the post-move squad, by the
+    owner's choice, so the chip advice and the transfer advice agree - and carries the
+    chip payload, the rebuild budget and the club limit. Chips that are played, expired
+    or not yet open are reported as such and not valued.
     """
-    states = stored_chips(conn, snapshot_id) if states is None else states
+    states = chip_states(held.chips)
     if not states:
         return []
+    snapshot_id, budget, team_limit = held.snapshot_id, held.budget, held.team_limit
     wall = window_end(states, gameweek) or gameweek
+    squad = [asdict(p) for p in held.players]
     ids = [p["element_id"] for p in squad]
-    squad = [dict(p, element_type=_element_type(conn, p["element_id"])) for p in squad]
     by_week = squad_projections(conn, snapshot_id, model_version, ids, gameweek, wall)
     rebuilds = [s for s in states if s.name in ("freehit", "wildcard")
                 and s.evaluable(gameweek)]
     shaped = None
-    if rebuilds and squad:
+    if rebuilds:
         buyable = market(conn, snapshot_id, model_version, gameweek, wall)
-        budget = rebuild_budget(conn, snapshot_id)
-        shape = {}
-        for p in squad:
-            t = _element_type(conn, p["element_id"])
-            shape[t] = shape.get(t, 0) + 1
+        shape: dict[int, int] = {}
+        for p in held.players:
+            shape[p.element_type] = shape.get(p.element_type, 0) + 1
         shaped = shape == squads.SQUAD_SHAPE
     verdicts = []
     for state in states:
         if not state.evaluable(gameweek):
             verdicts.append(not_evaluated(state, gameweek, ""))
-        elif not squad:
-            verdicts.append(not_evaluated(state, gameweek, "no squad captured"))
         elif state.name == "bboost":
             verdicts.append(decide(state, bench_boost_values(by_week, squad), gameweek))
         elif state.name == "3xc":

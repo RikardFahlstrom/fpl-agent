@@ -133,6 +133,20 @@ class RecommendTests(SeedMixin, unittest.TestCase):
                      if r["in"]["element_id"] == 2 and r["out"]["element_id"] in (5, 6, 7)]
         self.assertTrue(same_club, "a same-club swap keeps the count at three and is legal")
 
+    def test_a_lower_club_limit_in_game_config_is_the_one_honoured(self):
+        """The limit is FPL's to change, like the scoring weights: with it at 2, two
+        team-2 players held means a third is never proposed."""
+        elements = [element(1, team=1, element_type=3, cost=50, xg=0.10),
+                    element(5, team=2, element_type=3, cost=50, xg=0.10),
+                    element(6, team=2, element_type=3, cost=50, xg=0.10),
+                    element(2, team=2, element_type=3, cost=55, xg=0.90)]
+        conn = self._seed(squad_ids=(1, 5, 6), elements=elements)
+        conn.execute("""UPDATE game_config SET rules = '{"squad_team_limit": 2}'""")
+        results = recommend.recommend(conn, weeks=3, limit=50)
+        into_two = {r["out"]["element_id"] for r in results if r["in"]["element_id"] == 2}
+        self.assertNotIn(1, into_two, "buying a 3rd team-2 player breaks a limit of 2")
+        self.assertTrue(into_two & {5, 6}, "a same-club swap keeps the count at two")
+
     def test_only_positive_gains_are_offered(self):
         conn = self._seed()
         for r in recommend.recommend(conn, weeks=3, limit=50):

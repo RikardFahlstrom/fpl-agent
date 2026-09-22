@@ -74,7 +74,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import chips, lineups, pricing, recommend, settle, status, storage, warehouse
+from . import (chips, held, lineups, pricing, recommend, settle, status, storage,
+               warehouse)
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing
 
 logger = logging.getLogger("fpl_brief")
@@ -794,9 +795,9 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
 
     # 5. chip_worth_playing, one per chip that clears its bar this week. Valued on the
     #    squad after the recommended move, so this and the move advice agree.
-    verdicts = (chips.evaluate(conn, capture.id, gameweek, MODEL_VERSION,
-                               chips.apply_move(squad, top))
-                if capture and squad else [])
+    holding = held.read(conn, capture) if capture else None
+    verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION, holding.with_move(top))
+                if holding else [])
     playable = [v for v in verdicts if v.play_now]
     if remaining is not None and remaining < timedelta(0):
         playable = []
