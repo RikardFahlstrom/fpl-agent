@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import config
-from . import storage, warehouse
+from . import held, storage, warehouse
 from ..api.client import FPLClient
 from ..api.headless_auth import authenticated_client
 from ..api import account
@@ -108,11 +108,8 @@ def recorded_entry_id(conn: sqlite3.Connection) -> Optional[int]:
     captured. Read from the warehouse so the standings can be refreshed without a
     session; `/me/` is only needed to learn which leagues you are in."""
     capture = warehouse.with_squad(conn)
-    if capture is None:
-        return None
-    row = conn.execute("SELECT entry_id FROM my_state WHERE snapshot_id = ?",
-                       (capture.id,)).fetchone()
-    return row["entry_id"] if row else None
+    holding = held.read(conn, capture) if capture else None
+    return holding.entry_id if holding else None
 
 
 async def refresh_known_standings(conn: sqlite3.Connection, client: FPLClient,

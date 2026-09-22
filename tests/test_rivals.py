@@ -229,6 +229,9 @@ class StandingsRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_leagues_come_from_the_warehouse_and_the_own_entry_from_my_state(self):
         """No login: the ids were recorded by the first full run, the entry by snapshot."""
         self.conn.execute("INSERT INTO snapshot (id, captured_at) VALUES (1, 'now')")
+        # A logged-in capture writes the squad with the state; the entry is read with it.
+        self.conn.execute("INSERT OR IGNORE INTO player VALUES (1,'P1','F','S',1,3,'t','t')")
+        self.conn.execute("INSERT INTO my_squad VALUES (1,1,1,1,0,0,50,50)")
         self.conn.execute("INSERT INTO my_state (snapshot_id, entry_id) VALUES (1, 9)")
         self.conn.commit()
         client = _StandingsClient({100: standings(

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fpl_agent.engine import projection, recommend, storage
+from fpl_agent.engine import held, projection, recommend, storage
 from test_scoring import WEIGHTS
 
 
@@ -288,7 +288,7 @@ class RecommendTests(SeedMixin, unittest.TestCase):
         self.assertAlmostEqual(by_out[1]["raw_xp_delta"], by_out[5]["raw_xp_delta"], places=2)
         self.assertLess(by_out[5]["xp_delta"], by_out[1]["xp_delta"])
         self.assertAlmostEqual(by_out[5]["xp_delta"],
-                               by_out[1]["xp_delta"] * recommend.BENCH_VALUE, places=2)
+                               by_out[1]["xp_delta"] * held.BENCH_VALUE, places=2)
         self.assertEqual(results[0]["out"]["slot"], "xi", "the XI upgrade must rank first")
 
     def test_requires_a_captured_squad(self):

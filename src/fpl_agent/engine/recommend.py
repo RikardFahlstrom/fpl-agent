@@ -45,14 +45,6 @@ ACTIONS_LOG = Path("logs/actions.jsonl")
 TEMPLATE_EO = 0.50
 DIFFERENTIAL_EO = 0.15
 
-# Squad positions 1-11 start; 12-15 are the bench.
-STARTING_XI = 11
-# A bench player only scores through an automatic substitution, so improving a bench
-# slot is worth a fraction of the same upgrade in the XI. Without this the recommender
-# happily proposes a large "gain" on a reserve goalkeeper, which returns nothing.
-# A stated assumption, to be fitted once outcomes exist.
-BENCH_VALUE = 0.15
-
 # FPL's standing hit, used only when a snapshot recorded no `transfers.cost`.
 DEFAULT_TRANSFER_COST = 4
 
@@ -84,54 +76,6 @@ def ownership_source(conn: sqlite3.Connection) -> tuple[OwnershipSource, dict[in
     if not source.fresh:
         return source, {}
     return source, rivals.league_ownership(conn, source.gameweek, league_ids)
-
-
-def active_transfer_chip(chips_json: Optional[str]) -> Optional[str]:
-    """Name the transfer chip in play, if any.
-
-    `my_state.chips` is FPL's own `my-team` payload, stored verbatim: a list of objects
-    carrying `name` ("wildcard", "freehit", "bboost", "3xc"), `chip_type` ("transfer" or
-    "team") and `status_for_entry`, which is one of "unavailable", "available", "active"
-    or "played". "active" - not "played" - is the state during the gameweek the chip is
-    being used in, so that is the value to match.
-
-    Only a *transfer* chip suspends hits. An active bench boost or triple captain is a
-    team chip: it changes what the squad scores, not what a move costs. Keying on
-    `chip_type` rather than on the two known names keeps that distinction if FPL adds
-    another chip, with the names as a fallback for payloads that omit the type.
-    """
-    if not chips_json:
-        return None
-    try:
-        chips = json.loads(chips_json)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(chips, list):
-        return None
-    for chip in chips:
-        if not isinstance(chip, dict) or chip.get("status_for_entry") != "active":
-            continue
-        if chip.get("chip_type") == "transfer" or chip.get("name") in ("wildcard", "freehit"):
-            return chip.get("name")
-    return None
-
-
-def chip_status(chips_json: Optional[str], name: str = "wildcard") -> Optional[str]:
-    """FPL's `status_for_entry` for one chip - "available", "active", "played" - or
-    None when the payload does not say. The brief's wildcard line reads this; the
-    judgement about whether to *use* one is not made anywhere yet, and the line says so."""
-    if not chips_json:
-        return None
-    try:
-        chips = json.loads(chips_json)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(chips, list):
-        return None
-    for chip in chips:
-        if isinstance(chip, dict) and chip.get("name") == name:
-            return chip.get("status_for_entry")
-    return None
 
 
 def transfer_price(free_transfers: Optional[int], transfer_cost: Optional[int],
@@ -168,9 +112,8 @@ def transfer_context(conn: sqlite3.Connection) -> dict[str, Any]:
     holding = held.read(conn, capture)
     free = holding.free_transfers if holding else None
     cost = holding.transfer_cost if holding else None
-    chip = active_transfer_chip(holding.chips if holding else None)
+    chip = holding.active_transfer_chip if holding else None
     return {"free_transfers": free, "transfer_cost": cost, "chip": chip,
-            "wildcard": chip_status(holding.chips if holding else None),
             "hit_cost": transfer_price(free, cost, chip)}
 
 
@@ -223,23 +166,24 @@ def recommend(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
     owned = {p.element_id for p in holding.players}
     club_counts = holding.club_counts()
 
-    # 'a' available, 'd' doubtful. See the docstring for why the doubtful belong here:
-    # their projection has already been cut by FPL's own percentage.
+    # `held.BUYABLE`: available or doubtful. See the docstring for why the doubtful
+    # belong here: their projection has already been cut by FPL's own percentage.
     candidates = conn.execute(
-        """SELECT ps.element_id, ps.now_cost, p.web_name, p.element_type, p.team_id,
-                  t.short_name AS team, ps.status,
-                  ps.chance_of_playing_next_round AS chance
-           FROM player_snapshot ps
-           JOIN player p ON p.element_id = ps.element_id
-           JOIN team t ON t.id = p.team_id
-           WHERE ps.snapshot_id = ? AND ps.status IN ('a', 'd')""",
-        (capture.id,),
+        f"""SELECT ps.element_id, ps.now_cost, p.web_name, p.element_type, p.team_id,
+                   t.short_name AS team, ps.status,
+                   ps.chance_of_playing_next_round AS chance
+            FROM player_snapshot ps
+            JOIN player p ON p.element_id = ps.element_id
+            JOIN team t ON t.id = p.team_id
+            WHERE ps.snapshot_id = ?
+              AND ps.status IN ({",".join("?" * len(held.BUYABLE))})""",
+        (capture.id, *held.BUYABLE),
     ).fetchall()
 
     recommendations = []
     for out_row in holding.players:
-        starts = (out_row.position or 99) <= STARTING_XI
-        slot_value = 1.0 if starts else BENCH_VALUE
+        starts = out_row.starts
+        slot_value = 1.0 if starts else held.BENCH_VALUE
         out_xp = totals.get(out_row.element_id, 0.0)
         selling = out_row.selling_price
         budget = bank + selling

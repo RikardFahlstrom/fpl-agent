@@ -16,89 +16,12 @@ the held squad, free hit and wildcard from a rebuilt one).
 
 import json
 import sqlite3
-from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Optional
 
 from . import squad as squads
 from . import warehouse
-from .held import HeldSquad
-
-#: FPL's chip names, and what a person calls them.
-CHIP_TITLES = {"bboost": "bench boost", "3xc": "triple captain",
-               "freehit": "free hit", "wildcard": "wildcard"}
-
-
-@dataclass(frozen=True)
-class ChipState:
-    """One chip as FPL reports it for the entry."""
-    name: str
-    status: str                  # available | active | played | unavailable
-    start_event: Optional[int]
-    stop_event: Optional[int]
-    played_in: Optional[int]     # the gameweek it was played, if played
-
-    @property
-    def title(self) -> str:
-        return CHIP_TITLES.get(self.name, self.name)
-
-    def open_in(self, gameweek: int) -> bool:
-        """Whether the chip's window covers this gameweek."""
-        after_start = self.start_event is None or gameweek >= self.start_event
-        before_stop = self.stop_event is None or gameweek <= self.stop_event
-        return after_start and before_stop
-
-    def evaluable(self, gameweek: int) -> bool:
-        """Available and inside its window: the only state worth a value."""
-        return self.status == "available" and self.open_in(gameweek)
-
-    def describe(self, gameweek: int) -> str:
-        """The state in the reader's words, for the block."""
-        if self.status == "played":
-            return "played" + (f" in GW{self.played_in}" if self.played_in else "")
-        if self.status == "active":
-            return "active this gameweek"
-        if self.status == "available" and not self.open_in(gameweek):
-            if self.start_event and gameweek < self.start_event:
-                return f"not until GW{self.start_event}"
-            return "expired"
-        return self.status
-
-
-def chip_states(chips_json: Optional[str]) -> list[ChipState]:
-    """Every chip in the stored payload, in FPL's order; empty when nothing was stored."""
-    if not chips_json:
-        return []
-    try:
-        chips = json.loads(chips_json)
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(chips, list):
-        return []
-    states = []
-    for chip in chips:
-        if not isinstance(chip, dict) or "name" not in chip:
-            continue
-        played = chip.get("played_by_entry") or []
-        states.append(ChipState(
-            name=str(chip["name"]),
-            status=str(chip.get("status_for_entry") or "unavailable"),
-            start_event=_int(chip.get("start_event")),
-            stop_event=_int(chip.get("stop_event")),
-            played_in=_int(played[0]) if played else None))
-    return states
-
-
-def _int(value: Any) -> Optional[int]:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def stored_chips(conn: sqlite3.Connection, snapshot_id: int) -> list[ChipState]:
-    row = conn.execute("SELECT chips FROM my_state WHERE snapshot_id = ?",
-                       (snapshot_id,)).fetchone()
-    return chip_states(row["chips"] if row else None)
+from .held import BUYABLE, ChipState, HeldSquad, read as read_held
 
 
 def window_end(states: list[ChipState], gameweek: int) -> Optional[int]:
@@ -116,9 +39,10 @@ def window_end(states: list[ChipState], gameweek: int) -> Optional[int]:
 def chip_window(conn: sqlite3.Connection, gameweek: int) -> Optional[int]:
     """`window_end` for the latest capture with a squad, or None."""
     capture = warehouse.with_squad(conn)
-    if capture is None:
+    holding = read_held(conn, capture) if capture else None
+    if holding is None:
         return None
-    return window_end(stored_chips(conn, capture.id), gameweek)
+    return window_end(list(holding.chips), gameweek)
 
 
 # --------------------------------------------------------------------------
@@ -139,28 +63,20 @@ class Pick:
     components: dict[str, float] = field(default_factory=dict)  # the xP by source
 
 
-def captain_picks(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
-                  model_version: str,
-                  squad: Optional[list[dict[str, Any]]] = None) -> list[Pick]:
-    """The XI ranked by projected points for the gameweek, best first.
+def captain_picks(conn: sqlite3.Connection, gameweek: int, model_version: str,
+                  holding: HeldSquad) -> list[Pick]:
+    """The held XI ranked by projected points for the gameweek, best first.
 
     The captain is the model's, not the payload's: the `is_captain` flag rides along
-    so the line can say when they differ. Reads the stored projection for the capture,
-    which is the decision-time record; no projection means an empty list, and the
-    caller says "not evaluated" rather than guessing.
-
-    `squad` overrides the captured XI - a list of dicts with `element_id`, `position`
-    - so the post-move squad can be ranked too.
+    so the line can say when they differ. Reads the stored projection for the held
+    squad's capture, which is the decision-time record; no projection means an empty
+    list, and the caller says "not evaluated" rather than guessing.
     """
-    if squad is None:
-        rows = conn.execute(
-            """SELECT element_id, position, multiplier FROM my_squad
-               WHERE snapshot_id = ?""", (snapshot_id,)).fetchall()
-        squad = [dict(r) for r in rows]
-    xi = [p for p in squad if (p.get("position") or 99) <= 11]
+    xi = holding.xi
     if not xi:
         return []
-    ids = [p["element_id"] for p in xi]
+    snapshot_id = holding.snapshot_id
+    ids = [p.element_id for p in xi]
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
         f"""SELECT pr.element_id, p.web_name, p.team_id, t.short_name AS team,
@@ -172,7 +88,7 @@ def captain_picks(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
               AND pr.element_id IN ({placeholders})
             ORDER BY pr.expected_points DESC""",
         (snapshot_id, gameweek, model_version, *ids)).fetchall()
-    armband = {p["element_id"] for p in xi if (p.get("multiplier") or 1) > 1}
+    armband = {p.element_id for p in xi if (p.multiplier or 1) > 1}
     opponents = _opponents(conn, gameweek)
     return [Pick(r["element_id"], r["web_name"], r["team"] or "?",
                  round(r["expected_points"], 2), r["fixture_count"] or 0,
@@ -298,8 +214,6 @@ WILDCARD_HORIZON = 6
 #: the money could buy over the wildcard horizon.
 CHIP_BARS = {"bboost": 15.0, "3xc": 9.0, "freehit": 8.0, "wildcard": 15.0}
 
-STARTING_XI = 11
-
 
 @dataclass(frozen=True)
 class ChipValue:
@@ -367,9 +281,9 @@ def squad_projections(conn: sqlite3.Connection, snapshot_id: int, model_version:
     return by_week
 
 
-def bench_boost_values(by_week, squad) -> list[ChipValue]:
+def bench_boost_values(by_week, holding: HeldSquad) -> list[ChipValue]:
     """The bench's projected points, week by week: what the chip adds."""
-    bench = [p["element_id"] for p in squad if (p.get("position") or 99) > STARTING_XI]
+    bench = [p.element_id for p in holding.bench]
     values = []
     for gameweek in sorted(by_week):
         week = by_week[gameweek]
@@ -381,9 +295,9 @@ def bench_boost_values(by_week, squad) -> list[ChipValue]:
     return values
 
 
-def triple_captain_values(by_week, squad) -> list[ChipValue]:
+def triple_captain_values(by_week, holding: HeldSquad) -> list[ChipValue]:
     """The best XI player's projected points, week by week: the extra 1x the chip adds."""
-    xi = [p["element_id"] for p in squad if (p.get("position") or 99) <= STARTING_XI]
+    xi = [p.element_id for p in holding.xi]
     values = []
     for gameweek in sorted(by_week):
         week = by_week[gameweek]
@@ -404,20 +318,20 @@ def market(conn: sqlite3.Connection, snapshot_id: int, model_version: str,
            first: int, last: int) -> dict[int, dict[int, squads.Candidate]]:
     """gameweek -> element_id -> Candidate for every buyable player, per week.
 
-    Buyable is FPL's `a` or `d` - the doubtful are already discounted in the
-    projection, the same reasoning `recommend` gives. The cost is today's price: a
-    rebuild is priced at what the market asks now.
+    Buyable is `held.BUYABLE`, the same set `recommend` offers. The cost is today's
+    price: a rebuild is priced at what the market asks now.
     """
     rows = conn.execute(
-        """SELECT pr.gameweek, pr.element_id, p.web_name, p.team_id, p.element_type,
-                  ps.now_cost, pr.expected_points
-           FROM projection pr
-           JOIN player p ON p.element_id = pr.element_id
-           JOIN player_snapshot ps ON ps.snapshot_id = pr.snapshot_id
-                                  AND ps.element_id = pr.element_id
-           WHERE pr.snapshot_id = ? AND pr.model_version = ?
-             AND pr.gameweek BETWEEN ? AND ? AND ps.status IN ('a', 'd')""",
-        (snapshot_id, model_version, first, last)).fetchall()
+        f"""SELECT pr.gameweek, pr.element_id, p.web_name, p.team_id, p.element_type,
+                   ps.now_cost, pr.expected_points
+            FROM projection pr
+            JOIN player p ON p.element_id = pr.element_id
+            JOIN player_snapshot ps ON ps.snapshot_id = pr.snapshot_id
+                                   AND ps.element_id = pr.element_id
+            WHERE pr.snapshot_id = ? AND pr.model_version = ?
+              AND pr.gameweek BETWEEN ? AND ?
+              AND ps.status IN ({",".join("?" * len(BUYABLE))})""",
+        (snapshot_id, model_version, first, last, *BUYABLE)).fetchall()
     by_week: dict[int, dict[int, squads.Candidate]] = {}
     for r in rows:
         by_week.setdefault(r["gameweek"], {})[r["element_id"]] = squads.Candidate(
@@ -446,21 +360,19 @@ def _summed(by_week: dict[int, dict[int, squads.Candidate]],
     return out
 
 
-def held_squad(squad: list[dict[str, Any]], candidates: list[squads.Candidate],
+def held_squad(holding: HeldSquad, candidates: list[squads.Candidate],
                held_xp: dict[int, float]) -> Optional[squads.Squad]:
     """The held fifteen as a Squad over the same weeks, so the comparison is like for
     like: its XI is the best legal one, its bench discounted the same way."""
     by_id = {c.element_id: c for c in candidates}
     players = []
-    for p in squad:
-        c = by_id.get(p["element_id"])
+    for p in holding.players:
+        c = by_id.get(p.element_id)
         if c is None:
             # Held but not buyable (injured, suspended): still in the squad, and his
             # projection - however small - is what he is worth to it.
-            c = squads.Candidate(p["element_id"], p.get("name", str(p["element_id"])),
-                                 p.get("team_id", -1), p.get("element_type", 0),
-                                 p.get("selling_price", 0),
-                                 held_xp.get(p["element_id"], 0.0))
+            c = squads.Candidate(p.element_id, p.name, p.team_id, p.element_type,
+                                 p.selling_price, held_xp.get(p.element_id, 0.0))
         players.append(c)
     if len(players) != 15 or not squads.legal(players, 10 ** 9, team_limit=99):
         return None
@@ -468,11 +380,13 @@ def held_squad(squad: list[dict[str, Any]], candidates: list[squads.Candidate],
                         sum(p.cost for p in players))
 
 
-def rebuild_values(by_week, squad, held_by_week, budget: int, team_limit: int,
-                   span: int, wall: int) -> list[ChipValue]:
+def rebuild_values(by_week, holding: HeldSquad, held_by_week, span: int,
+                   wall: int) -> list[ChipValue]:
     """The rebuilt squad's objective minus the held squad's, per week, over `span`
-    weeks from that week (capped at the wall). A week the projections do not reach
-    contributes no value rather than a guess."""
+    weeks from that week (capped at the wall), bought with the held squad's budget
+    under its club limit. A week the projections do not reach contributes no value
+    rather than a guess."""
+    owned = {p.element_id for p in holding.players}
     values = []
     for gameweek in sorted(by_week):
         weeks = [w for w in range(gameweek, min(gameweek + span, wall + 1))]
@@ -480,14 +394,13 @@ def rebuild_values(by_week, squad, held_by_week, budget: int, team_limit: int,
         if not candidates:
             continue
         held_xp = {e: sum(held_by_week.get(w, {}).get(e, (0.0,))[0] for w in weeks)
-                   for e in {p["element_id"] for p in squad}}
-        held = held_squad(squad, candidates, held_xp)
-        best = squads.best_squad(candidates, budget, team_limit)
+                   for e in owned}
+        held = held_squad(holding, candidates, held_xp)
+        best = squads.best_squad(candidates, holding.budget, holding.team_limit)
         if held is None or best is None:
             continue
         gain = best.objective - held.objective
-        arrivals = [p.name for p in best.xi
-                    if p.element_id not in {q["element_id"] for q in squad}]
+        arrivals = [p.name for p in best.xi if p.element_id not in owned]
         note = ", ".join(arrivals[:4]) + ("…" if len(arrivals) > 4 else "")
         listing = tuple(f"{p.name} £{p.cost / 10:.1f}m {p.xp:.1f}"
                         for p in (*best.xi, *best.bench))
@@ -540,19 +453,17 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, model_version: str,
     chip payload, the rebuild budget and the club limit. Chips that are played, expired
     or not yet open are reported as such and not valued.
     """
-    states = chip_states(held.chips)
+    states = list(held.chips)
     if not states:
         return []
-    snapshot_id, budget, team_limit = held.snapshot_id, held.budget, held.team_limit
     wall = window_end(states, gameweek) or gameweek
-    squad = [asdict(p) for p in held.players]
-    ids = [p["element_id"] for p in squad]
-    by_week = squad_projections(conn, snapshot_id, model_version, ids, gameweek, wall)
+    ids = [p.element_id for p in held.players]
+    by_week = squad_projections(conn, held.snapshot_id, model_version, ids, gameweek, wall)
     rebuilds = [s for s in states if s.name in ("freehit", "wildcard")
                 and s.evaluable(gameweek)]
     shaped = None
     if rebuilds:
-        buyable = market(conn, snapshot_id, model_version, gameweek, wall)
+        buyable = market(conn, held.snapshot_id, model_version, gameweek, wall)
         shape: dict[int, int] = {}
         for p in held.players:
             shape[p.element_type] = shape.get(p.element_type, 0) + 1
@@ -562,20 +473,19 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, model_version: str,
         if not state.evaluable(gameweek):
             verdicts.append(not_evaluated(state, gameweek, ""))
         elif state.name == "bboost":
-            verdicts.append(decide(state, bench_boost_values(by_week, squad), gameweek))
+            verdicts.append(decide(state, bench_boost_values(by_week, held), gameweek))
         elif state.name == "3xc":
-            verdicts.append(decide(state, triple_captain_values(by_week, squad), gameweek))
+            verdicts.append(decide(state, triple_captain_values(by_week, held), gameweek))
         elif state.name in ("freehit", "wildcard") and not shaped:
             verdicts.append(not_evaluated(
                 state, gameweek, "the held squad is not FPL-shaped (2-5-5-3), so a "
                                  "rebuild cannot be compared against it"))
         elif state.name == "freehit":
             verdicts.append(decide(state, rebuild_values(
-                buyable, squad, by_week, budget, team_limit, 1, wall), gameweek))
+                buyable, held, by_week, 1, wall), gameweek))
         elif state.name == "wildcard":
             verdicts.append(decide(state, rebuild_values(
-                buyable, squad, by_week, budget, team_limit, WILDCARD_HORIZON, wall),
-                gameweek))
+                buyable, held, by_week, WILDCARD_HORIZON, wall), gameweek))
         else:
             verdicts.append(not_evaluated(state, gameweek, "no rule for this chip"))
     return verdicts

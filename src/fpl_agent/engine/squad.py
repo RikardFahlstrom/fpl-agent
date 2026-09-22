@@ -13,22 +13,21 @@ while staying legal, until no swap does. That lands within the projection's own 
 of the optimum on this size of problem; if it ever visibly does not, an exact solver
 can replace `best_squad` behind the same signature without touching a caller.
 
-The objective is the XI's points plus a fraction of the bench's - `BENCH_VALUE`, the
-same discount `recommend` applies to a bench upgrade - so a squad is not built with a
+The objective is the XI's points plus a fraction of the bench's - `held.BENCH_VALUE`,
+the discount `recommend` applies to a bench upgrade too - so a squad is not built with a
 £4.0m bench that never plays, nor with fifteen starters it cannot field.
 """
 
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from .held import BENCH_VALUE, DEFAULT_TEAM_LIMIT
+
 #: FPL's squad shape by element type (1 GKP, 2 DEF, 3 MID, 4 FWD).
 SQUAD_SHAPE = {1: 2, 2: 5, 3: 5, 4: 3}
 #: Legal XI formations: (DEF, MID, FWD) with one GKP.
 FORMATIONS = [(d, m, f) for d in (3, 4, 5) for m in (2, 3, 4, 5) for f in (1, 2, 3)
               if d + m + f == 10]
-DEFAULT_TEAM_LIMIT = 3
-#: A bench player only scores through an automatic substitution.
-BENCH_VALUE = 0.15
 
 
 @dataclass(frozen=True)
