@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .. import config
-from . import brief, status, storage
+from . import brief, status, storage, warehouse
 from .brief import Trigger
 
 logger = logging.getLogger("fpl_notify")
@@ -383,12 +383,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return EXIT_UNREADABLE
 
     try:
-        gameweek = args.gameweek
-        if gameweek is None:
-            gameweek = brief.default_gameweek(conn)
-        if gameweek is None:
-            print("no snapshot carries a target gameweek, and none was given; "
-                  "pass --gameweek or run `make snapshot`.", file=sys.stderr)
+        try:
+            gameweek = warehouse.require_target(conn, args.gameweek).gameweek
+        except LookupError as e:
+            print(e, file=sys.stderr)
             return EXIT_UNREADABLE
 
         evaluation = brief.evaluate(conn, gameweek)

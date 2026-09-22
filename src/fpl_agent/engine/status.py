@@ -169,7 +169,7 @@ def check_squad(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Check:
                  f"squad, so budget and bench order are both wrong")
 
 
-def check_projections(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Check:
+def check_projections(conn: sqlite3.Connection, target: warehouse.Target) -> Check:
     """CLAUDE.md: "Bump MODEL_VERSION on any change that moves projections."
 
     Both versions then sit in the warehouse, which means the presence of *a* projection
@@ -177,7 +177,7 @@ def check_projections(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> 
     a snapshot `project` never re-ran over, and `recommend` reads the current version -
     so the check is for the current version, on the snapshot's own target gameweek.
     """
-    gameweek = snapshot.gameweek
+    snapshot, gameweek = target.capture, target.gameweek
     rows = conn.execute(
         """SELECT model_version, COUNT(*) AS n FROM projection
            WHERE snapshot_id = ? AND gameweek = ? GROUP BY model_version
@@ -211,7 +211,7 @@ def check_projections(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> 
                  detail + (f"; also stored: {others}" if others else ""))
 
 
-def check_lineups(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Check:
+def check_lineups(conn: sqlite3.Connection, target: warehouse.Target) -> Check:
     """Which gameweek's lineups `project` will actually find.
 
     Filing is decided per fixture, not per snapshot: `lineups.record_lineups` asks the
@@ -227,7 +227,7 @@ def check_lineups(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Chec
     to historical start rates, which is a real degradation and not an error - RotoWire
     publishes near matchday, so a Tuesday snapshot legitimately has none.
     """
-    target = snapshot.gameweek
+    snapshot, gameweek = target.capture, target.gameweek
     rows = conn.execute(
         """SELECT gameweek, COUNT(*) AS n FROM predicted_lineup
            WHERE snapshot_id = ? GROUP BY gameweek ORDER BY gameweek""",
@@ -235,17 +235,17 @@ def check_lineups(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Chec
     filed = (", ".join(f"{r['n']} for gameweek {r['gameweek']}" for r in rows)
              if rows else "none")
     # The same capture lineup_start_rates reads, by construction.
-    holder = warehouse.with_lineups(conn, target)
+    holder = warehouse.with_lineups(conn, gameweek)
     source = holder.id if holder else None
 
     if source is None:
         return Check("lineups", WARN,
                      f"snapshot {snapshot.id} filed {filed}, and no snapshot holds "
-                     f"any for gameweek {target} - projections for it fall back to "
+                     f"any for gameweek {gameweek} - projections for it fall back to "
                      f"historical start rates. Normal until RotoWire publishes.")
     used = conn.execute(
         "SELECT COUNT(*) FROM predicted_lineup WHERE snapshot_id = ? AND gameweek = ?",
-        (source, target)).fetchone()[0]
+        (source, gameweek)).fetchone()[0]
     if source == snapshot.id:
         if len(rows) == 1:
             return Check("lineups", OK,
@@ -253,9 +253,9 @@ def check_lineups(conn: sqlite3.Connection, snapshot: warehouse.Capture) -> Chec
         # Two rounds under one snapshot is the changeover case, so name which half wins.
         return Check("lineups", OK,
                      f"{filed}, snapshot {snapshot.id} - the {used} for gameweek "
-                     f"{target} are what `project` will use")
+                     f"{gameweek} are what `project` will use")
     return Check("lineups", WARN,
-                 f"snapshot {snapshot.id} filed {filed}; gameweek {target}'s lineups "
+                 f"snapshot {snapshot.id} filed {filed}; gameweek {gameweek}'s lineups "
                  f"come from the older snapshot {source} ({used} rows), which is what "
                  f"`project` will use")
 
@@ -452,7 +452,8 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
                       f"missing table(s): {', '.join(absent)} - this file is not an "
                       f"fpl-agent warehouse, or its schema predates them")]
 
-    snapshot = warehouse.latest(conn)
+    found = warehouse.target(conn)
+    snapshot = found.capture if found else None
     # One read of what every round holds; the checks below that could otherwise mistake
     # "not yet" for "missing" are gated on its `finished` list - CLAUDE.md's "absence of
     # a row is data" only starts being true once the fixtures are played.
@@ -460,10 +461,10 @@ def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Chec
     checks = [check_snapshot(snapshot)]
     # Squad, projections and lineups all hang off one snapshot; with no usable snapshot
     # there is nothing for them to be measured against, and check_snapshot has failed.
-    if snapshot is not None and snapshot.gameweek is not None:
+    if found is not None and found.gameweek is not None:
         checks += [check_squad(conn, snapshot),
-                   check_projections(conn, snapshot),
-                   check_lineups(conn, snapshot)]
+                   check_projections(conn, found),
+                   check_lineups(conn, found)]
     checks += [check_actuals(ledger),
                check_grading(ledger),
                check_rivals(conn, ledger),

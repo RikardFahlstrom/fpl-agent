@@ -297,6 +297,18 @@ class RecommendTests(SeedMixin, unittest.TestCase):
             recommend.recommend(conn, weeks=3)
 
 
+    def test_the_targets_own_gameweek_is_the_default(self):
+        conn = self._seed()
+        self.assertEqual(recommend.recommend(conn, weeks=3, gameweek=3),
+                         recommend.recommend(conn, weeks=3))
+
+    def test_another_gameweek_is_refused_rather_than_priced_as_the_target(self):
+        """Bank, free transfers and selling prices are the latest capture's alone; a
+        ranking labelled gameweek 4 would be gameweek 3's under another name."""
+        conn = self._seed()
+        with self.assertRaisesRegex(LookupError, "targets gameweek 3.*gameweek 4"):
+            recommend.recommend(conn, weeks=3, gameweek=4)
+
 class StoredHorizonTests(SeedMixin, unittest.TestCase):
     """Recommending is a read. It must not write projections on the way past."""
 

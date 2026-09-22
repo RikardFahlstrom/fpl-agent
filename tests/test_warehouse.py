@@ -98,6 +98,34 @@ class TargetTests(WarehouseTestCase):
         self.assertIsNone(warehouse.target(self.conn).deadline)
 
 
+class RequireTargetTests(WarehouseTestCase):
+    """The gameweek a command works on, or one wording of why there is none."""
+
+    def test_nothing_captured_is_refused(self):
+        with self.assertRaisesRegex(LookupError, "no snapshot captured yet"):
+            warehouse.require_target(self.conn)
+
+    def test_a_capture_with_no_target_gameweek_is_refused(self):
+        self.w.snapshot(gameweek=None)
+        with self.assertRaisesRegex(LookupError, "the season may be over"):
+            warehouse.require_target(self.conn)
+
+    def test_unnamed_it_is_the_target(self):
+        self.w.snapshot(gameweek=3)
+        self.assertEqual(warehouse.require_target(self.conn), warehouse.target(self.conn))
+
+    def test_a_named_gameweek_is_carried_with_its_own_deadline_not_swapped(self):
+        storage.upsert_fixtures(self.conn, [
+            {"id": 300, "event": 3, "kickoff_time": "2026-09-05T15:00:00Z"},
+            {"id": 400, "event": 4, "kickoff_time": "2026-09-12T15:00:00Z"}])
+        newest = self.w.snapshot(gameweek=3)
+        target = warehouse.require_target(self.conn, 4)
+        self.assertEqual(target.capture.id, newest)
+        self.assertEqual(target.gameweek, 4)
+        self.assertEqual(target.deadline,
+                         datetime(2026, 9, 12, 13, 30, tzinfo=timezone.utc))
+
+
 class WithLineupsTests(WarehouseTestCase):
     def test_no_lineups_for_the_gameweek_is_none(self):
         newest = self.w.snapshot(gameweek=3)

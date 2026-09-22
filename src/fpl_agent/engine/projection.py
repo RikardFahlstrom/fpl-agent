@@ -437,12 +437,8 @@ def project_gameweek(conn: sqlite3.Connection, gameweek: Optional[int] = None,
     a graded projection is the record of what the model believed *at decision time*,
     and rewriting it under today's code turns the learning loop into a tautology.
     """
-    snapshot = warehouse.latest(conn)
-    if not snapshot:
-        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
-    gameweek = gameweek or snapshot.gameweek
-    if gameweek is None:
-        raise LookupError("no target gameweek; the season may be over")
+    target = warehouse.require_target(conn, gameweek)
+    snapshot, gameweek = target.capture, target.gameweek
 
     graded = graded_projections(conn, snapshot.id, gameweek, model_version)
     if graded:
@@ -565,12 +561,8 @@ def project_horizon(conn: sqlite3.Connection, start_gameweek: Optional[int] = No
 
     This writes. Callers that only need the numbers read `stored_horizon` instead.
     """
-    snapshot = warehouse.latest(conn)
-    if not snapshot:
-        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
-    start = start_gameweek or snapshot.gameweek
-    if start is None:
-        raise LookupError("no target gameweek; the season may be over")
+    target = warehouse.require_target(conn, start_gameweek)
+    snapshot, start = target.capture, target.gameweek
 
     for gameweek in range(start, start + weeks):
         project_gameweek(conn, gameweek, model_version)
@@ -593,12 +585,8 @@ def project_chip_window(conn: sqlite3.Connection, start_gameweek: Optional[int] 
     been captured: a market-only warehouse has no chips to value.
     """
     from . import chips     # chips reads projections; imported here to avoid the cycle
-    snapshot = warehouse.latest(conn)
-    if not snapshot:
-        raise LookupError("no snapshot captured yet; run `fpl-agent snapshot`")
-    start = start_gameweek or snapshot.gameweek
-    if start is None:
-        raise LookupError("no target gameweek; the season may be over")
+    target = warehouse.require_target(conn, start_gameweek)
+    snapshot, start = target.capture, target.gameweek
     end = chips.chip_window(conn, start)
     if end is None:
         logger.info("no chips captured; nothing beyond the horizon to project")
