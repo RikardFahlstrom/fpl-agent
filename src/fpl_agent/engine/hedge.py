@@ -40,6 +40,8 @@ MAX_TRANSFERS = 3
 # Template players ranked by what the field gets from them (its multipliers times their
 # projection); a template goalkeeper on your bench is not the gap that is costing you.
 MAX_TARGETS = 3
+# The target of the search with nobody forced in.
+ANY_PLAYER = "best available"
 
 # Two captains this close in expected points are a coin flip for the model, so the
 # league decides: behind, take the one fewer rivals are captaining.
@@ -232,29 +234,35 @@ def hedge(conn: sqlite3.Connection, weeks: int = HORIZON_GAMEWEEKS,
                           and field_eo.get(c.element_id, 0.0) >= recommend.TEMPLATE_EO),
                          key=lambda c: -field_eo[c.element_id] * c.xp)[:max_targets]
 
+    # Named players are the question; otherwise the template players are, and so is
+    # the whole market with nobody forced in (None), which says what the best squad
+    # within reach is whoever the field owns.
+    searches = list(targets) if players else [*targets, None]
     options, seen = [], set()
-    for cand in targets:
+    for cand in searches:
         for k in range(1, max_transfers + 1):
             best = squads.best_squad(pool, holding.budget, holding.team_limit,
                                      base=owned, max_changes=k,
-                                     required={cand.element_id})
+                                     required={cand.element_id} if cand else ())
             if best is None:
                 continue
             bought = [p for p in best.players if p.element_id not in owned]
             sold = [p for p in holding.players
                     if p.element_id not in {q.element_id for q in best.players}]
-            key = (cand.element_id, frozenset(p.element_id for p in bought))
+            key = (cand.element_id if cand else None,
+                   frozenset(p.element_id for p in bought))
             if key in seen:         # a looser limit found nothing a tighter one had not
                 continue
             seen.add(key)
             value, armband, why = lineup_value(best)
             hit = hit_for(len(bought), free, per_transfer, chip)
-            entry = ownership.get(cand.element_id)
+            entry = cand and ownership.get(cand.element_id)
             options.append(Option(
-                target=cand.name,
+                target=cand.name if cand else ANY_PLAYER,
                 rivals_holding=(f"{entry['owned_by']} of {entry['managers']}"
                                 if entry else "0"),
-                field_multiplier=round(field_eo.get(cand.element_id, 0.0), 2),
+                field_multiplier=round(field_eo.get(cand.element_id, 0.0), 2)
+                if cand else 0.0,
                 changes=len(bought),
                 out=tuple((p.name, p.selling_price) for p in sold),
                 into=tuple((p.name, p.cost) for p in bought),
@@ -293,9 +301,10 @@ def render(report: Report) -> str:
         return "\n".join(lines)
     for o in report.options:
         lines.append("")
-        lines.append(f"{o.target} (rivals holding {o.rivals_holding}, field multiplier "
-                     f"{o.field_multiplier:.1f}x, yours 0x): {o.changes} transfer"
-                     f"{'s' if o.changes > 1 else ''}"
+        who = (f"{o.target} (rivals holding {o.rivals_holding}, field multiplier "
+               f"{o.field_multiplier:.1f}x, yours 0x)" if o.target != ANY_PLAYER
+               else "Best squad whoever the field owns")
+        lines.append(f"{who}: {o.changes} transfer{'s' if o.changes > 1 else ''}"
                      f"{f', hit -{o.hit}' if o.hit else ', no hit'}")
         lines.append("  out: " + ", ".join(f"{n} {_money(c)}" for n, c in o.out))
         lines.append("  in:  " + ", ".join(f"{n} {_money(c)}" for n, c in o.into)

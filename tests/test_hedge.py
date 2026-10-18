@@ -165,6 +165,16 @@ class HedgeTests(unittest.TestCase):
         report = hedge.hedge(self.conn, weeks=3)
         self.assertEqual(report.targets, ("P16",))
 
+    def test_the_whole_market_is_searched_with_nobody_forced_in(self):
+        self._seed()
+        report = hedge.hedge(self.conn, weeks=3)
+        free = [o for o in report.options if o.target == hedge.ANY_PLAYER]
+        self.assertTrue(free)
+        # With the star affordable in two moves, the unforced best squad finds him too.
+        self.assertTrue(any("P16" in [n for n, _ in o.into] for o in free))
+        named = hedge.hedge(self.conn, weeks=3, players=["P16"])
+        self.assertNotIn(hedge.ANY_PLAYER, [o.target for o in named.options])
+
     def test_without_rivals_it_says_so_rather_than_guessing(self):
         self._seed(rivals=False)
         report = hedge.hedge(self.conn, weeks=3)
