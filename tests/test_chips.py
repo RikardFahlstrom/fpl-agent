@@ -221,6 +221,11 @@ class DecideTests(unittest.TestCase):
         self.assertIn("no week to GW7 clears it either", v.reason)
         self.assertEqual(v.short, "hold (+11.7, bar 15)")
 
+    def test_the_summary_names_the_best_week_even_when_it_is_under_the_bar(self):
+        verdict = chips.decide(BB, [value(5, 11.0), value(9, 13.0)], 5)
+        self.assertIn("hold", chips.chips_line([verdict], 5))
+        self.assertIn("best projected: GW9, provisional", chips.chips_line([verdict], 5))
+
     def test_a_later_week_over_the_bar_is_named_as_the_hold_target(self):
         v = chips.decide(BB, [value(5, 11.7), value(6, 9.8), value(9, 16.2, "double")], 5)
         self.assertFalse(v.play_now)
@@ -377,8 +382,8 @@ class ChipTriggerTests(unittest.TestCase):
                          "Play your bench boost this gameweek: +18.0 (P12, P13, P14, P15)")
         self.assertIn("clears the 15 bar", trigger.detail)
         self.assertIn("Best other week: GW4 (+4.0", trigger.detail)
-        self.assertIn("Deadline Sat 05 Sep 07:30 UTC", trigger.detail)
-        self.assertIn("Play the bench boost before Sat 05 Sep 07:30 UTC, or record why not "
+        self.assertIn("Deadline 5 Sep 09:30 Stockholm", trigger.detail)
+        self.assertIn("Play the bench boost before 5 Sep 09:30 Stockholm, or record why not "
                       "with `fpl-agent recommend --record --chip bboost`", trigger.action)
         self.assertEqual(trigger.fingerprint, "chip_worth_playing:gw3:bboost")
 
@@ -397,13 +402,17 @@ class ChipTriggerTests(unittest.TestCase):
     def test_the_block_and_the_section_carry_the_verdicts(self):
         self.bench(4.5)
         text = self.render()
-        self.assertIn("- **Chips:** bench boost PLAY NOW (+18.0, bar 15) · triple captain "
-                      "hold (+2.0, bar 9) · wildcard played in GW3 · free hit not "
-                      "evaluated; set expires after GW19 (17 weeks left)", text)
+        self.assertIn("- **Chips:** bench boost PLAY NOW (+18.0, bar 15) "
+                      "(best projected: GW3 (deadline 5 Sep 09:30), provisional)", text)
+        self.assertIn("triple captain hold (+2.0, bar 9) "
+                      "(best projected: GW3 (deadline 5 Sep 09:30), provisional)", text)
+        self.assertIn("wildcard played in GW3 (deadline 5 Sep 09:30)", text)
+        self.assertIn("free hit not evaluated", text)
         self.assertIn("## Chips", text)
-        self.assertIn("| GW3 * | +18.0 (P12, P13, P14, P15) | +2.0 (P17) |", text)
-        self.assertIn("| GW4 | +4.0 | +2.0 |", text)         # names only when they change
-        self.assertIn("The set expires after GW19; weeks GW6-GW19 are not projected yet "
+        self.assertIn("| GW3 (deadline 5 Sep 09:30) * | +18.0 (P12, P13, P14, P15) | +2.0 (P17) |", text)
+        self.assertIn("| GW4 (deadline unknown) | +4.0 | +2.0 |", text)
+        self.assertIn("The set expires after GW19 (deadline unknown); weeks "
+                      "GW6 (deadline unknown)-GW19 (deadline unknown) are not projected yet "
                       "(`project --chips`)", text)
         self.assertIn("Only the next gameweek has predicted lineups", text)
         self.assertIn("fired, not delivered: Deadline near with a free transfer unused, A move worth making, A chip worth playing", text)
@@ -501,7 +510,8 @@ class RebuildTests(unittest.TestCase):
         names = [t.headline for t in evaluation.triggers if t.name == "chip_worth_playing"]
         self.assertTrue(any(h.startswith("Play your free hit this gameweek") for h in names))
         text = brief.render_brief(evaluation)
-        self.assertIn("The free hit squad for GW3 (XI first, then bench): ", text)
+        self.assertIn("The free hit squad for GW3 (deadline 5 Sep 09:30) "
+                      "(XI first, then bench): ", text)
         self.assertIn("P23 £5.0m 8.0; P27 £5.0m 8.0; P31 £5.0m 8.0", text)
 
     def test_the_wildcard_is_valued_over_its_horizon_capped_at_the_wall(self):

@@ -565,6 +565,7 @@ class CommandTest(unittest.TestCase):
         # A wildcard silences every transfer trigger, and a clean squad silences the
         # rest - so nothing fires. That must be distinguishable from a broken notifier.
         conn = storage.connect(self.db)
+        Warehouse(conn).fixtures(kickoff="2026-09-05T09:00:00Z")
         conn.execute(
             """UPDATE my_state SET free_transfers = 0, chips = ?""",
             ('[{"chip_type": "transfer", "name": "wildcard", '
@@ -576,6 +577,8 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(code, notify.EXIT_OK)
         self.assertEqual(self.stub.requests, [])
         self.assertIn("evaluated", out)
+        self.assertIn("gameweek 3 (deadline 5 Sep 09:30)", out)
+        self.assertIn("Previous gameweek:", out)
         for name in brief.TRIGGER_NAMES:
             self.assertIn(name, out, f"a silent run did not mention {name}")
 

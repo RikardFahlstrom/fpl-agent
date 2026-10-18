@@ -500,7 +500,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         from . import brief
         evaluation = brief.evaluate(conn, target.gameweek, include_token=False)
         print("\n".join(brief.render_block(evaluation, markdown=False)))
-        print(render(context, recommendations, args.weeks))
+        print(brief.with_deadlines(render(context, recommendations, args.weeks), evaluation))
 
         if args.record and args.chip:
             from . import chips

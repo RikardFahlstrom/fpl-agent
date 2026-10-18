@@ -92,6 +92,24 @@ async def refresh_standings(conn: sqlite3.Connection, client: FPLClient, league:
          league.get("league_type") or about.get("league_type"),
          league.get("rank_count") or len(results), _now()),
     )
+    if own_entry is not None:
+        try:
+            entry = await client.get_manager_entry(own_entry)
+        except Exception as e:
+            logger.warning("league %s: round-specific standings not captured: %s", league_id, e)
+        else:
+            gameweek = entry.get("current_event")
+            if gameweek is None:
+                logger.warning("league %s: entry has no current_event; round-specific standings "
+                               "not captured", league_id)
+            else:
+                finished = warehouse.gameweeks(conn, MODEL_VERSION).get(gameweek).finished
+                conn.executemany(
+                    "INSERT OR REPLACE INTO league_standing VALUES (?,?,?,?,?,?,?,?,?)",
+                    [(league_id, gameweek, r["entry"], r.get("rank"), r.get("last_rank"),
+                      r.get("event_total"), r.get("total"), int(finished), _now())
+                     for r in results],
+                )
     results = [r for r in results if r.get("entry") != own_entry][:max_rivals]
     if results:
         conn.executemany(

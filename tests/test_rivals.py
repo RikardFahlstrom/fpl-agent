@@ -186,6 +186,9 @@ class _StandingsClient:
     async def get_league_standings(self, league_id):
         return self.pages[league_id]
 
+    async def get_manager_entry(self, entry_id):
+        return {"current_event": 3}
+
     async def get_manager_gameweek_picks(self, entry_id, gameweek):
         self.picks_calls += 1
         return {"picks": []}
@@ -225,6 +228,18 @@ class StandingsRefreshTests(unittest.IsolatedAsyncioTestCase):
         after = self.conn.execute("SELECT * FROM rival_squad ORDER BY 1,2,3").fetchall()
         self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
         self.assertEqual(client.picks_calls, 0)
+
+    async def test_the_owners_rank_change_is_kept_with_its_round(self):
+        page = standings((1, "Leader", "L FC", 1, 210), (9, "Me", "Own FC", 2, 194))
+        page["standings"]["results"][1].update(last_rank=4, event_total=62)
+        client = _StandingsClient({100: page})
+        await rivals.refresh_standings(self.conn, client, league(100), own_entry=9)
+        row = self.conn.execute(
+            "SELECT * FROM league_standing WHERE league_id=100 AND entry_id=9").fetchone()
+        self.assertIsNotNone(row, "the owner must be retained for league analysis")
+        self.assertEqual((row["gameweek"], row["rank"], row["last_rank"],
+                          row["event_points"], row["total_points"], row["finished"]),
+                         (3, 2, 4, 62, 194, 0))
 
     async def test_leagues_come_from_the_warehouse_and_the_own_entry_from_my_state(self):
         """No login: the ids were recorded by the first full run, the entry by snapshot."""

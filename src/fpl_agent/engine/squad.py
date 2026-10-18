@@ -5,13 +5,11 @@ points over whatever weeks the caller cares about); the answer is fifteen player
 respect FPL's shape (2 GKP, 5 DEF, 5 MID, 3 FWD), the club limit and the budget, with
 the best legal XI picked from them.
 
-**Greedy, then swaps - no solver.** The repo keeps three dependencies on purpose and the
-problem is fifteen slots from a few hundred candidates, most of them dominated. The
-search starts from the cheapest legal squad (so it is feasible from the first step),
-then repeatedly makes the single same-position swap that raises the objective most
-while staying legal, until no swap does. That lands within the projection's own error
-of the optimum on this size of problem; if it ever visibly does not, an exact solver
-can replace `best_squad` behind the same signature without touching a caller.
+`best_squad` uses SciPy's HiGHS MILP solver over the full candidate pool. Binary
+variables choose the fifteen and their legal XI together, so coordinated upgrades
+are considered. Only an optimal result is returned; infeasibility returns None and
+a time limit or solver failure raises rather than claiming an optimum. The previous
+search remains as `greedy_squad` for the warehouse benchmark, not chip advice.
 
 The objective is the XI's points plus a fraction of the bench's - `held.BENCH_VALUE`,
 the discount `recommend` applies to a bench upgrade too - so a squad is not built with a
@@ -141,7 +139,7 @@ def cheapest_legal(candidates: list[Candidate], budget: int,
     return chosen if sum(c.cost for c in chosen) <= budget else None
 
 
-def best_squad(candidates: Iterable[Candidate], budget: int,
+def greedy_squad(candidates: Iterable[Candidate], budget: int,
                team_limit: int = DEFAULT_TEAM_LIMIT,
                max_rounds: int = 200) -> Optional[Squad]:
     """The best legal squad the budget buys, or None when no legal squad is affordable.
@@ -177,3 +175,61 @@ def best_squad(candidates: Iterable[Candidate], budget: int,
             break
         current = best_swap
     return current
+
+
+def best_squad(candidates: Iterable[Candidate], budget: int,
+               team_limit: int = DEFAULT_TEAM_LIMIT) -> Optional[Squad]:
+    """The optimal legal squad for the existing XI + discounted-bench objective.
+
+    Each player has two binary variables: owned and starting (starting <= owned).
+    No heuristic pruning: coordinated purchases must remain available to the solver.
+    A solve has 30 seconds to establish optimality; a partial answer is not advice.
+    """
+    import numpy as np
+    from scipy.optimize import Bounds, LinearConstraint, milp
+    from scipy.sparse import lil_matrix
+
+    pool = [c for c in candidates if c.element_type in SQUAD_SHAPE]
+    if not pool:
+        return None
+    n = len(pool)
+    clubs = sorted({c.team_id for c in pool})
+    matrix = lil_matrix((n + len(clubs) + 10, 2 * n))
+    lower, upper = [], []
+
+    def constraint(coefficients, lo, hi):
+        row = len(lower)
+        for column, value in coefficients.items():
+            matrix[row, column] = value
+        lower.append(lo)
+        upper.append(hi)
+
+    for element_type, count in SQUAD_SHAPE.items():
+        constraint({i: 1 for i, c in enumerate(pool) if c.element_type == element_type},
+                   count, count)
+    constraint({i: c.cost for i, c in enumerate(pool)}, -np.inf, budget)
+    for club in clubs:
+        constraint({i: 1 for i, c in enumerate(pool) if c.team_id == club},
+                   -np.inf, team_limit)
+    constraint({n + i: 1 for i in range(n)}, 11, 11)
+    for element_type, lo, hi in ((1, 1, 1), (2, 3, 5), (3, 2, 5), (4, 1, 3)):
+        constraint({n + i: 1 for i, c in enumerate(pool)
+                    if c.element_type == element_type}, lo, hi)
+    for i in range(n):
+        constraint({i: -1, n + i: 1}, -np.inf, 0)
+
+    xp = np.array([c.xp for c in pool])
+    result = milp(
+        c=-np.concatenate((BENCH_VALUE * xp, (1 - BENCH_VALUE) * xp)),
+        integrality=np.ones(2 * n), bounds=Bounds(0, 1),
+        constraints=LinearConstraint(matrix.tocsc(), lower, upper),
+        options={"time_limit": 30.0, "mip_rel_gap": 0.0},
+    )
+    if result.status == 2:
+        return None
+    if result.status != 0:
+        raise RuntimeError(f"squad optimisation did not establish optimality: {result.message}")
+    chosen = [c for i, c in enumerate(pool) if result.x[i] > 0.5]
+    if not legal(chosen, budget, team_limit):
+        raise RuntimeError("squad optimisation returned an illegal squad")
+    return _make(chosen)

@@ -495,7 +495,9 @@ def chips_line(verdicts: list[Verdict], gameweek: int) -> str:
     """The `Chips:` line: one clause per chip, then the wall."""
     if not verdicts:
         return "not evaluated - no chips captured (an authenticated snapshot records them)"
-    parts = [f"{v.title} {v.short}" for v in verdicts]
+    parts = [f"{v.title} {v.short}"
+             + (f" (best projected: GW{v.best.gameweek}, provisional)" if v.best else "")
+             for v in verdicts]
     wall = window_end([v.state for v in verdicts], gameweek)
     tail = f"; set expires after GW{wall} ({wall - gameweek + 1} weeks left)" if wall else ""
     return " · ".join(parts) + tail

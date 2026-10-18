@@ -322,11 +322,19 @@ def _report(evaluation, outcome: Optional[Outcome], suppressed: list[Trigger],
     """
     stream = sys.stdout if stream is None else stream
     fired = len(evaluation.triggers)
-    print(f"gameweek {evaluation.gameweek}: evaluated "
-          f"{len(brief.TRIGGER_NAMES)} triggers, {fired} fired", file=stream)
+    print(brief.with_deadlines(
+        f"gameweek {evaluation.gameweek}: evaluated "
+        f"{len(brief.TRIGGER_NAMES)} triggers, {fired} fired", evaluation), file=stream)
+    print(brief.with_deadlines(
+        "Previous gameweek: " + brief.previous_line(evaluation), evaluation), file=stream)
+    if evaluation.chips:
+        print(brief.with_deadlines(
+            "Chips: " + brief.chips.chips_line(evaluation.chips, evaluation.gameweek),
+            evaluation), file=stream)
     for name in brief.TRIGGER_NAMES:
         if name in evaluation.silent:
-            print(f"  silent   {name}: {evaluation.silent[name]}", file=stream)
+            print(brief.with_deadlines(
+                f"  silent   {name}: {evaluation.silent[name]}", evaluation), file=stream)
     for trigger in suppressed:
         print(f"  already  {trigger.name}: {trigger.fingerprint}", file=stream)
     if outcome is not None:
@@ -401,7 +409,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(f"  WOULD SEND {trigger.name}: {trigger.fingerprint}\n"
                       f"    Title: {headers['Title']}  "
                       f"Priority: {headers['Priority']}  Tags: {headers['Tags']}")
-                for line in build_message(trigger).splitlines():
+                for line in brief.with_deadlines(build_message(trigger), evaluation).splitlines():
                     print(f"    | {line}")
             print(f"dry run: {len(new)} would be sent, "
                   f"{len(suppressed)} suppressed as already sent, nothing recorded")
