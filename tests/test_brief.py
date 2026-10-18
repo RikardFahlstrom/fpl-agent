@@ -200,6 +200,56 @@ class BriefTestCase(unittest.TestCase):
         return [t.name for t in evaluation.triggers]
 
 
+class DecisionContextTests(BriefTestCase):
+    def test_gameweek_references_include_the_stockholm_deadline_in_both_outputs(self):
+        self.warehouse.healthy()
+        evaluation = self.evaluate()
+        for text in (brief.render_brief(evaluation),
+                     "\n".join(brief.render_block(evaluation, markdown=False))):
+            self.assertIn("GW3 (deadline 5 Sep 09:30)", text)
+
+    def test_the_previous_round_is_explicitly_unsettled(self):
+        self.warehouse.healthy()
+        evaluation = self.evaluate()
+        text = "\n".join(brief.render_block(evaluation))
+        self.assertIn("not settled", text)
+        self.assertIn("league analysis pending", text)
+
+    def test_a_settled_round_reports_the_owners_league_movement(self):
+        self.warehouse.healthy()
+        self.warehouse.fixtures(gameweek=2, finished=True)
+        self.conn.execute(
+            "INSERT INTO outcome VALUES (1,1,2,?,5.0,2.0,3.0,0.9,50,3,'t')",
+            (MODEL_VERSION,))
+        self.conn.execute("INSERT INTO league VALUES (100,'The inner','x',6,'t')")
+        self.conn.executemany(
+            "INSERT INTO league_standing VALUES (100,2,?,?,?,?,?,1,'t')",
+            [(99, 1, 1, 50, 210), (888, 2, 4, 62, 194)])
+        self.conn.execute("UPDATE my_state SET entry_id=888")
+        evaluation = self.evaluate()
+        for text in (brief.render_brief(evaluation),
+                     "\n".join(brief.render_block(evaluation, markdown=False))):
+            self.assertIn("settled", text)
+            self.assertIn("The inner: 4 → 2 (up 2)", text)
+            self.assertIn("62 points", text)
+            self.assertIn("16 points behind the leader", text)
+
+    def test_provisional_standings_are_not_reported_as_a_final_league_result(self):
+        self.warehouse.healthy()
+        self.warehouse.fixtures(gameweek=2, finished=True)
+        self.conn.execute(
+            "INSERT INTO outcome VALUES (1,1,2,?,5.0,2.0,3.0,0.9,50,3,'t')",
+            (MODEL_VERSION,))
+        self.conn.execute("INSERT INTO league VALUES (100,'The inner','x',6,'t')")
+        self.conn.execute(
+            "INSERT INTO league_standing VALUES (100,2,888,2,4,62,194,0,'t')")
+        self.conn.execute("UPDATE my_state SET entry_id=888")
+        text = "\n".join(brief.render_block(self.evaluate()))
+        self.assertIn("settled", text)
+        self.assertIn("final standings unavailable", text)
+        self.assertNotIn("up 2", text)
+
+
 # --------------------------------------------------------------------------
 # The seam: names, shapes, and the rule that an action is never empty
 # --------------------------------------------------------------------------
@@ -713,14 +763,14 @@ class RenderBriefTests(BriefTestCase):
         self.assertIn("| rivals own |", text)
         self.assertRegex(text, r"\| \d of 1 \|")
         self.assertIn("owned by 0 of 1 rivals (0%)", text)
-        self.assertIn("from their gameweek 2 squads (1 rivals)", text)
+        self.assertIn("from their gameweek 2 (deadline unknown) squads (1 rivals)", text)
 
     def test_stale_rivals_leave_the_ownership_column_empty_and_say_why(self):
         self.warehouse.healthy()
         self.warehouse.fixtures(gameweek=GAMEWEEK, finished=True)
         text = self.render()
-        self.assertIn("Ownership not shown: rivals were last captured for gameweek 2 "
-                      "and gameweek 3 has finished", text)
+        self.assertIn("Ownership not shown: rivals were last captured for gameweek 2 (deadline unknown) "
+                      "and gameweek 3 (deadline 5 Sep 09:30) has finished", text)
         self.assertNotIn("rivals (", text)
         self.assertRegex(text, r"\| - \| \S+ \| - \|")
 
@@ -770,7 +820,7 @@ class RenderBriefTests(BriefTestCase):
         text = self.render(learnings_dir=root)
         self.assertIn("- **Learnings:** 2 proposed - players almost certain to start "
                       "scored about half a point per game more than the model expected "
-                      "(GW3 and GW4 both; 0001, 0002)", text)
+                      "(GW3 (deadline 5 Sep 09:30) and GW4 (deadline unknown) both; 0001, 0002)", text)
         self.assertNotIn("P(start)", text.split("## What needs you")[0])
         self.assertLess(text.index("- **Move:**"), text.index("## What needs you"))
 
@@ -850,13 +900,13 @@ class RenderBriefTests(BriefTestCase):
             (MODEL_VERSION,))
         self.conn.commit()
         text = self.render()
-        self.assertIn("Gameweek 2 under model", text)
+        self.assertIn("Gameweek 2 (deadline unknown) under model", text)
         self.assertIn("+3.00", text)
 
     def test_the_deadline_and_free_transfers_are_stated(self):
         self.warehouse.healthy()
         text = self.render()
-        self.assertIn("2026-09-05T07:30", text)
+        self.assertIn("2026-09-05T09:30", text)
         self.assertIn("Free transfers", text)
 
     def test_a_passed_deadline_says_transfers_land_next_gameweek(self):
@@ -876,7 +926,7 @@ class RenderBriefTests(BriefTestCase):
         """A brief that crashes on a fresh clone is a brief nobody can use to find out
         why the clone is empty."""
         text = self.render()
-        self.assertIn("# Gameweek 3 brief", text)
+        self.assertIn("# Gameweek 3 (deadline unknown) brief", text)
         self.assertIn("no snapshot captured", text)
 
     def test_a_market_only_snapshot_renders_rather_than_raising(self):
@@ -920,7 +970,7 @@ class WriteBriefTests(BriefTestCase):
         self.assertFalse(root.exists())
         path = brief.write_brief(self.evaluate(), root)
         self.assertEqual(path, root / "gw03.md")
-        self.assertIn("# Gameweek 3 brief", path.read_text())
+        self.assertIn("# Gameweek 3 (deadline 5 Sep 09:30) brief", path.read_text())
 
     def test_a_second_run_replaces_the_file_rather_than_appending(self):
         self.warehouse.healthy()
@@ -945,7 +995,7 @@ class WriteBriefTests(BriefTestCase):
                 conn, GAMEWEEK, now=NOW, learnings_dir=Path(self.tmp.name) / "learnings"))
         finally:
             conn.close()
-        self.assertIn("# Gameweek 3 brief", text)
+        self.assertIn("# Gameweek 3 (deadline 5 Sep 09:30) brief", text)
 
 
 # --------------------------------------------------------------------------
@@ -983,7 +1033,7 @@ class CommandTests(BriefTestCase):
         code, out, err = self.run_cli("--dry-run")
         self.assertEqual(code, 0)
         self.assertFalse(self.logs.exists())
-        self.assertIn("# Gameweek 3 brief", out)
+        self.assertIn("# Gameweek 3 (deadline 5 Sep 09:30) brief", out)
         self.assertIn("DID NOT FIRE", err)
 
     def test_dry_run_explains_every_trigger_that_stayed_silent(self):

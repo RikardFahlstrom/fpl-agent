@@ -99,6 +99,19 @@ when the rival picks are older than the last finished gameweek. The Push line us
 words that are not interchangeable: *did not fire*, *sent <when>*, and *fired, not
 delivered* — the last is a problem and the Data line repeats it.
 
+Gameweek references include deadline dates in Stockholm time. Each evaluated chip
+names its provisional best projected week, even if that week is below its activation
+bar. The previous-round line says whether it is settled; once settled, it summarises
+your rank movement, weekly points and gap to the leader in The inner from final saved
+standings. Missing final standings are reported rather than inferred from a live table.
+
+Free Hit and Wildcard rebuilds use a MILP solver to maximise the XI plus the existing
+discounted bench value under the budget, squad shape and club limit. This optimises
+the stored projections; it does not plan transfer sequences. A solve that cannot
+establish optimality within 30 seconds fails explicitly. To compare it with the previous
+greedy search on the same stored market and post-move squad, without writing to the
+warehouse, run `.venv/bin/python tools/benchmark-squad.py` (or pass `--db PATH`).
+
 **Start with `make now`.** It asks the warehouse what is due and runs only the steps that
 answer — capture and project, settle any gameweek that has finished and never been graded,
 and rank transfers if a deadline is close. It is safe to run on a day when the answer is nothing, which

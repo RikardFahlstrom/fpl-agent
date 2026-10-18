@@ -230,6 +230,21 @@ CREATE TABLE IF NOT EXISTS rival (
     PRIMARY KEY (entry_id, league_id)
 );
 
+-- Round-specific standings include the owner and FPL's previous rank. A live table
+-- is not a settled result: finished records the fixture ledger at capture time.
+CREATE TABLE IF NOT EXISTS league_standing (
+    league_id     INTEGER NOT NULL REFERENCES league(id),
+    gameweek      INTEGER NOT NULL,
+    entry_id      INTEGER NOT NULL,
+    rank          INTEGER,
+    last_rank     INTEGER,
+    event_points  INTEGER,
+    total_points  INTEGER,
+    finished      INTEGER NOT NULL,
+    captured_at   TEXT NOT NULL,
+    PRIMARY KEY (league_id, gameweek, entry_id)
+);
+
 CREATE TABLE IF NOT EXISTS rival_squad (
     entry_id        INTEGER NOT NULL,
     gameweek        INTEGER NOT NULL,

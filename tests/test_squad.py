@@ -1,6 +1,8 @@
 """The squad optimiser: a pure function over values, tested on hand-built inputs."""
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fpl_agent.engine import squad
 from fpl_agent.engine.squad import Candidate
@@ -41,6 +43,29 @@ class BestXITests(unittest.TestCase):
 
 
 class BestSquadTests(unittest.TestCase):
+
+    def test_a_time_limit_does_not_return_a_partial_squad_as_optimal(self):
+        partial = SimpleNamespace(status=1, message="Time limit reached")
+        with patch("scipy.optimize.milp", return_value=partial):
+            with self.assertRaisesRegex(RuntimeError, "did not establish optimality"):
+                squad.best_squad(a_market(), budget=900)
+
+    def test_an_empty_market_has_no_squad(self):
+        self.assertIsNone(squad.best_squad([], budget=900))
+
+    def test_coordinated_upgrades_beat_the_best_single_swap(self):
+        # £60m buys the base squad; £2m more buys either +6 in defence
+        # or +4 each in midfield and attack. The latter is the optimum.
+        types = [1] * 2 + [2] * 5 + [3] * 5 + [4] * 3
+        market = [player(i, t, 40, 5.0, team=i)
+                  for i, t in enumerate(types, 1)]
+        market += [player(16, 2, 60, 11.0, team=16),
+                   player(17, 3, 50, 9.0, team=17),
+                   player(18, 4, 50, 9.0, team=18)]
+        chosen = squad.best_squad(market, budget=620)
+        self.assertAlmostEqual(chosen.objective, 66.0)  # XI 63 + bench 3
+        self.assertEqual({p.element_id for p in chosen.players} & {16, 17, 18},
+                         {17, 18})
 
     def test_the_result_is_legal(self):
         market = a_market()

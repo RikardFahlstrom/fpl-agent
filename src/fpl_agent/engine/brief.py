@@ -66,12 +66,14 @@ than promised.
 import argparse
 import logging
 import os
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from .. import config
 from . import (chips, held, lineups, pricing, recommend, settle, status, storage,
@@ -232,6 +234,8 @@ class Evaluation:
     last_settled: Optional[dict[str, Any]]
     learnings: list[settle.Learning]
     reports: list["PushReport"]           # one per trigger, fired or not
+    deadlines: dict[int, Optional[datetime]]
+    previous: Optional[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -486,6 +490,77 @@ def last_settled(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
             "n": row["n"], "slices": slices}
 
 
+def previous_round(conn: sqlite3.Connection, gameweek: int,
+                   holding: Optional[held.HeldSquad]) -> Optional[dict[str, Any]]:
+    """Settlement and final Inner standings for the preceding round, never a live rank."""
+    if gameweek <= 1:
+        return None
+    round = warehouse.gameweeks(conn, MODEL_VERSION).get(gameweek - 1)
+    result = {"gameweek": round.round, "finished": round.finished,
+              "settled": round.finished and (round.graded or round.settled_earlier),
+              "league": "The inner: final standings unavailable"}
+    if not result["settled"] or holding is None or holding.entry_id is None:
+        return result
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='league_standing'").fetchone():
+        return result
+    rows = conn.execute(
+        """SELECT s.*, l.name FROM league_standing s JOIN league l ON l.id=s.league_id
+           WHERE s.gameweek=? AND s.finished=1 AND lower(l.name) IN ('inner','the inner')
+           ORDER BY s.rank""", (round.round,)).fetchall()
+    own = next((r for r in rows if r["entry_id"] == holding.entry_id), None)
+    if own is None or own["rank"] is None:
+        return result
+    text = f"{own['name']}: "
+    old, new = own["last_rank"], own["rank"]
+    if old is None or old == 0:
+        text += f"rank {new} (previous rank unavailable)"
+    else:
+        change = old - new
+        movement = f"up {change}" if change > 0 else f"down {-change}" if change < 0 else "unchanged"
+        text += f"{old} → {new} ({movement})"
+    if own["event_points"] is not None:
+        text += f"; {own['event_points']} points this round"
+    leader = next((r for r in rows if r["rank"] == 1), None)
+    if leader and leader["total_points"] is not None and own["total_points"] is not None:
+        gap = leader["total_points"] - own["total_points"]
+        text += "; leading the league" if new == 1 else f"; {gap} points behind the leader"
+        if leader["event_points"] is not None and own["event_points"] is not None and new != 1:
+            delta = own["event_points"] - leader["event_points"]
+            text += f"; scored {delta:+d} points versus the current leader this round"
+    result["league"] = text
+    return result
+
+
+def deadline_label(deadline: Optional[datetime]) -> str:
+    if deadline is None:
+        return "unknown"
+    local = deadline.astimezone(ZoneInfo("Europe/Stockholm"))
+    return f"{local.day} {local.strftime('%b %H:%M')}"
+
+
+def with_deadlines(text: str, evaluation: Evaluation) -> str:
+    """Annotate human gameweek references; preserve inline commands and existing dates."""
+    def replace(match):
+        week = int(match.group(1))
+        return f"{match.group(0)} (deadline {deadline_label(evaluation.deadlines.get(week))})"
+    return "`".join(
+        part if i % 2 else re.sub(
+            r"\b(?:GW|[Gg]ameweek )(\d+)\b(?! \(deadline)", replace, part)
+        for i, part in enumerate(text.split("`")))
+
+
+def previous_line(evaluation: Evaluation) -> str:
+    past = evaluation.previous
+    if past is None:
+        return "no previous gameweek"
+    text = f"GW{past['gameweek']} "
+    if not past["settled"]:
+        why = "fixtures not finished" if not past["finished"] else "not graded yet"
+        return f"{text}not settled ({why}); league analysis pending"
+    return f"{text}settled. {past['league']}"
+
+
 def transfer_state(conn: sqlite3.Connection) -> dict[str, Any]:
     """Free transfers, hit cost and the active transfer chip, or why none of it is known.
 
@@ -551,7 +626,7 @@ def _captain_line(picks: list[dict[str, Any]]) -> list[str]:
 def _deadline_line(deadline: Optional[datetime], remaining: Optional[timedelta]) -> str:
     if deadline is None:
         return "- Deadline: none derived (no fixtures recorded)"
-    when = deadline.strftime("%a %d %b %H:%M UTC")
+    when = deadline_label(deadline) + " Stockholm"
     if remaining < timedelta(0):
         return f"- Deadline {when} passed {_hours(-remaining)} ago"
     return f"- Deadline {when}, {_hours(remaining)} away"
@@ -691,7 +766,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
             headline=headline(
                 f"GW{gameweek} deadline in {_hours(remaining)} and "
                 f"{state['free_transfers']} free transfer(s) unused"),
-            detail=(f"- Deadline {deadline.isoformat(timespec='minutes')} "
+            detail=(f"- Deadline {deadline.astimezone(ZoneInfo('Europe/Stockholm')).isoformat(timespec='minutes')} "
                     f"({_hours(remaining)} away).\n"
                     f"- Best move: {top['in']['name']} for {top['out']['name']}, "
                     f"net {top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks.\n"
@@ -700,7 +775,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                        f"like-for-like swap ranked inside a squad rebuild the tool does "
                        f"not plan." if state["chip"] else "")),
             action=(f"Make {top['in']['name']} for {top['out']['name']}, or decide not "
-                    f"to, before {deadline.isoformat(timespec='minutes')}."),
+                    f"to, before {deadline.astimezone(ZoneInfo('Europe/Stockholm')).isoformat(timespec='minutes')}."),
             # The move is the identity, never the hours left, which by definition change
             # on every one of the hourly runs.
             fingerprint=f"deadline_with_move:gw{gameweek}:{_move_id(top)}",
@@ -789,7 +864,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                 _deadline_line(deadline, remaining),
             ]),
             action=(f"Play the {verdict.title} before "
-                    f"{deadline.strftime('%a %d %b %H:%M UTC') if deadline else 'the deadline'}"
+                    f"{deadline_label(deadline) + ' Stockholm' if deadline else 'the deadline'}"
                     f", or record why not with `fpl-agent recommend --record --chip "
                     f"{verdict.state.name}`."),
             fingerprint=f"chip_worth_playing:gw{gameweek}:{verdict.state.name}",
@@ -817,7 +892,10 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                  if capture and squad else []),
         last_settled=last_settled(conn),
         learnings=settle.read_learnings(learnings_dir),
-        reports=_push_reports(conn, triggers, silent, configured=notifications_configured))
+        reports=_push_reports(conn, triggers, silent, configured=notifications_configured),
+        deadlines={g.round: warehouse.deadline(conn, g.round)
+                   for g in warehouse.gameweeks(conn, MODEL_VERSION).rounds},
+        previous=previous_round(conn, gameweek, holding))
 
 
 def _runner_up(verdict: chips.Verdict) -> Optional[chips.ChipValue]:
@@ -932,9 +1010,10 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     if deadline is None:
         when = "unknown - no fixtures recorded"
     elif remaining < timedelta(0):
-        when = f"{deadline.strftime('%a %d %b %H:%M UTC')} passed {_hours(-remaining)} ago"
+        when = f"GW{evaluation.gameweek} passed {_hours(-remaining)} ago"
     else:
-        when = f"{deadline.strftime('%a %d %b %H:%M UTC')}, {_hours(remaining)} away"
+        when = f"GW{evaluation.gameweek}, {_hours(remaining)} away"
+    when += "; Stockholm time"
     if state.get("known"):
         free = state["free_transfers"]
         when += ("; free transfers unknown" if free is None else
@@ -968,7 +1047,9 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     rows = [("Move", move), ("Ownership", ownership), ("Captain", captain),
             ("Chips", chip_line),
             ("Availability", availability), ("Deadline", when), ("Push", push),
-            ("Learnings", pending), ("Data", data)]
+            ("Learnings", pending), ("Data", data),
+            ("Previous gameweek", previous_line(evaluation))]
+    rows = [(label, with_deadlines(text, evaluation)) for label, text in rows]
     if markdown:
         return [f"- **{label}:** {text}" for label, text in rows] + [""]
     width = max(len(label) for label, _ in rows) + 1
@@ -996,7 +1077,7 @@ def render_brief(evaluation: Evaluation) -> str:
     listing = evaluation.listing
     checks = evaluation.checks
 
-    lines = [f"# Gameweek {gameweek} brief",
+    lines = [f"# Gameweek {gameweek} brief", "", "_All deadline times: Europe/Stockholm._",
              "",
              f"_{now.isoformat(timespec='minutes')} · model {MODEL_VERSION} · "
              + (f"snapshot {capture.id} captured {capture.captured_at}_"
@@ -1040,7 +1121,7 @@ def render_brief(evaluation: Evaluation) -> str:
         lines.append(f"- No fixtures recorded for gameweek {gameweek}, so no deadline "
                      f"can be derived.")
     else:
-        when = deadline.isoformat(timespec="minutes")
+        when = deadline.astimezone(ZoneInfo("Europe/Stockholm")).isoformat(timespec="minutes")
         if remaining >= timedelta(0):
             lines.append(f"- Deadline **{when}**, {_hours(remaining)} away.")
         else:
@@ -1110,7 +1191,9 @@ def render_brief(evaluation: Evaluation) -> str:
     if not evaluation.chips:
         lines += ["No chips captured - an authenticated snapshot records them.", ""]
     else:
-        lines += [f"- {v.title.capitalize()}: {v.reason}." for v in evaluation.chips]
+        lines += [f"- {v.title.capitalize()}: {v.reason}."
+                  + (f" (best projected: GW{v.best.gameweek}, provisional)" if v.best else "")
+                  for v in evaluation.chips]
         lines.append("")
         if valued:
             weeks = sorted({x.gameweek for v in valued for x in v.values})
@@ -1231,7 +1314,7 @@ def render_brief(evaluation: Evaluation) -> str:
                     [[c.label, c.level, c.detail.replace("|", "\\|")] for c in checks])
     lines += ["",
               "_Written by `fpl-agent brief`, read-only against the warehouse._", ""]
-    return "\n".join(lines)
+    return with_deadlines("\n".join(lines), evaluation)
 
 
 def write_brief(evaluation: Evaluation, root: Path = BRIEF_DIR) -> Path:
