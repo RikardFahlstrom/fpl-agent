@@ -15,6 +15,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "project": ("fpl_agent.engine.projection", "Project expected points"),
     "rivals": ("fpl_agent.engine.rivals", "Capture rival squads from your leagues"),
     "recommend": ("fpl_agent.engine.recommend", "Rank transfers"),
+    "hedge": ("fpl_agent.engine.hedge", "Price selling 1-3 players to match the field"),
     "settle": ("fpl_agent.engine.settle", "Grade projections against a finished gameweek"),
     "status": ("fpl_agent.engine.status", "Report whether the warehouse is trustworthy"),
     "schedule": ("fpl_agent.engine.schedule", "Say what a scheduled job is due to do"),

@@ -178,12 +178,19 @@ def greedy_squad(candidates: Iterable[Candidate], budget: int,
 
 
 def best_squad(candidates: Iterable[Candidate], budget: int,
-               team_limit: int = DEFAULT_TEAM_LIMIT) -> Optional[Squad]:
+               team_limit: int = DEFAULT_TEAM_LIMIT, *,
+               base: Iterable[int] = (), max_changes: Optional[int] = None,
+               required: Iterable[int] = ()) -> Optional[Squad]:
     """The optimal legal squad for the existing XI + discounted-bench objective.
 
     Each player has two binary variables: owned and starting (starting <= owned).
     No heuristic pruning: coordinated purchases must remain available to the solver.
     A solve has 30 seconds to establish optimality; a partial answer is not advice.
+
+    `max_changes` with `base` (the element ids already held) limits the answer to at
+    most that many players not in `base`: what a few transfers can reach, as opposed to
+    a rebuild. A base player missing from the pool counts as already sold. `required`
+    element ids must be in the squad; one the pool does not hold means no answer.
     """
     import numpy as np
     from scipy.optimize import Bounds, LinearConstraint, milp
@@ -192,9 +199,13 @@ def best_squad(candidates: Iterable[Candidate], budget: int,
     pool = [c for c in candidates if c.element_type in SQUAD_SHAPE]
     if not pool:
         return None
+    base, required = set(base), set(required)
+    if required - {c.element_id for c in pool}:
+        return None
     n = len(pool)
     clubs = sorted({c.team_id for c in pool})
-    matrix = lil_matrix((n + len(clubs) + 10, 2 * n))
+    extra = len(required) + (1 if max_changes is not None else 0)
+    matrix = lil_matrix((n + len(clubs) + 10 + extra, 2 * n))
     lower, upper = [], []
 
     def constraint(coefficients, lo, hi):
@@ -217,6 +228,12 @@ def best_squad(candidates: Iterable[Candidate], budget: int,
                     if c.element_type == element_type}, lo, hi)
     for i in range(n):
         constraint({i: -1, n + i: 1}, -np.inf, 0)
+    if max_changes is not None:
+        constraint({i: 1 for i, c in enumerate(pool) if c.element_id in base},
+                   len(base) - max_changes, np.inf)
+    for i, c in enumerate(pool):
+        if c.element_id in required:
+            constraint({i: 1}, 1, 1)
 
     xp = np.array([c.xp for c in pool])
     result = milp(
