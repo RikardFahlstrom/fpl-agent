@@ -2,7 +2,7 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: now snapshot backfill project rivals recommend record deadline settle status brief notify lint test
+.PHONY: now snapshot backfill project rivals recommend hedge record deadline settle status brief notify lint test
 
 # The one to reach for when you do not want to think about which one to reach for.
 # Every other target here is a step; this asks the warehouse what is due and runs the
@@ -30,6 +30,9 @@ rivals:              ## capture rival squads for the last finished gameweek
 
 recommend:           ## rank transfers
 	$(AGENT) recommend
+
+hedge:               ## price selling 1-3 players to match the field: make hedge ARGS='--player Haaland'
+	$(AGENT) hedge $(ARGS)
 
 # Separate from `recommend` rather than a flag on it, because recording is a claim about
 # what you actually did. `make deadline` must never record on your behalf.
