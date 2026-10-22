@@ -1,0 +1,203 @@
+"""The lineup slice of Instructions: XI, captain, vice-captain, bench order.
+
+Offline, on the brief's hand-built warehouse. The XI is checked against an independent
+brute force over every legal eleven, not against the code that picked it.
+"""
+
+import itertools
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fpl_agent.engine import brief, held, instructions, storage, warehouse
+from fpl_agent.engine.projection import MODEL_VERSION
+
+from test_brief import GAMEWEEK, NOW, Warehouse
+
+#: Two keepers, five defenders, five midfielders, three forwards (types cycle 1-4 by id).
+SHAPED = [1, 5, 2, 6, 10, 14, 18, 3, 7, 11, 15, 19, 4, 8, 12]
+LEGAL = {(3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1), (5, 2, 3), (5, 3, 2),
+         (5, 4, 1)}
+
+
+class InstructionsTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = storage.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patch = mock.patch.dict(os.environ, {
+            "FPL_TOKEN_CACHE": str(Path(self.tmp.name) / "token.json"),
+            "FPL_RIVAL_LEAGUES": ""})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.w = Warehouse(self.conn).healthy()
+        self.conn.execute("DELETE FROM my_squad")
+        self.w.squad(SHAPED)
+        # Everyone distinct: the element id over ten, so a higher id projects higher.
+        self.conn.execute("UPDATE projection SET expected_points = element_id / 10.0")
+        self.conn.commit()
+
+    def holding(self) -> held.HeldSquad:
+        return held.read(self.conn, warehouse.latest(self.conn))
+
+    def build(self, **kwargs) -> instructions.Instructions:
+        return instructions.build(self.conn, GAMEWEEK, MODEL_VERSION, self.holding(), **kwargs)
+
+    def lineup(self) -> instructions.Lineup:
+        found = self.build().lineup
+        self.assertIsNotNone(found)
+        return found
+
+
+class XITests(InstructionsTestCase):
+
+    def test_the_xi_is_the_best_legal_eleven_by_brute_force(self):
+        xp = {e: e / 10.0 for e in SHAPED}
+        kind = {e: 1 + (e - 1) % 4 for e in SHAPED}
+        best = 0.0
+        for eleven in itertools.combinations(SHAPED, 11):
+            shape = tuple(sum(1 for e in eleven if kind[e] == t) for t in (2, 3, 4))
+            if sum(1 for e in eleven if kind[e] == 1) == 1 and shape in LEGAL:
+                best = max(best, sum(xp[e] for e in eleven))
+        xi = self.lineup().xi
+        self.assertEqual(len(xi), 11)
+        self.assertAlmostEqual(sum(s.xp for s in xi), best)
+
+    def test_the_formation_is_legal_and_named(self):
+        found = self.lineup()
+        shape = tuple(sum(1 for s in found.xi if s.element_type == t) for t in (2, 3, 4))
+        self.assertIn(shape, LEGAL)
+        self.assertEqual(found.formation, "-".join(map(str, shape)))
+        self.assertEqual(sum(1 for s in found.xi if s.element_type == 1), 1)
+
+    def test_the_best_keeper_starts_and_the_other_is_first_on_the_bench(self):
+        found = self.lineup()
+        self.assertEqual([s.name for s in found.xi if s.element_type == 1], ["P5"])
+        self.assertEqual(found.bench[0].name, "P1")
+
+    def test_a_strong_bench_player_displaces_a_weaker_starter(self):
+        # P14 starts the captured XI (position 6) but P18 projects higher.
+        self.assertIn("P18", [s.name for s in self.lineup().xi])
+
+
+class ArmbandTests(InstructionsTestCase):
+
+    def test_captain_and_vice_are_the_two_best_starters(self):
+        found = self.lineup()
+        ranked = sorted(found.xi, key=lambda s: -s.xp)
+        self.assertEqual(found.captain.name, ranked[0].name)
+        self.assertEqual(found.vice.name, ranked[1].name)
+        self.assertNotEqual(found.captain.element_id, found.vice.element_id)
+
+    def test_the_captain_carries_the_existing_why_line(self):
+        found = self.lineup()
+        self.assertIn(found.captain.name, found.captain_line)
+        self.assertIn("xP", found.captain_line)
+
+    def test_the_vice_has_a_plain_english_reason(self):
+        reason = self.lineup().vice_reason
+        self.assertIn("takes the armband if", reason)
+        self.assertIn(self.lineup().captain.name, reason)
+
+    def test_an_armband_on_a_benched_player_is_said_not_hidden(self):
+        # The captured armband sits on P1, the keeper the lineup leaves out.
+        self.conn.execute("UPDATE my_squad SET multiplier = 2 WHERE element_id = 1")
+        self.conn.commit()
+        self.assertIn("armband is on P1, who is not in this XI", self.lineup().captain_line)
+
+
+class BenchTests(InstructionsTestCase):
+
+    def test_the_bench_is_the_keeper_then_outfield_best_first(self):
+        bench = self.lineup().bench
+        self.assertEqual(len(bench), 4)
+        self.assertEqual(bench[0].element_type, 1)
+        outfield = [s.xp for s in bench[1:]]
+        self.assertEqual(outfield, sorted(outfield, reverse=True))
+
+    def test_every_bench_slot_has_a_reason(self):
+        found = self.lineup()
+        self.assertEqual(len(found.bench_reasons), 4)
+        self.assertTrue(all(found.bench_reasons))
+        self.assertIn("goalkeeper", found.bench_reasons[0])
+        self.assertIn("first to come on", found.bench_reasons[1])
+
+
+class NoLineupTests(InstructionsTestCase):
+
+    def test_a_player_with_no_projection_means_no_lineup_not_a_zero(self):
+        self.conn.execute("DELETE FROM projection WHERE element_id = 12")
+        self.conn.commit()
+        found = self.build()
+        self.assertIsNone(found.lineup)
+        self.assertIn("no projection for 1 of your 15 players (P12)", found.note)
+
+    def test_no_squad_says_so(self):
+        found = instructions.build(self.conn, GAMEWEEK, MODEL_VERSION, None)
+        self.assertEqual(found.note, "not evaluated - no squad captured")
+
+    def test_a_locked_gameweek_is_not_read(self):
+        found = self.build(locked="locked")
+        self.assertIsNone(found.lineup)
+        self.assertIn("gameweek 3 is locked", found.note)
+
+
+class OneValueTests(InstructionsTestCase):
+    """The terminal and the brief render the same rows from the same value."""
+
+    def evaluate(self, **kwargs):
+        kwargs.setdefault("now", NOW)
+        kwargs.setdefault("learnings_dir", Path(self.tmp.name) / "learnings")
+        return brief.evaluate(self.conn, GAMEWEEK, **kwargs)
+
+    def test_the_brief_block_opens_with_the_instructions_rows(self):
+        evaluation = self.evaluate()
+        block = brief.render_block(evaluation, markdown=False)
+        rows = instructions.rows(evaluation.instructions)
+        self.assertEqual([line.split(":")[0] for line in block[:5]],
+                         [label for label, _ in rows])
+        self.assertEqual([label for label, _ in rows],
+                         ["Instructions", "Starting XI", "Captain", "Vice-captain", "Bench"])
+
+    def test_the_terminal_text_carries_every_row_the_brief_does(self):
+        evaluation = self.evaluate()
+        terminal = instructions.render(evaluation.instructions)
+        page = brief.render_brief(evaluation)
+        for label, text in instructions.rows(evaluation.instructions):
+            self.assertIn(label + ":", terminal)
+            self.assertIn(text, terminal)
+            self.assertIn(f"- **{label}:** {text}", page.replace("GW3 (deadline 5 Sep 09:30)", "GW3"))
+
+    def test_the_same_lines_open_the_block_whether_or_not_there_is_a_lineup(self):
+        with_lineup = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:5]]
+        self.conn.execute("DELETE FROM projection WHERE element_id = 12")
+        self.conn.commit()
+        without = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:5]]
+        self.assertEqual(with_lineup, without)
+
+    def test_a_lineup_that_cannot_be_built_still_names_every_row(self):
+        text = instructions.render(instructions.Instructions(3, note="not evaluated - x"))
+        for label in ("Instructions", "Starting XI", "Captain", "Vice-captain", "Bench"):
+            self.assertIn(label + ":", text)
+
+    def test_the_command_prints_the_instructions_before_writing_the_brief(self):
+        import io
+        from contextlib import redirect_stdout
+        disk = Path(self.tmp.name) / "fpl.db"
+        copy = storage.connect(disk)
+        self.conn.backup(copy)
+        copy.close()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = brief.main(["--db", str(disk), "--logs", str(Path(self.tmp.name) / "logs")])
+        self.assertEqual(code, 0)
+        text = out.getvalue()
+        self.assertLess(text.index("Starting XI:"), text.index("wrote "))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -14,8 +14,9 @@ could change the warehouse would be a brief you could not trust to describe it.
 and `render_block` take that value and nothing else - no connection, no clock, no
 directory - so the opening block and the working beneath it cannot disagree.
 
-**The brief opens with the same block every run** - move, ownership, captain, chips,
-availability, deadline, learnings, data - each line saying "none" or "not evaluated" when
+**The brief opens with the same block every run** - the Instructions (starting XI,
+captain, vice-captain, bench), then move, ownership, chips, availability, deadline,
+learnings, data - each line saying "none" or "not evaluated" when
 there is nothing, so the reader looks at the same line every time rather than reading
 the page to find out nothing happened (`CONTEXT.md`, *brief*). The sections beneath show
 the working.
@@ -45,7 +46,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from .. import config
-from . import (chips, held, lineups, pricing, recommend, settle, status, storage,
+from . import (chips, held, instructions as instr, lineups, pricing, recommend, settle, status, storage,
                warehouse)
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION, HorizonMissing
 
@@ -117,7 +118,7 @@ class Evaluation:
     #: Which rival picks ownership is measured from; shown when there is no move to
     #: measure (a move carries its own copy, see `recommend.move_lines`).
     ownership: warehouse.OwnershipSource
-    captain_picks: list[dict[str, Any]]   # the model's captain for the target gameweek
+    instructions: instr.Instructions      # what to do for the target gameweek
     falling: list[pricing.PriceOutlook]   # held players FPL forecasts to fall
     last_settled: Optional[dict[str, Any]]
     learnings: list[settle.Learning]
@@ -426,8 +427,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     moves = listing["moves"]
     top = moves[0] if moves else None
     ownership, _ = recommend.ownership_source(conn)
-    captain_picks = (chips.captain_picks(conn, gameweek, MODEL_VERSION, holding)
-                     if holding and not locked else [])
+    instructions = instr.build(conn, gameweek, MODEL_VERSION, holding, locked=locked)
 
     # Valued on the squad after the recommended move, so this and the move advice agree.
     verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION, holding.with_move(top))
@@ -438,7 +438,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
         checks=checks,
         capture=capture, squad=squad, state=state,
         deadline=deadline, listing=listing, chips=verdicts,
-        ownership=ownership, captain_picks=captain_picks,
+        ownership=ownership, instructions=instructions,
         falling=(falling_holdings(conn, capture.id, squad, now)
                  if capture and squad else []),
         last_settled=last_settled(conn),
@@ -532,16 +532,6 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
                      f"({source.managers} rivals); no move to measure"
                      if source.fresh else f"not shown: {source.reason}")
 
-    # Captain: the model's pick for the target gameweek from the captured XI.
-    picks = evaluation.captain_picks
-    if evaluation.locked:
-        captain = f"not evaluated - gameweek {evaluation.gameweek} is locked"
-    else:
-        captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
-        why = chips.captain_why(picks)
-        if why:
-            captain += f". {why}"
-
     # Chips: one clause per chip, then the wall.
     if evaluation.locked:
         chip_line = f"not evaluated - gameweek {evaluation.gameweek} is locked"
@@ -586,7 +576,8 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     else:
         data = f"trustworthy - all {len(evaluation.checks)} checks agree"
 
-    rows = [("Move", move), ("Ownership", ownership), ("Captain", captain),
+    rows = [*instr.rows(evaluation.instructions),
+            ("Move", move), ("Ownership", ownership),
             ("Chips", chip_line),
             ("Availability", availability), ("Deadline", when),
             ("Learnings", pending), ("Data", data),
@@ -902,7 +893,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.dry_run:
             print(render_brief(evaluation))
             return EXIT_OK
-        print(f"wrote {write_brief(evaluation, args.logs)}")
+        print(instr.render(evaluation.instructions))
+        print(f"\nwrote {write_brief(evaluation, args.logs)}")
         return EXIT_OK
     finally:
         conn.close()
