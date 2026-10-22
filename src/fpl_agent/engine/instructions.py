@@ -238,9 +238,9 @@ def lineup(conn: sqlite3.Connection, gameweek: int, model_version: str,
         captain_note=captain_note), ""
 
 
-def after_moves(holding: HeldSquad, instructions: "Instructions") -> HeldSquad:
-    """The held squad once the recommended transfers are made."""
-    for move in instructions.moves:
+def after_moves(holding: HeldSquad, plan: Optional[movesmod.MovePlan]) -> HeldSquad:
+    """The held squad once the plan's transfers are made."""
+    for move in () if plan is None else plan.moves:
         holding = holding.with_move(move.as_swap())
     return holding
 
@@ -314,13 +314,13 @@ def _alternatives(conn: sqlite3.Connection, gameweek: int, model_version: str,
                               bench_boost=True, stance=stance)
             if plan is not None:
                 after = chips.evaluate(conn, gameweek, model_version,
-                                       after_moves(holding, Instructions(gameweek, plan=plan)))
+                                       after_moves(holding, plan))
                 own = _verdict(after, name) or verdict
             total = own.now.value + _worth(plan)
         elif name == "3xc":
             # The captain is who the stance would pick, so its adjustment rides on the chip.
             picks = chips.captain_picks(conn, gameweek, model_version, after_moves(
-                holding, Instructions(gameweek, plan=none_plan)))
+                holding, none_plan))
             pull = stance.bonus(picks[0].element_id) if picks else 0.0
             total = verdict.now.value + pull + base
         elif name in ("freehit", "wildcard"):
@@ -407,7 +407,7 @@ def build(conn: sqlite3.Connection, gameweek: int, model_version: str,
     alternatives: list[Alternative] = []
     chosen = None
     verdicts = chips.evaluate(conn, gameweek, model_version,
-                              after_moves(holding, Instructions(gameweek, plan=none_plan)))
+                              after_moves(holding, none_plan))
     if not verdicts:
         chip_note = "not evaluated - no chips captured (an authenticated snapshot records them)"
     elif none_plan is None:
@@ -420,9 +420,8 @@ def build(conn: sqlite3.Connection, gameweek: int, model_version: str,
         chosen, chip_note = _choose(alternatives)
     plan = none_plan if chosen is None else chosen.plan
     chip = None if chosen is None else chosen.chip
-    planned = Instructions(gameweek, plan=plan)
     wearing = next((p.name for p in holding.players if (p.multiplier or 1) > 1), None)
-    found, why = lineup(conn, gameweek, model_version, after_moves(holding, planned), stance,
+    found, why = lineup(conn, gameweek, model_version, after_moves(holding, plan), stance,
                         armband=wearing)
     return Instructions(
         gameweek, found, note="not evaluated" if found else f"not evaluated - {why}",

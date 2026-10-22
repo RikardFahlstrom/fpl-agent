@@ -205,8 +205,8 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
                    for r in rows if r["element_id"] not in owned
                    and r["element_id"] in totals])
 
-    base = players(True)[:len(holding.players)]
     pool = players(True)
+    base = pool[:len(holding.players)]
     plain = {c.element_id: c for c in players(False)}
 
     def squad_of(chosen):
