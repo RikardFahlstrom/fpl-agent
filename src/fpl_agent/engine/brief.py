@@ -1,66 +1,35 @@
-"""The gameweek brief, and the four facts that are worth a push notification.
+"""The gameweek brief.
 
 `PLAN.md` §5 promised `logs/gwNN.md`, and this is it: everything the warehouse knows
-that a person needs before a deadline, rendered as markdown they read on a phone at
-07:00. `deadline` and `settle` are both deterministic and can run unattended. The human
-is needed for exactly two things - choosing to act on a recommendation, and accepting or
-rejecting a drafted learning - so the brief leads with what needs them and puts the
-tables underneath.
+that a person needs before a deadline, rendered as markdown. The human is needed for
+exactly two things - choosing to act on a recommendation, and accepting or rejecting a
+drafted learning - so the brief leads with the facts that need them and puts the tables
+underneath.
 
 Read-only, twice over, for the same reason `status` is: the connection is opened
 `mode=ro` and the only thing this command writes is one markdown file. A brief that
 could change the warehouse would be a brief you could not trust to describe it.
 
-Two separate outputs, and the difference matters:
+`evaluate` reads everything the page prints, once, into an `Evaluation`; `render_brief`
+and `render_block` take that value and nothing else - no connection, no clock, no
+directory - so the opening block and the working beneath it cannot disagree.
 
-  `render_brief`      everything, written to `logs/gwNN.md` and committed. A price
-                      forecast, a rival's ownership, a middling swap - all of it belongs
-                      in the record, because the record is what the next decision is
-                      read against.
-
-  `evaluate`          the small set of facts worth interrupting someone for, and why
-                      the rest stayed silent - `notify` reads both halves. The review
-                      named the risk plainly: notification spam erodes trust fast. So a
-                      trigger has to earn its place, and every one of them ends in the
-                      single action wanted from the human.
-
-Four triggers, chosen by the owner:
-
-  status_failed             the scheduled run is broken and nothing below can be trusted
-  squad_player_unavailable  a player you own cannot play
-  deadline_with_move        the deadline is close, a free transfer is unused, and there
-                            is somewhere to spend it
-  move_worth_making         a move clears the bar on its own, deadline or no deadline
-
-Deliberately *not* a trigger, at the owner's choice: a held player very likely to fall in
-price. It is the most frequent signal in the whole warehouse and the one most likely to
-become noise, so it stays in the written brief where it can be read rather than pushed.
-
-**The brief opens with the same block every run** - move, ownership, wildcard,
-availability, deadline, push, data - each line saying "none" or "not evaluated" when
+**The brief opens with the same block every run** - move, ownership, captain, chips,
+availability, deadline, learnings, data - each line saying "none" or "not evaluated" when
 there is nothing, so the reader looks at the same line every time rather than reading
-the page to find out nothing happened (`CONTEXT.md`, *brief*). Under it, "What needs
-you" carries the bodies of whatever fired, "Push" says what became of every trigger,
-and the sections show the working.
+the page to find out nothing happened (`CONTEXT.md`, *brief*). The sections beneath show
+the working.
 
-**Plain English is a rule, not a style.** Nothing from the code - a trigger name, a
-check level, a slice id - appears without its meaning beside it on first use; internal
-names survive only where a command has to be typed. The owner's own example: a
-learning that says "P(start) 75-100% under-projected by 0.54" means nothing on a phone,
-and "players almost certain to start scored about half a point more per game than the
-model expected" is the same fact. `plain_slice` is where slice names are translated.
-
-**Push states are three words that are not interchangeable** (`CONTEXT.md`, *push*):
-*did not fire* (the condition was not met), *sent <when>* (the phone got it), and
-*fired, not delivered* (it should have and did not - no topic, or the send failed).
-The last is a data problem and the Data line says so, because a push that fired and
-went nowhere must never look like one that had nothing to say. `notify` runs before
-this command in the scheduled jobs so that "sent" can be read from the record rather
-than promised.
+**Plain English is a rule, not a style.** Nothing from the code - a check level, a slice
+id - appears without its meaning beside it on first use; internal names survive only
+where a command has to be typed. The owner's own example: a learning that says
+"P(start) 75-100% under-projected by 0.54" means nothing on a phone, and "players almost
+certain to start scored about half a point more per game than the model expected" is the
+same fact. `plain_slice` is where slice names are translated.
 
     fpl-agent brief                      # write logs/gwNN.md for the latest snapshot
     fpl-agent brief --gameweek 3
-    fpl-agent brief --dry-run            # print it, and the triggers, and write nothing
+    fpl-agent brief --dry-run            # print it and write nothing
 """
 
 import argparse
@@ -84,12 +53,7 @@ logger = logging.getLogger("fpl_brief")
 
 BRIEF_DIR = Path("logs")
 
-# "The deadline is near" for trigger 3. An hourly job that only fires inside the last
-# hour would miss a deadline the moment one run is skipped; a day gives the owner an
-# evening and a morning to act in.
-DEADLINE_SOON = timedelta(hours=24)
-
-# The bar a move has to clear before `move_worth_making` will interrupt anybody.
+# The bar a move has to clear before the brief calls it worth making.
 #
 # The recommender always emits a ranked list. Topping a list is not the same as being
 # worth doing, and the difference is the whole content of the word "worth": with a
@@ -112,25 +76,6 @@ DEADLINE_SOON = timedelta(hours=24)
 WORTH_MAKING_NET_XP = 2.0
 MIN_NET_XP_ENV = "FPL_BRIEF_MIN_NET_XP"
 
-# A notification title has to fit on a lock screen.
-HEADLINE_MAX = 120
-
-# The four the owner chose, in the order they should be read. Named here so the brief can
-# report on a trigger that did *not* fire: the set is a fixed contract, not whatever
-# happened to be appended this run.
-TRIGGER_NAMES = ("status_failed", "squad_player_unavailable", "deadline_with_move",
-                 "move_worth_making", "chip_worth_playing")
-
-# What each trigger is called on the page. The code names above are what `notify`
-# stores and what a person types; these are what a person reads.
-TRIGGER_TITLES = {
-    "status_failed": "Broken warehouse",
-    "squad_player_unavailable": "A player you own cannot play",
-    "deadline_with_move": "Deadline near with a free transfer unused",
-    "move_worth_making": "A move worth making",
-    "chip_worth_playing": "A chip worth playing",
-}
-
 # The calibration slices, in the reader's words. Keyed on the names `settle` writes.
 PLAIN_SLICES = {
     "all players": "all players",
@@ -151,74 +96,17 @@ CANNOT_PLAY = {"i": "injured", "s": "suspended"}
 
 
 @dataclass(frozen=True)
-class Trigger:
-    """One fact worth interrupting a person for.
-
-    `action` is the field the review's stated risk turns on. Notification spam erodes
-    trust fast, and the stated cure is that every message ends with the one action wanted
-    from the human - so an empty action is a construction error, not a formatting
-    nicety, and it is refused here rather than caught by a reader who has already stopped
-    reading.
-
-    `fingerprint` is the field that lets a notifier exist at all. The `deadline` job runs
-    hourly, so every fact below is re-evaluated dozens of times before it changes, and
-    the owner must be told once rather than dozens of times. So a fingerprint is built
-    only from the *identity* of the underlying fact:
-
-        gameweek, player id, the (out -> in) pair of a move, the labels of the failing
-        checks
-
-    and never from anything that drifts between runs - no timestamps, no snapshot ids, no
-    expected-points float that moves by 0.01 when a price ticks. Those would make every
-    hourly run look like news. Conversely the fingerprint *must* move when the fact
-    meaningfully changes: a different top move, a different player unavailable, a
-    different check failing, are all things the owner has not been told yet.
-
-    It is a readable slug rather than a hash, because the notifier stores these and a
-    person debugging "why was I told twice" needs to be able to read what it stored.
-    """
-
-    name: str
-    headline: str
-    detail: str
-    action: str
-    fingerprint: str
-
-    def __post_init__(self) -> None:
-        if not self.action or not self.action.strip():
-            raise ValueError(
-                f"trigger {self.name!r} has no action; every message must end with the "
-                f"one thing the human is being asked to do")
-        if not self.fingerprint or not self.fingerprint.strip():
-            raise ValueError(f"trigger {self.name!r} has no fingerprint; the notifier "
-                             f"cannot tell a repeat from news without one")
-        if "\n" in self.headline or len(self.headline) > HEADLINE_MAX:
-            raise ValueError(
-                f"trigger {self.name!r} headline must be one line of at most "
-                f"{HEADLINE_MAX} characters; got {len(self.headline)}")
-
-
-@dataclass(frozen=True)
 class Evaluation:
-    """One pass over the warehouse: what fired, what did not, and why not.
+    """One pass over the warehouse: everything the brief prints, read once and carried.
 
-    The `silent` half is not a debugging aid. A brief that says "nothing needs you" and
-    cannot say what it checked is the exact shape this project keeps being bitten by -
-    a clean report for work that may never have happened. So every trigger that does not
-    fire names the condition that stopped it, in the reader's words, and the brief prints
-    those under the empty "What needs you".
-
-    Everything the brief prints is read here, once, and carried: `render_block` and
-    `render_brief` take an Evaluation and nothing else - no connection, no clock, no
-    directory - so the opening block and the working beneath it cannot disagree, and
-    a layout can be tested from a hand-built value.
+    `render_block` and `render_brief` take an Evaluation and nothing else - no connection,
+    no clock, no directory - so the opening block and the working beneath it cannot
+    disagree, and a layout can be tested from a hand-built value.
     """
 
     gameweek: int
     now: datetime
     threshold: float
-    triggers: list[Trigger]
-    silent: dict[str, str]          # trigger name -> why it stayed silent
     checks: list[status.Check]
     capture: Optional[warehouse.Capture]
     squad: list[dict[str, Any]]
@@ -233,74 +121,8 @@ class Evaluation:
     falling: list[pricing.PriceOutlook]   # held players FPL forecasts to fall
     last_settled: Optional[dict[str, Any]]
     learnings: list[settle.Learning]
-    reports: list["PushReport"]           # one per trigger, fired or not
     deadlines: dict[int, Optional[datetime]]
     previous: Optional[dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class PushReport:
-    """What became of one trigger this run, in the three words the owner chose."""
-
-    name: str
-    title: str
-    state: str          # "did not fire" | "sent" | "fired, not delivered"
-    detail: str         # why it did not fire, what was sent, or why it was not
-    when: Optional[str] = None   # sent: when, in the reader's format
-
-    @property
-    def delivered(self) -> bool:
-        return self.state == "sent"
-
-    @property
-    def undelivered(self) -> bool:
-        return self.state == "fired, not delivered"
-
-
-def _push_reports(conn: sqlite3.Connection, triggers: list[Trigger],
-                  silent: dict[str, str], *,
-                  configured: Optional[bool] = None) -> list[PushReport]:
-    """One report per trigger, fired or not, in reading order.
-
-    "sent" is read from the `notification` table, never inferred: `notify` writes a row
-    only after the server accepted the message, so a row is the fact. A fired trigger
-    with no row is *not delivered*, and the reason is the one thing the brief can know
-    from here - no topic configured, or the send did not happen (it runs before this
-    command in `make now`; by hand, `fpl-agent notify` says why).
-    """
-    if configured is None:
-        from . import notify     # notify imports this module; a local import breaks the cycle
-        configured = notify.target_from_env() is not None
-    sent = storage.sent_notifications(conn, [t.fingerprint for t in triggers])
-    reports = []
-    for name in TRIGGER_NAMES:
-        fired = [t for t in triggers if t.name == name]
-        if not fired:
-            reports.append(PushReport(name, TRIGGER_TITLES[name], "did not fire",
-                                      silent.get(name, "not evaluated")))
-            continue
-        for trigger in fired:
-            when = sent.get(trigger.fingerprint)
-            if when:
-                reports.append(PushReport(name, TRIGGER_TITLES[name], "sent",
-                                          f"{_when(when)}: {trigger.headline}",
-                                          when=_when(when)))
-            elif not configured:
-                reports.append(PushReport(
-                    name, TRIGGER_TITLES[name], "fired, not delivered",
-                    f"no ntfy topic in fpl-agent.ini, so nothing can reach your phone. "
-                    f"{trigger.headline}"))
-            else:
-                reports.append(PushReport(
-                    name, TRIGGER_TITLES[name], "fired, not delivered",
-                    f"not in the sent record; `fpl-agent notify` sends it and says why "
-                    f"if it cannot. {trigger.headline}"))
-    return reports
-
-
-def _when(stamp: str) -> str:
-    parsed = storage.parse_utc(stamp)
-    return parsed.strftime("%a %d %b %H:%M UTC") if parsed else stamp
 
 
 def plain_slice(name: str) -> str:
@@ -308,25 +130,12 @@ def plain_slice(name: str) -> str:
     return PLAIN_SLICES.get(name, name)
 
 
-def headline(text: str) -> str:
-    """Collapse to one line and fit a lock screen, truncating rather than raising.
-
-    `Trigger` refuses an over-long headline outright, which is the right answer for a
-    programming mistake. It is the wrong answer for a player whose name happens to be
-    long, so every headline in this module is built through here.
-    """
-    text = " ".join(str(text).split())
-    if len(text) <= HEADLINE_MAX:
-        return text
-    return text[:HEADLINE_MAX - 1].rstrip() + "…"
-
-
 def worth_making_threshold() -> float:
-    """The net-xP bar for `move_worth_making`, from the environment or the default.
+    """The net-xP bar for a move worth making, from the environment or the default.
 
     An unreadable override falls back to the default rather than failing the run: a
-    scheduled brief that dies on a typo in the ini tells the owner nothing at all, which
-    is strictly worse than telling them slightly the wrong thing and saying so.
+    brief that dies on a typo in the ini tells the owner nothing at all, which is strictly
+    worse than telling them slightly the wrong thing and saying so.
     """
     raw = os.environ.get(MIN_NET_XP_ENV)
     if raw is None or not str(raw).strip():
@@ -408,37 +217,11 @@ def squad_availability(conn: sqlite3.Connection, holding: held.HeldSquad,
     return out
 
 
-def unavailable_players(squad: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The squad players who cannot play, with the one reason that identifies the fact.
-
-    Priority is deliberate and is what the fingerprint is built from. FPL's own `i`/`s`
-    outranks a RotoWire OUT because it is the club's word rather than a prediction, so a
-    player who goes from "RotoWire says OUT" to "FPL says injured" changes fingerprint
-    and is reported once more. That is the right answer: the doubt was confirmed, and
-    confirmation is news.
-
-    `d` is not here. A doubt always carries `chance_of_playing_next_round`, and
-    `projection.availability` has already scaled the whole projection by exactly that
-    percentage. Pushing it as "unavailable" would charge the same doubt twice, and it
-    would fire most weeks - which is how a notification becomes something people mute.
-    """
-    flagged = []
-    for player in squad:
-        reason = CANNOT_PLAY.get(player["status"])
-        code = player["status"] if reason else None
-        if reason is None and player["lineup_out"]:
-            reason, code = "out of the predicted lineup", "lineup-out"
-        if reason is None:
-            continue
-        flagged.append(dict(player, reason=reason, reason_code=code))
-    return flagged
-
-
 def availability_problems(squad: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
     """Every squad player either source has a question about, with the reason in words.
 
-    Broader than `unavailable_players`, on purpose: a doubt or an unnamed starter is
-    worth a line on the page even though neither is worth a push.
+    A doubt or an unnamed starter is worth a line on the page as well as a player who
+    cannot play at all.
     """
     problems = []
     for p in squad:
@@ -464,9 +247,8 @@ def falling_holdings(conn: sqlite3.Connection, snapshot_id: int,
                      now: Optional[datetime] = None) -> list[pricing.PriceOutlook]:
     """Held players FPL's own forecast makes Very Likely to fall.
 
-    Not a trigger, at the owner's choice - it is the most frequent signal there is and
-    the fastest to become noise - so it lives here, in the written record, where it can
-    be read rather than pushed.
+    The most frequent signal there is and the fastest to become noise, so it is a record
+    on the page rather than anything the brief asks the owner to act on.
     """
     outlooks = pricing.price_outlooks(conn, snapshot_id, now)
     held = [outlooks.get(p["element_id"]) for p in squad]
@@ -598,39 +380,8 @@ def ranked_transfers(conn: sqlite3.Connection, gameweek: Optional[int] = None,
 
 
 # --------------------------------------------------------------------------
-# Triggers
+# Evaluating
 # --------------------------------------------------------------------------
-
-def _move_id(move: dict[str, Any]) -> str:
-    """A move's identity: who leaves and who arrives. Not its expected points.
-
-    The xP of the same swap moves every hour as prices tick and lineups firm up, so
-    folding it into a fingerprint would make an unchanged recommendation look like news
-    on every single run.
-    """
-    return f"{move['out']['element_id']}->{move['in']['element_id']}"
-
-
-def _captain_line(picks: list[dict[str, Any]]) -> list[str]:
-    """The push's captain line, on the captured XI: who, and one sentence why.
-
-    Nothing when there is no squad or no projection - the push is about the move, and
-    a captain line that says "not evaluated" would be noise on a lock screen.
-    """
-    if not picks:
-        return []
-    why = chips.captain_why(picks, short=True)
-    return [f"- Captain: {chips.captain_line(picks)}" + (f". {why}" if why else "")]
-
-
-def _deadline_line(deadline: Optional[datetime], remaining: Optional[timedelta]) -> str:
-    if deadline is None:
-        return "- Deadline: none derived (no fixtures recorded)"
-    when = deadline_label(deadline) + " Stockholm"
-    if remaining < timedelta(0):
-        return f"- Deadline {when} passed {_hours(-remaining)} ago"
-    return f"- Deadline {when}, {_hours(remaining)} away"
-
 
 def _hours(delta: timedelta) -> str:
     total = delta.total_seconds() / 3600
@@ -643,54 +394,23 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
              now: Optional[datetime] = None,
              min_net_xp: Optional[float] = None,
              include_token: bool = True,
-             notifications_configured: Optional[bool] = None,
              learnings_dir: Path = settle.LEARNINGS_DIR) -> Evaluation:
-    """Evaluate all four triggers once, recording why each silent one stayed silent,
-    and read everything else the brief prints while at it.
+    """Read everything the brief prints, once.
 
-    Triggers come out in the order they should be read: a broken warehouse first,
-    because nothing below it can be trusted; then a player who cannot play, which is
-    points already lost; then the deadline; then the standing recommendation.
-
-    `notifications_configured` and `learnings_dir` are the two facts that come from
-    outside the warehouse - whether a push can reach the phone, and where the drafted
-    learnings are - taken as arguments so that a test never reads the repo's own.
+    `learnings_dir` is the one fact that comes from outside the warehouse - where the
+    drafted learnings are - taken as an argument so that a test never reads the repo's own.
     """
     now = now or datetime.now(timezone.utc)
     threshold = worth_making_threshold() if min_net_xp is None else float(min_net_xp)
-    triggers: list[Trigger] = []
-    silent: dict[str, str] = {}
 
-    # 1. status_failed. `status.gather` is called, never reimplemented: it is the module
-    #    that owns what "the warehouse disagrees with itself" means, and a second copy of
-    #    those rules here would drift from it within a month. Only a FAIL counts - WARN
-    #    exists precisely for the states a healthy warehouse passes through, and a
-    #    notification that fires on those is one the owner learns to swipe away.
+    # `status.gather` is called, never reimplemented: it is the module that owns what "the
+    # warehouse disagrees with itself" means, and a second copy of those rules here would
+    # drift from it within a month.
     checks = status.gather(conn, include_token=include_token)
-    failed = [c for c in checks if c.failed]
-    if failed:
-        labels = sorted(c.label for c in failed)
-        triggers.append(Trigger(
-            name="status_failed",
-            headline=headline(f"fpl-agent status failed: {', '.join(labels)}"),
-            detail="\n".join(f"- {c.label}: {c.detail}" for c in failed),
-            action="Run `fpl-agent status` and fix what it names. Until it passes, "
-                   "nothing else in this brief can be trusted.",
-            # The failing labels, not their details: a squad check that goes from 0 rows
-            # to 14 rows is still the same broken squad and should not be sent twice.
-            fingerprint=f"status_failed:gw{gameweek}:{'+'.join(labels)}",
-        ))
-    else:
-        warned = [c.label for c in checks if c.level == status.WARN]
-        silent["status_failed"] = (
-            f"all {len(checks)} warehouse checks passed"
-            + (f"; {', '.join(warned)} {'is' if len(warned) == 1 else 'are'} stale or "
-               f"pending, not broken (the Warehouse table says what)" if warned else ""))
 
     capture = warehouse.latest(conn)
     state = transfer_state(conn)
     deadline = warehouse.deadline(conn, gameweek)
-    remaining = None if deadline is None else deadline - now
     # The held squad, read once: availability, the captain and the chips all take it.
     holding = held.read(conn, capture) if capture else None
     squad = squad_availability(conn, holding, gameweek) if holding else []
@@ -701,190 +421,13 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     captain_picks = (chips.captain_picks(conn, gameweek, MODEL_VERSION, holding)
                      if holding else [])
 
-    # 2. squad_player_unavailable, one per player. Not batched into a single message:
-    #    the owner acts on them one at a time, and a batched fingerprint would go stale
-    #    the moment a second player was flagged.
-    flagged = unavailable_players(squad)
-    for player in flagged:
-        where = "in your XI" if player["slot"] == "XI" else "on your bench"
-        note = player["news"] or player["lineup_injury"] or "no reason published"
-        triggers.append(Trigger(
-            name="squad_player_unavailable",
-            headline=headline(
-                f"{player['name']} ({player['team'] or '?'}) is {player['reason']} "
-                f"and is {where} for GW{gameweek}"),
-            detail=(f"- {player['name']}, squad position {player['position']} "
-                    f"({player['slot']}): {player['reason']}.\n"
-                    f"- FPL says: {note}"),
-            action=(f"Replace {player['name']} or move him to the bench before the "
-                    f"GW{gameweek} deadline." if player["slot"] == "XI" else
-                    f"{player['name']} is already on your bench, so he costs you "
-                    f"nothing unless an XI player drops out; replace him only if a "
-                    f"transfer is worth it."),
-            fingerprint=(f"squad_player_unavailable:gw{gameweek}:"
-                         f"p{player['element_id']}:{player['reason_code']}"),
-        ))
-    if not flagged:
-        silent["squad_player_unavailable"] = (
-            "no squad captured on the latest snapshot, so nothing could be checked"
-            if not squad else
-            f"all {len(squad)} players you own are fit in FPL's eyes (none injured or "
-            f"suspended) and none is out of the predicted lineups for gameweek "
-            f"{gameweek}")
-
-    # 3. deadline_with_move. Every condition is about *this* deadline: it has not passed,
-    #    it is close, a free transfer is sitting unused, and there is a positive-net move
-    #    to spend it on. A free transfer is use-it-or-lose-it, so the bar here is
-    #    deliberately lower than trigger 4's - the question is not "is this worth a hit"
-    #    but "are you about to waste a move you already own".
-    blocking = []
-    if remaining is None:
-        blocking.append(f"no fixtures recorded for gameweek {gameweek}, so no deadline "
-                        f"can be derived")
-    elif remaining < timedelta(0):
-        blocking.append(f"the gameweek {gameweek} deadline passed {_hours(-remaining)} "
-                        f"ago")
-    elif remaining > DEADLINE_SOON:
-        blocking.append(f"the deadline is {_hours(remaining)} away, beyond the "
-                        f"{int(DEADLINE_SOON.total_seconds() // 3600)}h this trigger "
-                        f"watches")
-    if not (state["free_transfers"] or 0) > 0:
-        blocking.append("no free transfer is available to spend"
-                        if state["free_transfers"] == 0 else
-                        "the snapshot recorded no free-transfer count, which is priced "
-                        "as none rather than assumed")
-    if top is None:
-        blocking.append(listing["reason"] or "no move improves the squad within budget")
-    elif top["net_xp_delta"] <= 0:
-        blocking.append(f"the best move is net {top['net_xp_delta']:+.2f} xP")
-
-    if blocking:
-        silent["deadline_with_move"] = "; ".join(blocking)
-    else:
-        triggers.append(Trigger(
-            name="deadline_with_move",
-            headline=headline(
-                f"GW{gameweek} deadline in {_hours(remaining)} and "
-                f"{state['free_transfers']} free transfer(s) unused"),
-            detail=(f"- Deadline {deadline.astimezone(ZoneInfo('Europe/Stockholm')).isoformat(timespec='minutes')} "
-                    f"({_hours(remaining)} away).\n"
-                    f"- Best move: {top['in']['name']} for {top['out']['name']}, "
-                    f"net {top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks.\n"
-                    f"- {recommend.move_lines(top)[1]}"
-                    + (f"\n- {state['chip'].upper()} is active, so this is a "
-                       f"like-for-like swap ranked inside a squad rebuild the tool does "
-                       f"not plan." if state["chip"] else "")),
-            action=(f"Make {top['in']['name']} for {top['out']['name']}, or decide not "
-                    f"to, before {deadline.astimezone(ZoneInfo('Europe/Stockholm')).isoformat(timespec='minutes')}."),
-            # The move is the identity, never the hours left, which by definition change
-            # on every one of the hourly runs.
-            fingerprint=f"deadline_with_move:gw{gameweek}:{_move_id(top)}",
-        ))
-
-    # 4. move_worth_making. Not gated on the deadline being near - a move that clears the
-    #    bar is worth knowing about on a Tuesday. It is gated on the two things that make
-    #    "worth" mean something:
-    #
-    #    * the net gain clears the threshold. `net_xp_delta` is already after whatever
-    #      hit the move would cost, which is what makes the owner's second real state
-    #      resolve itself: with zero free transfers every option is charged 4 points, the
-    #      whole list goes net-negative, `recommend` returns nothing, and this fires not
-    #      at all.
-    #    * acting is actually possible. Two ways it is not, and both are live states of
-    #      this warehouse rather than hypotheticals:
-    #        - an active transfer chip. Under a wildcard hits cost nothing, so every
-    #          candidate is "positive" and the top of the list means nothing; worse, the
-    #          tool ranks single like-for-like swaps while a wildcard rebuilds all
-    #          fifteen, so its advice is the wrong *shape*, not merely optimistic.
-    #          The brief says so instead.
-    #        - the deadline has gone. The list is still priced against a horizon whose
-    #          first gameweek is one you can no longer change your team for. This is not
-    #          a nearness gate - a move six days out fires happily - it is the difference
-    #          between "not urgent" and "impossible".
-    blocking = []
-    if state["chip"]:
-        blocking.append(f"{state['chip']} is active, so hits cost nothing and every "
-                        f"candidate scores positive; the tool ranks single swaps while "
-                        f"a chip rebuilds the squad, so its advice is the wrong shape")
-    if remaining is not None and remaining < timedelta(0):
-        blocking.append(f"the gameweek {gameweek} deadline passed {_hours(-remaining)} "
-                        f"ago, so no move on this list can still be made for the "
-                        f"gameweek it is priced against")
-    if top is None:
-        blocking.append(listing["reason"] or "no move improves the squad within budget")
-    elif top["net_xp_delta"] < threshold:
-        blocking.append(f"the best move is net {top['net_xp_delta']:+.2f} xP, under the "
-                        f"{threshold:.1f} bar")
-
-    if blocking:
-        silent["move_worth_making"] = "; ".join(blocking)
-    else:
-        triggers.append(Trigger(
-            name="move_worth_making",
-            headline=headline(
-                f"{top['in']['name']} for {top['out']['name']}: "
-                f"net {top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks"),
-            # The push body, in the order it is read on a lock screen: what the move is
-            # worth, who owns whom, when it has to be done by, and the one action.
-            detail="\n".join([
-                f"- Out: {top['out']['name']} "
-                f"(£{top['out']['selling_price'] / 10:.1f}m, {top['out']['xp']} xP); "
-                f"in: {top['in']['name']} ({top['in']['team']}, "
-                f"£{top['in']['now_cost'] / 10:.1f}m, {top['in']['xp']} xP)",
-                *(f"- {line}" for line in recommend.move_lines(top)),
-                f"- Net {top['net_xp_delta']:+.2f} clears the {threshold:.1f} bar. "
-                f"Price: {top['affordability']['reason']}",
-                *_captain_line(captain_picks),
-                _deadline_line(deadline, remaining),
-            ]),
-            action=(f"Make {top['in']['name']} for {top['out']['name']}, or record why "
-                    f"not with `fpl-agent recommend --record`."),
-            fingerprint=f"move_worth_making:gw{gameweek}:{_move_id(top)}",
-        ))
-
-    # 5. chip_worth_playing, one per chip that clears its bar this week. Valued on the
-    #    squad after the recommended move, so this and the move advice agree.
+    # Valued on the squad after the recommended move, so this and the move advice agree.
     verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION, holding.with_move(top))
                 if holding else [])
-    playable = [v for v in verdicts if v.play_now]
-    if remaining is not None and remaining < timedelta(0):
-        playable = []
-    for verdict in playable:
-        triggers.append(Trigger(
-            name="chip_worth_playing",
-            headline=headline(f"Play your {verdict.title} this gameweek: "
-                              f"+{verdict.now.value:.1f} ({verdict.now.note})"),
-            detail="\n".join([
-                f"- {verdict.title.capitalize()} {verdict.reason}",
-                f"- Best other week: GW{_runner_up(verdict).gameweek} "
-                f"(+{_runner_up(verdict).value:.1f}, {_runner_up(verdict).note})"
-                if _runner_up(verdict) else "- No other week to compare against",
-                *(["- Valued on the squad after the recommended move "
-                   f"({top['in']['name']} for {top['out']['name']})"] if top else []),
-                _deadline_line(deadline, remaining),
-            ]),
-            action=(f"Play the {verdict.title} before "
-                    f"{deadline_label(deadline) + ' Stockholm' if deadline else 'the deadline'}"
-                    f", or record why not with `fpl-agent recommend --record --chip "
-                    f"{verdict.state.name}`."),
-            fingerprint=f"chip_worth_playing:gw{gameweek}:{verdict.state.name}",
-        ))
-    if not playable:
-        evaluated = [v for v in verdicts if v.evaluated]
-        if not verdicts:
-            silent["chip_worth_playing"] = "no chips captured, so none could be valued"
-        elif not evaluated:
-            silent["chip_worth_playing"] = "no chip is available to value this gameweek"
-        elif remaining is not None and remaining < timedelta(0):
-            silent["chip_worth_playing"] = (f"the gameweek {gameweek} deadline has "
-                                            f"passed, so no chip can be played for it")
-        else:
-            silent["chip_worth_playing"] = "; ".join(
-                f"{v.title} {v.reason}" for v in evaluated)
 
     return Evaluation(
         gameweek=gameweek, now=now, threshold=threshold,
-        triggers=triggers, silent=silent, checks=checks,
+        checks=checks,
         capture=capture, squad=squad, state=state,
         deadline=deadline, listing=listing, chips=verdicts,
         ownership=ownership, captain_picks=captain_picks,
@@ -892,15 +435,9 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
                  if capture and squad else []),
         last_settled=last_settled(conn),
         learnings=settle.read_learnings(learnings_dir),
-        reports=_push_reports(conn, triggers, silent, configured=notifications_configured),
         deadlines={g.round: warehouse.deadline(conn, g.round)
                    for g in warehouse.gameweeks(conn, MODEL_VERSION).rounds},
         previous=previous_round(conn, gameweek, holding))
-
-
-def _runner_up(verdict: chips.Verdict) -> Optional[chips.ChipValue]:
-    others = [v for v in verdict.values if v.gameweek != verdict.now.gameweek]
-    return max(others, key=lambda v: v.value) if others else None
 
 
 # --------------------------------------------------------------------------
@@ -959,7 +496,7 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     """
     state, squad, deadline = evaluation.state, evaluation.squad, evaluation.deadline
     remaining = None if deadline is None else deadline - evaluation.now
-    listing, reports = evaluation.listing, evaluation.reports
+    listing = evaluation.listing
     top = listing["moves"][0] if listing["moves"] else None
     threshold = evaluation.threshold
 
@@ -1019,16 +556,6 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
         when += ("; free transfers unknown" if free is None else
                  f"; {free} free transfer{'' if free == 1 else 's'} unused")
 
-    # Push.
-    delivered = [r for r in reports if r.delivered]
-    undelivered = [r for r in reports if r.undelivered]
-    parts = []
-    if delivered:
-        parts.append("sent: " + ", ".join(f"{r.title} ({r.when})" for r in delivered))
-    if undelivered:
-        parts.append("fired, not delivered: " + ", ".join(r.title for r in undelivered))
-    push = "; ".join(parts) if parts else f"nothing fired - all {len(reports)} triggers checked"
-
     # Learnings.
     pending = learnings_line(evaluation.learnings)
 
@@ -1036,17 +563,15 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     failed = [c.label for c in evaluation.checks if c.failed]
     warned = [c.label for c in evaluation.checks if c.level == status.WARN]
     if failed:
-        data = f"NOT trustworthy - {', '.join(failed)} failed; see What needs you"
+        data = f"NOT trustworthy - {', '.join(failed)} failed; see Warehouse"
     elif warned:
         data = f"trustworthy; stale or pending, not broken: {', '.join(warned)} (see Warehouse)"
     else:
         data = f"trustworthy - all {len(evaluation.checks)} checks agree"
-    if undelivered:
-        data += "; a push fired and did not reach your phone (see Push)"
 
     rows = [("Move", move), ("Ownership", ownership), ("Captain", captain),
             ("Chips", chip_line),
-            ("Availability", availability), ("Deadline", when), ("Push", push),
+            ("Availability", availability), ("Deadline", when),
             ("Learnings", pending), ("Data", data),
             ("Previous gameweek", previous_line(evaluation))]
     rows = [(label, with_deadlines(text, evaluation)) for label, text in rows]
@@ -1066,9 +591,7 @@ def render_brief(evaluation: Evaluation) -> str:
     layout rather than by the numbers.
     """
     gameweek = evaluation.gameweek
-    reports = evaluation.reports
     now = evaluation.now
-    triggers = evaluation.triggers
     capture = evaluation.capture
     state = evaluation.state
     deadline = evaluation.deadline
@@ -1097,23 +620,6 @@ def render_brief(evaluation: Evaluation) -> str:
 
     # 0. The block. Same lines, same order, every run.
     lines += render_block(evaluation)
-
-    # 1. What needs you.
-    lines += ["## What needs you", ""]
-    if triggers:
-        for i, trigger in enumerate(triggers, 1):
-            lines += [f"{i}. **{TRIGGER_TITLES[trigger.name]} — {trigger.headline}**", ""]
-            lines += [f"   {line}" for line in trigger.detail.splitlines()]
-            lines += ["", f"   **Do:** {trigger.action}", ""]
-    else:
-        lines += ["Nothing needs you. This brief is a record, not a request.", ""]
-
-    # 2. Push. Always printed, whether or not something fired. "Nothing needs you" is
-    #    only worth anything if it can say what it looked at - a clean report for checks
-    #    that were never made is the failure mode this whole project keeps tripping over.
-    lines += ["## Push", ""]
-    lines += [f"- {r.title} — **{r.state}**: {r.detail.rstrip('.')}." for r in reports]
-    lines.append("")
 
     # 2. Deadline and budget.
     lines += ["## Deadline and transfers", ""]
@@ -1167,7 +673,7 @@ def render_brief(evaluation: Evaluation) -> str:
                       "exactly that number, so it is reported here, not charged again.",
                       ""]
 
-    # 4. Price watch. Not a trigger, and the brief says why.
+    # 4. Price watch.
     lines += ["## Price watch", ""]
     falling = evaluation.falling
     if falling:
@@ -1178,8 +684,8 @@ def render_brief(evaluation: Evaluation) -> str:
                          for o in falling])
         lines += ["",
                   "A fall costs half the loss on the way back out, because the sell-on "
-                  "fee only returns half of any profit. This is deliberately **not** a "
-                  "notification: it is the most frequent signal in the warehouse and the "
+                  "fee only returns half of any profit. It is a watch, not a reason to "
+                  "move on its own: the most frequent signal in the warehouse and the "
                   "fastest to become noise.", ""]
     else:
         lines += ["No held player is Very Likely to fall at the next update "
@@ -1277,9 +783,9 @@ def render_brief(evaluation: Evaluation) -> str:
             lines += ["", f"Ownership not shown: {source['reason']}."]
         lines += ["",
                   f"Every option is priced as *the next transfer you would make*, not as "
-                  f"the nth move of a plan, so the same hit applies to all of them. The "
-                  f"bar for a notification is a net **{worth_making_threshold():.1f}** "
-                  f"xP; anything under that is in this table and not on your phone.", ""]
+                  f"the nth move of a plan, so the same hit applies to all of them. A move "
+                  f"is worth making from a net **{evaluation.threshold:.1f}** xP; "
+                  f"anything under that is in this table as a record.", ""]
 
     # 6. Calibration.
     lines += ["## Last settled gameweek", ""]
@@ -1348,7 +854,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--logs", type=Path, default=BRIEF_DIR,
                         help=f"where to write gwNN.md (default {BRIEF_DIR})")
     parser.add_argument("--dry-run", action="store_true",
-                        help="print the brief and the fired triggers; write nothing")
+                        help="print the brief; write nothing")
     args = parser.parse_args(argv)
 
     config.load()
@@ -1374,24 +880,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(e, file=sys.stderr)
             return EXIT_UNREADABLE
         evaluation = evaluate(conn, gameweek)
-        triggers = evaluation.triggers
-        text = render_brief(evaluation)
         if args.dry_run:
-            print(text)
-            print(f"\n--- {len(triggers)} trigger(s) would fire ---", file=sys.stderr)
-            for t in triggers:
-                print(f"{t.name}  {t.fingerprint}\n  {t.headline}\n  do: {t.action}",
-                      file=sys.stderr)
-            # The silent ones are printed too. A run that fires nothing has to be able to
-            # say why, or it is indistinguishable from a run that checked nothing.
-            for name in TRIGGER_NAMES:
-                if name in evaluation.silent:
-                    print(f"{name}  DID NOT FIRE\n  {evaluation.silent[name]}",
-                          file=sys.stderr)
+            print(render_brief(evaluation))
             return EXIT_OK
-        path = write_brief(evaluation, args.logs)
-        print(f"wrote {path} ({len(triggers)} trigger(s): "
-              f"{', '.join(t.name for t in triggers) or 'none'})")
+        print(f"wrote {write_brief(evaluation, args.logs)}")
         return EXIT_OK
     finally:
         conn.close()

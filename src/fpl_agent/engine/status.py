@@ -443,8 +443,8 @@ def check_token(now: Optional[float] = None) -> Check:
 def gather(conn: sqlite3.Connection, *, include_token: bool = True) -> list[Check]:
     """Every check, in the order a person reads them: the capture, then what hangs off it.
 
-    Returns the checks rather than printing them, so the notifier of review item 13 can
-    build a message from exactly the facts the cron mail carries.
+    Returns the checks rather than printing them, so a caller can build its own message
+    from exactly the facts the report carries.
     """
     absent = missing_tables(conn)
     if absent:
@@ -508,10 +508,8 @@ def next_action(conn: sqlite3.Connection,
 
     # What is due is the schedule's question, and this is a reader of the answer. It used
     # to ask its own: its own settle query and its own deadline window, which made this
-    # the fourth statement of the pipeline. `make now` runs this same plan - bar
-    # the notification step, which depends on configuration this command does not read
-    # and which the summary never mentions - so the line cannot promise work the command
-    # will not do.
+    # the fourth statement of the pipeline. `make now` runs this same plan,
+    # so the line cannot promise work the command will not do.
     try:
         plan = schedule.due(now=datetime.now(timezone.utc),
                             warehouse=schedule.read(conn),

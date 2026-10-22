@@ -340,7 +340,6 @@ class ValueTests(unittest.TestCase):
 # Through the brief: the trigger, the line, the section, the record
 # --------------------------------------------------------------------------
 
-from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 
@@ -348,7 +347,7 @@ from fpl_agent.engine import brief, recommend
 from test_brief import NOW
 
 
-class ChipTriggerTests(unittest.TestCase):
+class ChipVerdictTests(unittest.TestCase):
 
     def setUp(self):
         self.conn = storage.connect(":memory:")
@@ -368,36 +367,24 @@ class ChipTriggerTests(unittest.TestCase):
 
     def evaluate(self):
         return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False,
-                              notifications_configured=False,
                               learnings_dir=Path(self.tmp.name))
 
     def render(self, evaluation=None):
         return brief.render_brief(evaluation or self.evaluate())
 
-    def test_a_bench_over_the_bar_fires_with_the_one_action(self):
+    def test_a_bench_over_the_bar_is_play_now_with_its_runner_up_week(self):
         self.bench(4.5)                         # 18 > 15, and the best of the horizon
-        evaluation = self.evaluate()
-        [trigger] = [t for t in evaluation.triggers if t.name == "chip_worth_playing"]
-        self.assertEqual(trigger.headline,
-                         "Play your bench boost this gameweek: +18.0 (P12, P13, P14, P15)")
-        self.assertIn("clears the 15 bar", trigger.detail)
-        self.assertIn("Best other week: GW4 (+4.0", trigger.detail)
-        self.assertIn("Deadline 5 Sep 09:30 Stockholm", trigger.detail)
-        self.assertIn("Play the bench boost before 5 Sep 09:30 Stockholm, or record why not "
-                      "with `fpl-agent recommend --record --chip bboost`", trigger.action)
-        self.assertEqual(trigger.fingerprint, "chip_worth_playing:gw3:bboost")
+        bench = next(v for v in self.evaluate().chips if v.state.name == "bboost")
+        self.assertTrue(bench.play_now)
+        self.assertEqual(bench.now.note, "P12, P13, P14, P15")
+        self.assertEqual(bench.now.value, 18.0)
+        self.assertIn("clears the 15 bar", bench.reason)
 
-    def test_the_fingerprint_is_the_chip_and_the_week_not_the_value(self):
-        self.bench(4.5)
-        first = self.evaluate().triggers[-1].fingerprint
-        self.bench(4.8)
-        self.assertEqual(self.evaluate().triggers[-1].fingerprint, first)
-
-    def test_a_bench_under_the_bar_is_silent_and_says_the_numbers(self):
-        evaluation = self.evaluate()
-        self.assertNotIn("chip_worth_playing", [t.name for t in evaluation.triggers])
-        self.assertIn("bench boost hold: +4.0 now", evaluation.silent["chip_worth_playing"])
-        self.assertIn("under the 15 bar", evaluation.silent["chip_worth_playing"])
+    def test_a_bench_under_the_bar_holds_and_says_the_numbers(self):
+        bench = next(v for v in self.evaluate().chips if v.state.name == "bboost")
+        self.assertFalse(bench.play_now)
+        self.assertIn("hold: +4.0 now", bench.reason)
+        self.assertIn("under the 15 bar", bench.reason)
 
     def test_the_block_and_the_section_carry_the_verdicts(self):
         self.bench(4.5)
@@ -415,7 +402,6 @@ class ChipTriggerTests(unittest.TestCase):
                       "GW6 (deadline unknown)-GW19 (deadline unknown) are not projected yet "
                       "(`project --chips`)", text)
         self.assertIn("Only the next gameweek has predicted lineups", text)
-        self.assertIn("fired, not delivered: Deadline near with a free transfer unused, A move worth making, A chip worth playing", text)
 
     def test_values_are_summed_over_the_post_move_squad(self):
         # The recommended move brings P17 (2.0) in for P1; P1 is in the XI, so the
@@ -423,14 +409,6 @@ class ChipTriggerTests(unittest.TestCase):
         evaluation = self.evaluate()
         tc = next(v for v in evaluation.chips if v.state.name == "3xc")
         self.assertEqual(tc.now.note, "P17")
-
-    def test_a_passed_deadline_never_fires_a_chip(self):
-        self.bench(4.5)
-        late = brief.evaluate(self.conn, GAMEWEEK,
-                              now=datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc),
-                              include_token=False)
-        self.assertNotIn("chip_worth_playing", [t.name for t in late.triggers])
-        self.assertIn("deadline has passed", late.silent["chip_worth_playing"])
 
     def test_recording_a_chip_writes_a_chip_decision_with_the_values(self):
         self.bench(4.5)
@@ -507,8 +485,6 @@ class RebuildTests(unittest.TestCase):
         evaluation = self.evaluate()
         fh = next(v for v in evaluation.chips if v.state.name == "freehit")
         self.assertTrue(fh.play_now)
-        names = [t.headline for t in evaluation.triggers if t.name == "chip_worth_playing"]
-        self.assertTrue(any(h.startswith("Play your free hit this gameweek") for h in names))
         text = brief.render_brief(evaluation)
         self.assertIn("The free hit squad for GW3 (deadline 5 Sep 09:30) "
                       "(XI first, then bench): ", text)
@@ -526,7 +502,7 @@ class RebuildTests(unittest.TestCase):
         self.assertGreater(by_week[3], by_week[5])       # three weeks of gain vs one
         text = brief.render_brief(brief.evaluate(
             self.conn, GAMEWEEK, now=NOW, include_token=False,
-            notifications_configured=False, learnings_dir=Path(self.tmp.name)))
+            learnings_dir=Path(self.tmp.name)))
         self.assertIn("moot if you play the wildcard (see Chips)", text)
 
     def test_the_budget_is_bank_plus_selling_prices(self):

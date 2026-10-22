@@ -1,14 +1,12 @@
-"""The gameweek brief and the four triggers.
+"""The gameweek brief.
 
 Offline: every warehouse here is built in memory and every file is written to a temporary
 directory. Nothing in this file may touch `data/fpl.db`, the real `logs/`, or the token
 cache - the status check the brief calls is pointed at a temporary cache through
 FPL_TOKEN_CACHE, which is the knob `headless_auth.cache_path` reads in production.
 
-The tests that matter most are the ones about *not* firing. A notifier is only worth
-having if silence means "checked and declined", so most of what follows drives the
-warehouse into a state where something nearly fires and then asserts that it did not, and
-why.
+The opening block is the contract: the same lines in the same order every run, each
+saying "none" or "not evaluated" rather than going missing.
 """
 
 import io
@@ -25,8 +23,8 @@ from fpl_agent.engine import status as status_module
 from fpl_agent.engine.projection import MODEL_VERSION
 
 # The default warehouse kicks off at 09:00 on 5 September, so the derived deadline is
-# 07:30 that morning - 19.5 hours after NOW, inside the 24-hour window trigger 3 watches.
-# Tests that want the deadline outside the window move `now`, not the fixtures.
+# 07:30 that morning - 19.5 hours after NOW. Tests that want another distance to the
+# deadline move `now`, not the fixtures.
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 GAMEWEEK = 3
 
@@ -196,9 +194,6 @@ class BriefTestCase(unittest.TestCase):
         kwargs.setdefault("learnings_dir", Path(self.tmp.name) / "learnings")
         return brief.evaluate(self.conn, GAMEWEEK, **kwargs)
 
-    def fired(self, evaluation):
-        return [t.name for t in evaluation.triggers]
-
 
 class DecisionContextTests(BriefTestCase):
     def test_gameweek_references_include_the_stockholm_deadline_in_both_outputs(self):
@@ -254,51 +249,6 @@ class DecisionContextTests(BriefTestCase):
 # The seam: names, shapes, and the rule that an action is never empty
 # --------------------------------------------------------------------------
 
-class TriggerShapeTests(unittest.TestCase):
-
-    def make(self, **kwargs):
-        fields = dict(name="t", headline="h", detail="d", action="do this",
-                      fingerprint="f")
-        fields.update(kwargs)
-        return brief.Trigger(**fields)
-
-    def test_a_trigger_with_no_action_is_refused(self):
-        """The review's stated cure for notification spam, enforced rather than hoped."""
-        for empty in ("", "   ", None):
-            with self.subTest(action=empty):
-                with self.assertRaises(ValueError):
-                    self.make(action=empty)
-
-    def test_a_trigger_with_no_fingerprint_is_refused(self):
-        with self.assertRaises(ValueError):
-            self.make(fingerprint="")
-
-    def test_a_headline_that_will_not_fit_a_lock_screen_is_refused(self):
-        with self.assertRaises(ValueError):
-            self.make(headline="x" * (brief.HEADLINE_MAX + 1))
-        with self.assertRaises(ValueError):
-            self.make(headline="two\nlines")
-
-    def test_headline_collapses_and_truncates_rather_than_raising(self):
-        """Construction sites go through `headline`, so a long player name cannot crash
-        a scheduled brief."""
-        self.assertEqual(brief.headline("a  b\nc"), "a b c")
-        long = brief.headline("x" * 500)
-        self.assertLessEqual(len(long), brief.HEADLINE_MAX)
-        self.make(headline=long)  # and the result is acceptable to the constructor
-
-    def test_triggers_are_hashable_and_comparable(self):
-        """The notifier will put these in sets and dicts keyed by fingerprint."""
-        self.assertEqual(self.make(), self.make())
-        self.assertEqual(len({self.make(), self.make()}), 1)
-
-    def test_the_five_names_are_the_documented_set(self):
-        self.assertEqual(
-            brief.TRIGGER_NAMES,
-            ("status_failed", "squad_player_unavailable", "deadline_with_move",
-             "move_worth_making", "chip_worth_playing"))
-
-
 class BriefPathTests(unittest.TestCase):
 
     def test_gwnn_is_zero_padded_so_a_listing_sorts(self):
@@ -325,335 +275,38 @@ class ThresholdTests(unittest.TestCase):
             self.assertEqual(brief.worth_making_threshold(), brief.WORTH_MAKING_NET_XP)
 
 
-# --------------------------------------------------------------------------
-# Trigger 1: status_failed
-# --------------------------------------------------------------------------
-
-class StatusFailedTests(BriefTestCase):
-
-    def test_it_does_not_fire_on_a_healthy_warehouse(self):
-        self.warehouse.healthy()
-        evaluation = self.evaluate()
-        self.assertNotIn("status_failed", self.fired(evaluation))
-        self.assertIn("passed", evaluation.silent["status_failed"])
-
-    def test_a_warn_is_not_an_inconsistency(self):
-        """WARN exists for states a healthy warehouse passes through; firing on them is
-        how a notification becomes something people mute."""
-        self.warehouse.healthy()
-        self.conn.execute("DELETE FROM rival_squad")     # -> rivals warns
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertNotIn("status_failed", self.fired(evaluation))
-        self.assertIn("rivals", evaluation.silent["status_failed"])
-
-    def test_a_missing_squad_fires(self):
-        self.warehouse.healthy()
-        self.conn.execute("DELETE FROM my_squad")
-        self.conn.commit()
-        triggers = [t for t in self.evaluate().triggers if t.name == "status_failed"]
-        self.assertEqual(len(triggers), 1)
-        self.assertIn("squad", triggers[0].headline)
-        self.assertTrue(triggers[0].action.strip())
-
-    def test_the_fingerprint_is_the_failing_labels_not_their_details(self):
-        """An hourly job re-evaluates the same broken squad dozens of times. A squad that
-        goes from 0 rows to 14 is still the same fault, and must not be sent twice."""
-        self.warehouse.healthy()
-        self.conn.execute("DELETE FROM my_squad")
-        self.conn.commit()
-        first = self.evaluate().triggers[0].fingerprint
-
-        self.warehouse.squad(element_ids=list(range(1, 15)))   # 14 of 15: still FAIL
-        self.conn.commit()
-        second = self.evaluate().triggers[0].fingerprint
-        self.assertEqual(first, second)
-
-    def test_the_fingerprint_moves_when_a_different_check_fails(self):
-        self.warehouse.healthy()
-        self.conn.execute("DELETE FROM my_squad")
-        self.conn.commit()
-        squad_only = self.evaluate().triggers[0].fingerprint
-
-        self.conn.execute("DELETE FROM projection")
-        self.conn.commit()
-        both = self.evaluate().triggers[0].fingerprint
-        self.assertNotEqual(squad_only, both)
-
-
-# --------------------------------------------------------------------------
-# Trigger 2: squad_player_unavailable
-# --------------------------------------------------------------------------
-
-class SquadPlayerUnavailableTests(BriefTestCase):
-
-    def test_a_clean_squad_does_not_fire_and_says_what_it_checked(self):
-        self.warehouse.healthy()
-        evaluation = self.evaluate()
-        self.assertNotIn("squad_player_unavailable", self.fired(evaluation))
-        self.assertIn("all 15 players you own are fit",
-                      evaluation.silent["squad_player_unavailable"])
-
-    def test_an_injured_player_fires_once_with_an_action(self):
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "i", news="Hamstring")
-        self.conn.commit()
-        triggers = [t for t in self.evaluate().triggers
-                    if t.name == "squad_player_unavailable"]
-        self.assertEqual(len(triggers), 1)
-        self.assertIn("P4", triggers[0].headline)
-        self.assertIn("injured", triggers[0].headline)
-        self.assertIn("P4", triggers[0].action)
-        self.assertEqual(triggers[0].fingerprint,
-                         f"squad_player_unavailable:gw{GAMEWEEK}:p4:i")
-
-    def test_a_benched_player_is_not_told_to_move_to_the_bench(self):
-        self.warehouse.healthy()
-        self.warehouse.flag(14, "i", news="Hamstring")
-        self.conn.commit()
-        triggers = [t for t in self.evaluate().triggers
-                    if t.name == "squad_player_unavailable"]
-        self.assertEqual(len(triggers), 1)
-        self.assertIn("on your bench", triggers[0].headline)
-        self.assertNotIn("move him to the bench", triggers[0].action)
-        self.assertIn("already on your bench", triggers[0].action)
-
-    def test_a_suspension_fires(self):
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "s", news="Suspended")
-        self.conn.commit()
-        triggers = [t for t in self.evaluate().triggers
-                    if t.name == "squad_player_unavailable"]
-        self.assertEqual(len(triggers), 1)
-        self.assertIn("suspended", triggers[0].headline)
-
-    def test_a_doubt_does_not_fire(self):
-        """`projection.availability` has already scaled the whole projection by the
-        percentage. Pushing it as unavailable charges the same doubt twice."""
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "d", chance=75, news="Knock - 75% chance")
-        self.conn.commit()
-        self.assertNotIn("squad_player_unavailable", self.fired(self.evaluate()))
-
-    def test_out_in_the_predicted_lineup_fires_even_when_fpl_says_available(self):
-        """The case worth knowing about: FPL's flag only moves when there is news."""
-        self.warehouse.healthy()
-        self.warehouse.lineup_out(4)
-        self.conn.commit()
-        triggers = [t for t in self.evaluate().triggers
-                    if t.name == "squad_player_unavailable"]
-        self.assertEqual(len(triggers), 1)
-        self.assertEqual(triggers[0].fingerprint,
-                         f"squad_player_unavailable:gw{GAMEWEEK}:p4:lineup-out")
-
-    def test_a_suspension_code_the_scraper_table_misses_still_counts(self):
-        """`lineups.UNAVAILABLE` is imported, not restated, so SUS is covered."""
-        self.warehouse.healthy()
-        self.warehouse.lineup_out(4, code="SUS")
-        self.conn.commit()
-        self.assertIn("squad_player_unavailable", self.fired(self.evaluate()))
-
-    def test_merely_being_benched_in_the_lineup_does_not_fire(self):
-        """Rotation belongs in the projection's start rate, not on a phone."""
-        self.warehouse.healthy()
-        self.warehouse.lineup_out(4, code=None)
-        self.conn.commit()
-        self.assertNotIn("squad_player_unavailable", self.fired(self.evaluate()))
-
-    def test_one_trigger_per_player_so_each_can_be_acted_on_separately(self):
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "i")
-        self.warehouse.flag(9, "s")
-        self.conn.commit()
-        triggers = [t for t in self.evaluate().triggers
-                    if t.name == "squad_player_unavailable"]
-        self.assertEqual(len(triggers), 2)
-        self.assertEqual(len({t.fingerprint for t in triggers}), 2)
-
-    def test_an_fpl_flag_outranks_a_lineup_prediction_in_the_fingerprint(self):
-        """A doubt confirmed by the club is news, and is reported once more."""
-        self.warehouse.healthy()
-        self.warehouse.lineup_out(4)
-        self.conn.commit()
-        predicted = self.evaluate().triggers[0].fingerprint
-        self.warehouse.flag(4, "i")
-        self.conn.commit()
-        confirmed = self.evaluate().triggers[0].fingerprint
-        self.assertNotEqual(predicted, confirmed)
-        self.assertTrue(confirmed.endswith(":i"))
-
-
-# --------------------------------------------------------------------------
-# Trigger 3: deadline_with_move
-# --------------------------------------------------------------------------
-
-class DeadlineWithMoveTests(BriefTestCase):
+class MoveLineTests(BriefTestCase):
+    """The opening block's Move line says whether the best move clears the bar."""
 
     def setUp(self):
         super().setUp()
         self.warehouse.healthy()
 
-    def test_it_fires_inside_the_window_with_a_free_transfer_and_a_positive_move(self):
-        triggers = [t for t in self.evaluate().triggers
-                    if t.name == "deadline_with_move"]
-        self.assertEqual(len(triggers), 1)
-        self.assertIn("deadline", triggers[0].headline)
-        self.assertTrue(triggers[0].action.strip())
-        self.assertTrue(triggers[0].fingerprint.startswith(
-            f"deadline_with_move:gw{GAMEWEEK}:"))
+    def block(self, **kwargs) -> str:
+        return "\n".join(brief.render_block(self.evaluate(**kwargs)))
 
-    def test_a_deadline_that_has_passed_does_not_fire(self):
-        evaluation = self.evaluate(now=datetime(2026, 9, 5, 14, 0, tzinfo=timezone.utc))
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
-        self.assertIn("passed", evaluation.silent["deadline_with_move"])
-
-    def test_a_deadline_further_out_than_a_day_does_not_fire(self):
-        evaluation = self.evaluate(now=datetime(2026, 9, 3, 9, 0, tzinfo=timezone.utc))
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
-        self.assertIn("away", evaluation.silent["deadline_with_move"])
-
-    def test_no_free_transfer_does_not_fire(self):
-        self.warehouse.state(free_transfers=0)
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
-        self.assertIn("no free transfer", evaluation.silent["deadline_with_move"])
-
-    def test_an_unrecorded_free_transfer_count_is_priced_as_none(self):
-        """A snapshot that failed to record `transfers.limit` is not evidence that a free
-        transfer exists - the rule `recommend.transfer_price` already owns."""
-        self.warehouse.state(free_transfers=None)
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
-        self.assertIn("no free-transfer count", evaluation.silent["deadline_with_move"])
-
-    def test_no_positive_move_does_not_fire(self):
-        self.conn.execute("UPDATE projection SET expected_points = 1.0")
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
-
-    def test_the_fingerprint_is_the_move_and_not_the_hours_left(self):
-        """The whole reason the notifier can exist: an hourly job must not re-send an
-        unchanged fact just because the clock moved."""
-        early = self.evaluate(now=datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc))
-        late = self.evaluate(now=datetime(2026, 9, 5, 6, 0, tzinfo=timezone.utc))
-        self.assertEqual([t.fingerprint for t in early.triggers],
-                         [t.fingerprint for t in late.triggers])
-
-    def test_the_fingerprint_moves_when_the_recommended_move_changes(self):
-        before = [t.fingerprint for t in self.evaluate().triggers
-                  if t.name == "deadline_with_move"]
-        # A different player becomes the best target, so the advice is genuinely new.
-        self.conn.execute("UPDATE projection SET expected_points = 9.0 "
-                          "WHERE element_id = 20")
-        self.conn.commit()
-        after = [t.fingerprint for t in self.evaluate().triggers
-                 if t.name == "deadline_with_move"]
-        self.assertNotEqual(before, after)
-
-
-# --------------------------------------------------------------------------
-# Trigger 4: move_worth_making - the one the word "worth" is doing work in
-# --------------------------------------------------------------------------
-
-class MoveWorthMakingTests(BriefTestCase):
-
-    def setUp(self):
-        super().setUp()
-        self.warehouse.healthy()
-
-    def test_a_move_over_the_bar_fires_with_the_net_in_its_headline(self):
-        triggers = [t for t in self.evaluate().triggers if t.name == "move_worth_making"]
-        self.assertEqual(len(triggers), 1)
-        self.assertIn("+3.00", triggers[0].headline)
-        self.assertTrue(triggers[0].action.strip())
-
-    def test_it_is_not_gated_on_the_deadline_being_near(self):
-        """A move that clears the bar is worth knowing about on a Tuesday."""
-        evaluation = self.evaluate(now=datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc))
-        self.assertIn("move_worth_making", self.fired(evaluation))
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
+    def test_a_move_over_the_bar_says_it_clears_it(self):
+        self.assertIn("clears the 2.0 bar", self.block())
 
     def test_topping_the_list_is_not_enough(self):
-        """The recommender always emits a ranked list; the bar is what makes it advice."""
-        self.conn.execute(
-            "UPDATE projection SET expected_points = 1.3 WHERE element_id IN (16,17,18)")
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertTrue(evaluation.listing["moves"])          # a list still exists
-        self.assertNotIn("move_worth_making", self.fired(evaluation))
-        self.assertIn("under the", evaluation.silent["move_worth_making"])
-
-    def test_an_active_wildcard_stops_it_and_says_so(self):
-        """Hits cost nothing under a chip, so every candidate reads positive - and the
-        tool ranks single swaps while a wildcard rebuilds all fifteen. Wrong shape, not
-        merely optimistic."""
-        self.warehouse.wildcard()
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertTrue(evaluation.listing["moves"])
-        self.assertNotIn("move_worth_making", self.fired(evaluation))
-        self.assertIn("wildcard is active", evaluation.silent["move_worth_making"])
-
-    def test_a_free_hit_stops_it_too(self):
-        """The gate is on any transfer chip, not on the wildcard by name."""
-        self.warehouse.state(chips='[{"chip_type": "transfer", "name": "freehit", '
-                                   '"status_for_entry": "active"}]')
-        self.conn.commit()
-        self.assertNotIn("move_worth_making", self.fired(self.evaluate()))
-
-    def test_a_team_chip_does_not_stop_it(self):
-        """A bench boost changes what the squad scores, not what a move costs."""
-        self.warehouse.state(chips='[{"chip_type": "team", "name": "bboost", '
-                                   '"status_for_entry": "active"}]')
-        self.conn.commit()
-        self.assertIn("move_worth_making", self.fired(self.evaluate()))
-
-    def test_a_deadline_that_has_gone_stops_it_because_acting_is_impossible(self):
-        evaluation = self.evaluate(now=datetime(2026, 9, 5, 14, 0, tzinfo=timezone.utc))
-        self.assertNotIn("move_worth_making", self.fired(evaluation))
-        self.assertIn("deadline passed", evaluation.silent["move_worth_making"])
-
-    def test_zero_free_transfers_sends_the_whole_list_net_negative(self):
-        """The owner's second real state: every option is charged 4 points, nothing
-        survives it, `recommend` returns nothing, and nothing fires."""
-        self.warehouse.state(free_transfers=0)
-        self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertEqual(evaluation.listing["moves"], [])
-        self.assertEqual(self.fired(evaluation), [])
+        self.assertIn("under the 100.0 bar", self.block(min_net_xp=100))
 
     def test_the_threshold_is_overridable_from_the_environment(self):
-        with mock.patch.dict(os.environ, {brief.MIN_NET_XP_ENV: "5.0"}):
-            self.assertNotIn("move_worth_making", self.fired(self.evaluate()))
-        with mock.patch.dict(os.environ, {brief.MIN_NET_XP_ENV: "1.0"}):
-            self.assertIn("move_worth_making", self.fired(self.evaluate()))
+        with mock.patch.dict(os.environ, {brief.MIN_NET_XP_ENV: "100"}):
+            self.assertIn("under the 100.0 bar", self.block())
 
-    def test_the_fingerprint_ignores_an_expected_points_float_that_jitters(self):
-        """Prices tick and lineups firm up hourly. The move is the fact; its xP is not."""
-        before = [t.fingerprint for t in self.evaluate().triggers
-                  if t.name == "move_worth_making"]
-        self.conn.execute("UPDATE projection SET expected_points = expected_points + 0.01 "
-                          "WHERE element_id IN (16,17,18)")
+    def test_an_active_wildcard_is_said_beside_the_move(self):
+        self.warehouse.wildcard()
         self.conn.commit()
-        after = [t.fingerprint for t in self.evaluate().triggers
-                 if t.name == "move_worth_making"]
-        self.assertEqual(before, after)
-        self.assertTrue(all(f for f in after))
+        self.assertIn("wildcard active: single swaps, not a rebuild", self.block())
 
     def test_no_horizon_projected_is_a_sentence_not_a_traceback(self):
-        self.conn.execute("DELETE FROM projection WHERE gameweek = ?", (GAMEWEEK + 2,))
+        self.conn.execute("DELETE FROM projection WHERE gameweek > ?", (GAMEWEEK,))
         self.conn.commit()
-        evaluation = self.evaluate()
-        self.assertEqual(evaluation.listing["moves"], [])
-        self.assertIn("horizon", evaluation.silent["move_worth_making"])
+        move = [line for line in brief.render_block(self.evaluate())
+                if line.startswith("- **Move:**")][0]
+        self.assertIn("none - ", move)
 
-
-# --------------------------------------------------------------------------
-# Every trigger, together
-# --------------------------------------------------------------------------
 
 class AnotherGameweekTests(BriefTestCase):
     """`brief --gameweek N` for N other than the target: transfers are not priced.
@@ -671,61 +324,9 @@ class AnotherGameweekTests(BriefTestCase):
                                     learnings_dir=Path(self.tmp.name) / "learnings")
         self.assertEqual(evaluation.listing["moves"], [])
         self.assertIn(f"targets gameweek {GAMEWEEK}", evaluation.listing["reason"])
-        self.assertNotIn("move_worth_making", self.fired(evaluation))
-        self.assertNotIn("deadline_with_move", self.fired(evaluation))
 
     def test_the_target_itself_is_still_priced(self):
         self.assertTrue(self.evaluate().listing["moves"])
-
-
-class AllTriggersTests(BriefTestCase):
-
-    def all_four(self):
-        """A warehouse in which every one of the four fires at once."""
-        self.warehouse.healthy()
-        self.conn.execute("DELETE FROM my_squad WHERE element_id = 15")  # -> status FAIL
-        self.warehouse.flag(4, "i")
-        self.conn.commit()
-
-    def test_every_fired_trigger_has_an_action_and_a_lock_screen_headline(self):
-        self.all_four()
-        triggers = self.evaluate().triggers
-        self.assertGreaterEqual(len(triggers), 2)
-        for trigger in triggers:
-            with self.subTest(trigger=trigger.name):
-                self.assertTrue(trigger.action.strip())
-                self.assertLessEqual(len(trigger.headline), brief.HEADLINE_MAX)
-                self.assertNotIn("\n", trigger.headline)
-                self.assertIn(trigger.name, brief.TRIGGER_NAMES)
-
-    def test_fingerprints_are_unique_within_a_run(self):
-        self.all_four()
-        fingerprints = [t.fingerprint for t in self.evaluate().triggers]
-        self.assertEqual(len(fingerprints), len(set(fingerprints)))
-
-    def test_every_fingerprint_is_stable_across_runs_at_different_moments(self):
-        self.all_four()
-        first = [t.fingerprint for t in self.evaluate(
-            now=datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc)).triggers]
-        second = [t.fingerprint for t in self.evaluate(
-            now=datetime(2026, 9, 4, 16, 0, tzinfo=timezone.utc)).triggers]
-        self.assertEqual(first, second)
-
-    def test_no_fingerprint_carries_a_snapshot_id_or_a_timestamp(self):
-        """Both drift on every hourly run, and either would make silence impossible."""
-        self.all_four()
-        snapshot_id = str(self.warehouse.snapshot_id)
-        for trigger in self.evaluate().triggers:
-            with self.subTest(trigger=trigger.name):
-                self.assertNotIn("2026", trigger.fingerprint)
-                self.assertNotIn(f"snapshot{snapshot_id}", trigger.fingerprint)
-
-    def test_every_trigger_either_fires_or_records_why_it_did_not(self):
-        """The point of the whole thing: silence has to be accountable."""
-        self.warehouse.healthy()
-        evaluation = self.evaluate()
-        accounted = {t.name for t in evaluation.triggers} | set(evaluation.silent)
-        self.assertEqual(accounted, set(brief.TRIGGER_NAMES))
 
 
 # --------------------------------------------------------------------------
@@ -745,19 +346,18 @@ class RenderBriefTests(BriefTestCase):
         self.conn.commit()
         text = self.render()
         self.assertIn("WILDCARD ACTIVE", text)
-        self.assertLess(text.index("WILDCARD ACTIVE"), text.index("## What needs you"))
+        self.assertLess(text.index("WILDCARD ACTIVE"), text.index("- **Move:**"))
         self.assertLess(text.index("WILDCARD ACTIVE"), text.index("Transfers ranked"))
 
-    def test_what_needs_you_comes_before_the_tables(self):
+    def test_the_block_comes_before_the_tables(self):
         self.warehouse.healthy()
         text = self.render()
-        self.assertLess(text.index("## What needs you"),
-                        text.index("## Transfers ranked"))
-        self.assertLess(text.index("## What needs you"), text.index("## Warehouse"))
+        self.assertLess(text.index("- **Move:**"), text.index("## Transfers ranked"))
+        self.assertLess(text.index("- **Move:**"), text.index("## Warehouse"))
 
     def test_the_ranked_table_says_how_many_rivals_own_each_player(self):
         """Ownership is measured against the people you race, so the table shows the
-        count for both sides of every move, and the fired trigger's body carries it."""
+        count for both sides of every move, and the block's Ownership line carries it."""
         self.warehouse.healthy()
         text = self.render()
         self.assertIn("| rivals own |", text)
@@ -774,31 +374,26 @@ class RenderBriefTests(BriefTestCase):
         self.assertNotIn("rivals (", text)
         self.assertRegex(text, r"\| - \| \S+ \| - \|")
 
-    def test_nothing_firing_still_names_what_was_checked(self):
-        """A wildcard week, days before the deadline: the exact state the real warehouse
-        was in when this was written, and the one where an unexplained "nothing" would
-        be indistinguishable from a brief that checked nothing."""
+    def test_a_quiet_week_still_has_every_line_of_the_block(self):
+        """A wildcard week, days before the deadline: a missing line would be
+        indistinguishable from a brief that checked nothing."""
         self.warehouse.healthy()
         self.warehouse.wildcard()
         self.conn.commit()
         text = self.render(now=datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc))
-        self.assertIn("Nothing needs you", text)
-        # Every trigger is accounted for under Push, by its plain title, and the code
-        # name a person would have to decode is not on the page.
-        for name in brief.TRIGGER_NAMES:
-            self.assertIn(f"- {brief.TRIGGER_TITLES[name]} — **did not fire**:", text)
-            self.assertNotIn(f"`{name}`", text)
-        self.assertIn("- **Push:** nothing fired - all 5 triggers checked", text)
         self.assertIn("- **Chips:** wildcard active this gameweek", text)
+        self.assertIn("- **Learnings:** none proposed", text)
+        self.assertNotIn("Push", text)
+        self.assertNotIn("notif", text.lower())
 
     def test_the_block_opens_every_brief_with_the_same_lines_in_the_same_order(self):
         self.warehouse.healthy()
         text = self.render()
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
-        self.assertEqual(labels[:9], ["- **Move", "- **Ownership", "- **Captain",
+        self.assertEqual(labels[:8], ["- **Move", "- **Ownership", "- **Captain",
                                       "- **Chips", "- **Availability", "- **Deadline",
-                                      "- **Push", "- **Learnings", "- **Data"])
+                                      "- **Learnings", "- **Data"])
         self.assertIn("- **Captain:** P1 (C01), 1.0 xP; next P2 1.0 - no armband captured",
                       text)
         self.assertIn("- **Learnings:** none proposed", text)
@@ -821,8 +416,7 @@ class RenderBriefTests(BriefTestCase):
         self.assertIn("- **Learnings:** 2 proposed - players almost certain to start "
                       "scored about half a point per game more than the model expected "
                       "(GW3 (deadline 5 Sep 09:30) and GW4 (deadline unknown) both; 0001, 0002)", text)
-        self.assertNotIn("P(start)", text.split("## What needs you")[0])
-        self.assertLess(text.index("- **Move:**"), text.index("## What needs you"))
+        self.assertNotIn("P(start)", text.split("## Deadline and transfers")[0])
 
     def test_the_block_names_who_cannot_play_and_why(self):
         self.warehouse.healthy()
@@ -833,60 +427,22 @@ class RenderBriefTests(BriefTestCase):
         self.assertIn("- **Availability:** 13 of 15 - P4 (doubtful, 25% to play), "
                       "P5 (suspended)", text)
 
-    def test_a_fired_push_with_no_topic_is_not_delivered_and_the_data_line_says_so(self):
-        """Fired-but-unsent must never read like nothing-to-say: the Push line, the
-        Push list and the Data line all carry it."""
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "i", news="Hamstring")
-        self.conn.commit()
-        text = self.render(notifications_configured=False)
-        self.assertIn("- **Push:** fired, not delivered: A player you own cannot play",
-                      text)
-        self.assertIn("- A player you own cannot play — **fired, not delivered**: no ntfy "
-                      "topic in fpl-agent.ini", text)
-        self.assertIn("a push fired and did not reach your phone (see Push)", text)
-
-    def test_a_fired_push_with_a_topic_but_no_record_names_notify(self):
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "i", news="Hamstring")
-        self.conn.commit()
-        text = self.render(notifications_configured=True)
-        self.assertIn("**fired, not delivered**: not in the sent record; `fpl-agent "
-                      "notify` sends it", text)
-
-    def test_a_recorded_push_reads_sent_with_when(self):
-        self.warehouse.healthy()
-        self.warehouse.flag(4, "i", news="Hamstring")
-        self.conn.commit()
-        evaluation = self.evaluate()
-        for trigger in evaluation.triggers:      # the injury, and both deadline triggers
-            storage.record_notification(self.conn, trigger.fingerprint, trigger.name,
-                                        trigger.headline, "ntfy", GAMEWEEK)
-        self.conn.commit()
-        text = self.render(notifications_configured=True)
-        self.assertRegex(text, r"- \*\*Push:\*\* sent: A player you own cannot play "
-                               r"\(\w{3} \d\d \w{3} \d\d:\d\d UTC\)")
-        self.assertIn("— **sent**: ", text)
-        self.assertNotIn("did not reach your phone", text)
-
-    def test_a_fired_trigger_is_rendered_with_its_action(self):
+    def test_an_unavailable_player_is_reported_on_the_availability_line(self):
         self.warehouse.healthy()
         self.warehouse.flag(4, "i", news="Hamstring")
         self.conn.commit()
         text = self.render()
-        self.assertIn("**Do:**", text)
-        self.assertIn("P4", text)
+        self.assertIn("- **Availability:** 14 of 15 - P4 (injured)", text)
+        self.assertIn("## Squad availability", text)
 
-    def test_a_falling_holding_is_in_the_brief_and_is_not_a_trigger(self):
-        """The owner's explicit choice: the most frequent signal stays off the phone."""
+    def test_a_falling_holding_is_in_the_brief_as_a_watch(self):
         self.warehouse.healthy()
         self.warehouse.falling(3)
         self.conn.commit()
         text = self.render()
         section = text.split("## Price watch")[1].split("\n## ")[0]
         self.assertIn("P3", section)
-        self.assertIn("not** a notification", " ".join(section.split()))
-        self.assertNotIn("price", " ".join(t.name for t in self.evaluate().triggers))
+        self.assertIn("a watch, not a reason to move", " ".join(section.split()))
 
     def test_an_ungraded_warehouse_says_so_rather_than_showing_an_empty_table(self):
         self.warehouse.healthy()
@@ -1030,16 +586,10 @@ class CommandTests(BriefTestCase):
         self.assertTrue((self.logs / "gw04.md").exists())
 
     def test_dry_run_prints_and_writes_nothing(self):
-        code, out, err = self.run_cli("--dry-run")
+        code, out, _ = self.run_cli("--dry-run")
         self.assertEqual(code, 0)
         self.assertFalse(self.logs.exists())
         self.assertIn("# Gameweek 3 (deadline 5 Sep 09:30) brief", out)
-        self.assertIn("DID NOT FIRE", err)
-
-    def test_dry_run_explains_every_trigger_that_stayed_silent(self):
-        _, _, err = self.run_cli("--dry-run")
-        for name in brief.TRIGGER_NAMES:
-            self.assertIn(name, err)
 
     def test_a_missing_warehouse_is_a_sentence_and_exit_two(self):
         out, err = io.StringIO(), io.StringIO()

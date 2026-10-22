@@ -34,13 +34,9 @@ MAPPING: dict[tuple[str, str], str] = {
     ("auth", "client_id"): "FPL_OAUTH_CLIENT_ID",
     ("rivals", "leagues"): "FPL_RIVAL_LEAGUES",
     ("brief", "min_net_xp"): "FPL_BRIEF_MIN_NET_XP",
-    # The ntfy topic is a credential: ntfy has no accounts, so knowing a topic is enough
-    # to read every message posted to it. Hence its place in SECRET_ENV below.
-    ("notify", "ntfy_server"): "FPL_NTFY_SERVER",
-    ("notify", "ntfy_topic"): "FPL_NTFY_TOPIC",
 }
 
-SECRET_ENV = {"FPL_PASSWORD", "FPL_EMAIL", "FPL_NTFY_TOPIC"}
+SECRET_ENV = {"FPL_PASSWORD", "FPL_EMAIL"}
 
 RIVAL_LEAGUES_ENV = "FPL_RIVAL_LEAGUES"
 

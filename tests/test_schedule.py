@@ -156,28 +156,16 @@ class PipelineTests(ScheduleTestCase):
 
 
 class TailTests(ScheduleTestCase):
-    """The brief and the notifier, which are Steps now rather than a special case."""
+    """The brief is a Step, tolerated, and last so it describes what the run left behind."""
 
-    def test_both_tolerate_failure(self):
-        settings = schedule.Settings(notifications_configured=True)
-        plan = schedule.due(now=NOW, warehouse=schedule.read(self.conn),
-                            settings=settings)
-        tail = [step for step in plan.steps if step.command in ("brief", "notify")]
-        self.assertEqual([step.command for step in tail], ["notify", "brief"])
-        self.assertTrue(all(step.tolerated for step in tail))
-
-    def test_they_come_last_so_they_describe_what_the_run_left_behind(self):
-        # The push before the brief: the brief's Push line reads "sent <when>" from the
-        # notification table, which only holds a row once notify has run.
-        plan = schedule.due(now=NOW, warehouse=schedule.read(self.conn),
-                            settings=schedule.Settings(notifications_configured=True))
-        self.assertEqual(commands(plan)[-2:], ["notify", "brief"])
-
-    def test_an_unconfigured_topic_skips_the_push_rather_than_failing_it(self):
-        # notify is opt-in: a host that has never set a topic must not be sent an error.
+    def test_the_brief_tolerates_failure_and_comes_last(self):
         plan = self.due()
-        self.assertNotIn("notify", [step.command for step in plan.steps])
-        self.assertTrue(any(skip.what == "notify" for skip in plan.skipped), plan.skipped)
+        self.assertEqual(commands(plan)[-1], "brief")
+        self.assertTrue(plan.steps[-1].tolerated)
+
+    def test_nothing_is_pushed(self):
+        self.assertNotIn("notify", [step.command for step in self.due().steps])
+        self.assertFalse(hasattr(schedule.Settings(), "notifications_configured"))
 
     def test_every_run_writes_a_brief(self):
         self.kickoff(80)

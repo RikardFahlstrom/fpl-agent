@@ -81,14 +81,10 @@ exchange - and answers in one block: is the latest snapshot complete, are projec
 attached to it under the current model, are the actuals current, which gameweek's
 lineups will `project` find, and will the next run need a browser. It fixes nothing.
 
-It is the last step of the plan that checks anything - only the brief and the push follow
+It is the last step of the plan that checks anything - only the brief follows
 it - and `make now` runs it. Every command before it reports its own success; `status` is
 the one that checks the state they claim to have left behind - which is the whole lesson of
 this project's bug history. `make status` runs it alone and exits 7 on an inconsistency.
-
-It is also the first of the four things the notifier pushes
-on: `status.gather()` returns the checks as data rather than as text, so the log line and
-the push message cannot disagree about what failed.
 
 
 ## Locking, and why it is about the credential
@@ -108,100 +104,6 @@ For the same reason: **do not copy the token cache between machines.** Two hosts
 refreshing the same token fight, and both lose.
 
 
-## Notifications
-
-Both jobs end in `fpl-agent notify`. It asks `brief.evaluate` what is worth interrupting
-a person for, drops anything it has already said, and pushes the rest to
-[ntfy](https://ntfy.sh) - no account, no new dependency, one HTTP POST per message.
-
-Four things push, and nothing else. Everything the agent knows goes in `logs/gwNN.md`;
-only these four are worth a phone buzzing:
-
-| Trigger | Priority | Why it is worth a notification |
-| --- | --- | --- |
-| `status_failed` | 4 | The scheduled run is broken and nothing else can be trusted. |
-| `squad_player_unavailable` | 4 | A player you own cannot play. These are points already lost. |
-| `deadline_with_move` | 4 | The deadline is inside 24 hours, a free transfer is unused, and there is somewhere to spend it. |
-| `move_worth_making` | 3 | A move clears the net-xP bar on its own, deadline or no deadline. Standing advice, so it arrives quietly. |
-
-**Every message ends with the action.** That is the whole discipline of the thing: the
-risk is that pushes become noise you swipe away, and the cure is that the last line of
-each one is the single thing being asked of you.
-
-**You are told each thing once.** The `deadline` job runs hourly, so a fact that fires at
-09:00 is still firing at 15:00. Each trigger carries a fingerprint built from identity
-alone - the gameweek, the player, the `out -> in` pair - and the fingerprints already
-delivered are stored in the warehouse's `notification` table. A fingerprint that is there
-is dropped silently; a fingerprint that changes (a different top move, a different player
-injured) is news and is sent. Nothing is recorded until the server has accepted the
-message, so a failed push is retried on the next run rather than lost.
-
-To see what the warehouse currently believes without sending anything:
-
-```sh
-make notify DRY_RUN=--dry-run          # or: fpl-agent notify --dry-run
-```
-
-It prints every message it would send, every fingerprint it is suppressing as already
-sent, and - for each trigger that did not fire - the condition that stopped it. A run
-that sends nothing is a correct run, and this is how you tell it from a broken one.
-
-### Turning it on
-
-1. **Generate a topic, and treat it as a password.** ntfy has no accounts: the topic *is*
-   the address and the credential together, and anyone who knows it can subscribe and
-   read every message on it - your squad, your transfers, when you are about to act. So
-   it must be long and random. Not `fpl`, not your name.
-
-   ```bash
-   python3 -c "import secrets; print('fpl-' + secrets.token_urlsafe(24))"
-   ```
-
-2. **Put it in `fpl-agent.ini`** (or set `FPL_NTFY_TOPIC`; the environment wins):
-
-   ```ini
-   [notify]
-   ntfy_topic = fpl-<the long random string from step 1>
-   ; ntfy_server = https://ntfy.sh          ; only if you self-host
-   ```
-
-   It is in `config.SECRET_ENV`, so the ini loader logs it as `***` and `notify` prints
-   only the server host and a redacted topic. Keep `chmod 600` on the file.
-
-3. **Subscribe on the phone.** Install the ntfy app, add that exact topic. Nothing else
-   is needed - no login, no key.
-
-4. **Check it end to end**, without waiting for a deadline:
-
-   ```sh
-   fpl-agent notify --dry-run       # what would go out, and what is being suppressed
-   fpl-agent notify                 # actually send; the phone should buzz
-   fpl-agent notify                 # and this one sends nothing. That is the dedupe.
-   ```
-
-If you would rather not use the public instance, self-host ntfy and point
-`ntfy_server` at it. The topic is still a secret there unless you have put access
-control in front of it.
-
-Related: `[brief] min_net_xp` (`FPL_BRIEF_MIN_NET_XP`) is the net expected-points bar
-`move_worth_making` has to clear, default 2.0 over the three-gameweek horizon. Raise it
-if the pushes feel like noise.
-
-### Why a failed push cannot fail the job
-
-`notify` runs at the tail of `daily` and `deadline` (just before the brief), and its exit
-code is reported only when the job itself succeeded:
-
-```
-job's code != 0  ->  exit the job's code (notify's is logged and discarded)
-job's code == 0  ->  exit notify's code (0, or 8 if a send failed)
-```
-
-The snapshot is the irrecoverable asset; a notification is not. A dead ntfy server must
-never make a `daily` run that captured the market look like one that lost it. And if no
-topic is configured, the schedule skips notify with a line saying so rather than
-mailing a failure every hour — `notify.target_from_env` is what it asks.
-
 ## Exit codes
 
 Each code names a distinct failure, so a run's exit is actionable without opening the log:
@@ -210,19 +112,18 @@ Each code names a distinct failure, so a run's exit is actionable without openin
 | --- | --- | --- |
 | 0 | Success, or nothing to do | Nothing. |
 | 1 | `settle`: the gameweek has not finished, or there was nothing to grade | Nothing. This is the normal answer most mornings. |
-| 2 | `snapshot`: auth is not configured. `status` and `notify`: the warehouse could not be read at all, or `notify` has no topic configured | Fix `fpl-agent.ini` or the environment; for `status` and `notify`, the database is missing or is not a warehouse. |
+| 2 | `snapshot`: auth is not configured. `status`: the warehouse could not be read at all | Fix `fpl-agent.ini` or the environment; for `status`, the database is missing or is not a warehouse. |
 | 3 | `snapshot`: auth is configured but no session could be established | The refresh token has died and the browser fallback failed. Log in once by hand. |
 | 4 | `snapshot`: the squad the preflight promised was not captured | Usually `my-team/` returning 403 during an FPL maintenance window. The market half was kept; re-run later. |
 | 5 | Backfill failed for more than 5% of players | Transient FPL trouble. Re-run; if it persists, the API shape may have changed. |
 | 6 | `settle`: the gameweek is finished but the actuals are not there to grade it | Run the backfill first. Never force this - grading against absent actuals is the bug this code exists to prevent. |
 | 7 | `status`: the warehouse disagrees with itself | Read the `FAIL` lines - each names what is wrong and what to run. Nothing is broken *by* status; it only reports. |
-| 8 | `notify`: a push was not accepted by the server | The message was **not** recorded as sent, so the next run will try it again. If it persists, check the ntfy server and the topic. Never masks the job's own failure - see below. |
 
 Codes 3 and 4 are the two worth acting on first. 4 in particular is the one that
 used to exit 0.
 
 Codes are not shared between commands, deliberately: a 7 means `status` and nothing else,
-an 8 means `notify` and nothing else. 9 is `schedule`'s own: another run holds the lock. Code 2 is the one exception, and it says the same thing
+8 is retired. 9 is `schedule`'s own: another run holds the lock. Code 2 is the one exception, and it says the same thing
 in every command that returns it: the thing this needed was not configured, or could not
 be read at all.
 
