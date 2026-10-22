@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from fpl_agent import config
 from fpl_agent.engine import status, storage, warehouse
 from fpl_agent.engine.projection import MODEL_VERSION
 from fpl_agent.engine.snapshot import SQUAD_SIZE
@@ -525,6 +526,13 @@ class RivalTests(StatusTestCase):
         rivals = self.by_label()["rivals"]
         self.assertEqual(rivals.level, status.WARN)
         self.assertIn("no picks for gameweek 2 from p", rivals.detail)
+        self.assertIn("make rivals", rivals.detail)
+
+    def test_standings_that_cannot_set_the_stance_warn(self):
+        with mock.patch.dict(os.environ, {config.RIVAL_LEAGUES_ENV: "1"}):
+            rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.WARN)
+        self.assertIn("stance withheld", rivals.detail)
         self.assertIn("make rivals", rivals.detail)
 
     def test_the_clean_line_counts_managers(self):
