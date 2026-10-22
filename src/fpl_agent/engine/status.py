@@ -555,8 +555,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                              "never exchanged)")
     parser.add_argument("--hours-to-deadline", action="store_true",
                         help="print the hours until the target gameweek's deadline and exit; this is "
-                             "what deploy/fpl-cron.sh consumes so the schedule and the "
-                             "engine cannot disagree about when to project")
+                             "the schedule reads the same rule, so it and this command cannot "
+                             "disagree about the deadline")
     args = parser.parse_args(argv)
 
     config.load()

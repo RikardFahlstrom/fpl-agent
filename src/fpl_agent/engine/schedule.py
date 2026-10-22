@@ -1,7 +1,7 @@
 """What is due, as data.
 
-The unattended half of this project - what runs, when, in what order - lived in a shell
-script, and nothing it decided could be tested. Every job this module knows about had the
+What a run does - what is due, in what order - lived in a shell script, and nothing it
+decided could be tested. Every job this module knows about had the
 same three questions asked of it in bash and answered slightly differently in each place:
 what is due, in what order, and what was deliberately not done.
 

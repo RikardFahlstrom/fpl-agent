@@ -197,12 +197,12 @@ The plan sketched one skill per engine command. What was built is three, split b
 
 | Skill | Does |
 |---|---|
-| `/fpl-deadline` | `make deadline` — the deadline half of the schedule, when one is near — then how to read the ranking and when not to act. |
+| `/fpl-deadline` | `make now` before a deadline, then how to read the Instructions and when not to act. |
 | `/fpl-settle` | `make settle GW=n`: grade projections, read the calibration slices, decide whether a deviation is a finding or noise. |
 | `/fpl-verify` | Check an assumption against the live API when a result looks wrong. |
 
 Recording is deliberately not in `/fpl-deadline`: `make record` is a separate step,
-because the log is a claim about the move you made, not the one that was ranked first.
+because the log is a claim about what you did, not what was recommended.
 Calibration trend across model versions — the old `/fpl-review` — is not built.
 
 Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
@@ -214,9 +214,10 @@ Plus **`CLAUDE.md`** at the root holding the rules that are easy to violate:
 
 That list has since grown; `CLAUDE.md` is the authority, not this section.
 
-The scheduled half is built: `deploy/fpl-cron.sh` runs the nightly snapshot and the
-deadline cycle unattended, guarded by `FPL_AUTO_LOGIN`. It never executes a transfer;
-nothing in the codebase can. See `docs/SCHEDULING.md`.
+The run is built, and is by hand: `make now` is the one job - capture, settle, update every
+number, then the Instructions (moves, chip, captain, vice-captain, XI, bench), stored per run
+and graded by `settle`. An unattended cron version existed and was deleted; nothing ever ran
+it. It never executes a transfer; nothing in the codebase can. See `docs/SCHEDULING.md`.
 
 ## 7. Phasing
 
@@ -231,12 +232,11 @@ nothing in the codebase can. See `docs/SCHEDULING.md`.
 
 P1 is the only phase with a real deadline. Everything after it can take its time.
 
-Unattended running was not a phase in the original plan and is now the point of the
-system: `deploy/fpl-cron.sh`, the `status` command and the exit-code table in
-`docs/SCHEDULING.md` are what a run with nobody watching needs to fail loudly.
+The `status` command and the exit-code table in `docs/SCHEDULING.md` are what a run needs to
+fail loudly rather than quietly report success.
 
 Conventions live in `CLAUDE.md`, the runnable sequences in the `Makefile`, the judgement
-in `.claude/skills/`, and the schedule in `docs/SCHEDULING.md`.
+in `.claude/skills/`, and what a run does in `docs/SCHEDULING.md`.
 
 ## 8. Assumptions
 

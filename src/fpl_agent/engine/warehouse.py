@@ -40,7 +40,7 @@ The second family is the per-gameweek ledger, `gameweeks`: one eager read of wha
 warehouse holds for every round, from which "finished" and "settleable" are derived. It
 exists for the same reason as the first. "Grade a gameweek only once it has finished"
 had three homes - `settle`'s predicates, `status` restating them for every round, and
-`schedule` asking `settle` through a connection - and a fourth, `deploy/fpl-cron.sh`'s
+`schedule` asking `settle` through a connection - and a fourth, the old shell entry point's
 own SQL, is the one that offered a round still being played and stepped over an ungraded
 one. The ledger is a value: `settle`, `status` and `schedule.due` all read it, and none
 of them holds a rule of its own.

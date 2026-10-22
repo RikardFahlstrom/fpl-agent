@@ -14,8 +14,8 @@ half-blind unless explicitly told to.
     fpl-agent snapshot --backfill       # also pull per-gameweek actuals
     fpl-agent snapshot --backfill-only  # actuals only, no new snapshot
 
-The default skip is a guard for a hand-run repeat, not the behaviour the scheduled
-callers want: both `make snapshot` and `deploy/fpl-cron.sh` pass --force deliberately.
+The default skip is a guard for a hand-run repeat, not the behaviour a run wants:
+both `make snapshot` and `make now` pass --force deliberately.
 Prices resolve nightly and predicted lineups firm up through matchday, so a second
 capture on the same day is a different market, not a duplicate of the first.
 

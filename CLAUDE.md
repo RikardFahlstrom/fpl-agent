@@ -1,22 +1,25 @@
 # fpl-agent
 
-An FPL decision engine; `README.md` covers install and use. `src/fpl_agent/engine/` is
-the real work and `api/` the FPL side of the wire it reads through.
-`learnings/` and `logs/` are the committed reasoning trail: what `settle --learn` and `recommend --record` leave there
-is committed, not scratch.
+An FPL decision engine, run by hand; `README.md` covers install and use. A run produces
+**Instructions** for the target gameweek (`CONTEXT.md`): moves, chip, captain, vice-captain,
+XI and bench order. `src/fpl_agent/engine/` is the real work and `api/` the FPL side of the
+wire it reads through. `learnings/` and `logs/` are the committed reasoning trail: what
+`settle --learn` and `make record` leave there is committed, not scratch.
 
 ## Commands
 
-**`make now` is the one to reach for.** It asks the warehouse what is due and does it;
-safe on a day when the answer is nothing. `make status` is the read-only twin, ending on a
+**`make now` is the only entry point, and it runs one job.** It captures first, settles any
+gameweek that can be graded, refreshes every number, then produces the Instructions - always,
+with the hours to the deadline a caveat and not a gate, and a locked gameweek said to be
+locked. Safe to run any number of times. `make status` is the read-only twin, ending on a
 `next:` line. `make -n` or the `##` comments in the Makefile list the rest.
 
 Every other target is a step, and the order matters: actuals feed the projection's rates,
 rivals must exist before ownership means anything, and `settle` reads `finished` from the
 warehouse, so fixtures must be re-snapshotted before a gameweek can be graded. **Bare
 `make` captures live** — the first target is `snapshot`. `/fpl-deadline` and `/fpl-settle`
-wrap the hand-driven halves with what to check and when not to act. Nothing here ever
-executes transfers.
+wrap the two hand-driven moments, before a deadline and after a gameweek, with what to check
+and when not to act. Nothing here ever executes transfers.
 
 ## Verify the effect, not the invocation
 
@@ -42,17 +45,17 @@ you wanted, not the exit code.
   place with no history; a gameweek without a snapshot can never be learned from.
 - **Absence of a row is data.** No `player_gameweek` row after a finished gameweek is a
   zero; a player in no rival squad is owned by 0%.
-- **`make record` only when the user says they made the transfer.** Recording is a claim
-  about what they did, not a step in a plan.
+- **`make record` only when the user says what they did.** Recording is a claim about what
+  they did, not a step in a plan: moves by number (`--all` only if they made all of it),
+  and the captain and chip actually played, stored beside the recommended ones.
 - **Credentials stay in `fpl-agent.ini`** (gitignored). Point at the file or the browser
   login flow; the values never enter the conversation.
 
 ## Further reading
 
-- `CONTEXT.md` — before using job, due, Plan, Step, capture in code or prose.
+- `CONTEXT.md` — before using Instructions, stance, job, due, Plan, Step, capture in code or prose.
 - `docs/FACTS.md` — before working in `engine/`; per-subsystem facts and where they live.
-- `docs/SCHEDULING.md` — before touching cron, exit codes, or `deploy/fpl-cron.sh`.
-- `docs/schedule-equivalence.md` — before changing `engine/schedule.py`.
+- `docs/SCHEDULING.md` — before touching the run, its lock, or the exit codes.
 - `docs/PLAN.md` — the roadmap; before picking up new work.
 - `docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md` — before filing,
   labelling or triaging on GitHub, or looking for ADRs.

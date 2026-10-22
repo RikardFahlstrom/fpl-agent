@@ -451,8 +451,8 @@ def create_snapshot(conn: sqlite3.Connection, bootstrap: dict, kind: str = "manu
 def snapshot_taken_today(conn: sqlite3.Connection) -> bool:
     """Whether a snapshot already exists for today (UTC).
 
-    This guards a hand-run repeat, not the scheduled path: `make snapshot` and
-    `deploy/fpl-cron.sh` both pass --force, because a later capture on the same day is a
+    This guards a hand-run repeat, not the run's path: `make snapshot` and
+    `make now` both pass --force, because a later capture on the same day is a
     different market - prices resolve nightly and predicted lineups firm up through
     matchday - and a snapshot skipped at the deadline projects over stale state.
     """
