@@ -157,7 +157,7 @@ def record_lineups(conn: sqlite3.Connection, snapshot_id: int, gameweek: int,
     match belongs. RotoWire shows the next round to be played; FPL flips `is_next` the
     instant a deadline passes. So every snapshot taken between the gameweek N deadline
     and that round's last kickoff - a Saturday night, any Friday-to-Monday round, and
-    precisely when the hourly `deadline` cron fires - filed gameweek N lineups under
+    precisely when a run is likely to be made - filed gameweek N lineups under
     N + 1. `lineup_start_rates` takes the latest snapshot for a gameweek, so a later
     correct scrape usually overwrote it, but only if one happened before `project` ran.
 

@@ -10,6 +10,13 @@ calibration slices and drafts a learning file. `make now` does the same when the
 warehouse says a gameweek is ready, after a fresh capture - reach for it when you are not
 sure a gameweek is settleable yet, and for `make settle` when you know which one.
 
+After the calibration, settle **grades the Instructions**: the last record made before the
+deadline, in the points players actually scored - the captain against the other starters,
+the XI and the bench order against the best possible from the same fifteen, and the moves
+and lineup (after hits) against doing nothing. Read it as one gameweek of evidence, no more.
+If no Instructions were stored before the deadline it says so; do not reconstruct one. The
+record that was graded is never altered by grading.
+
 ## Check the warehouse first
 
 Run `.venv/bin/fpl-agent status` **before `make settle`.** It is read-only, and it says

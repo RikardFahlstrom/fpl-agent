@@ -252,7 +252,7 @@ async def _refresh_only(args) -> int:
     """`--standings-only`: the table, from a bare client, and nothing else.
 
     Exits 1 when no league is known, the way `settle` exits 1 with nothing to grade:
-    the schedule only plans this step once a league row exists, so from cron a 1 here
+    the schedule only plans this step once a league row exists, so a 1 here from a run
     means something real rather than a host that has never run `rivals`.
     """
     conn = storage.connect(args.db)

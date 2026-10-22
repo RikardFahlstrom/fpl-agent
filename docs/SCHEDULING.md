@@ -11,7 +11,9 @@ output and makes the move. No code path executes a transfer.
 2. refresh the league table and, when they are behind, the rival picks;
 3. settle every gameweek that is gradable, oldest first;
 4. rank, then check the state the run left behind with `status`;
-5. write the brief.
+5. work out the **Instructions** - the stance, the chip against its alternatives, the
+   moves, the starting eleven, the captain, the vice-captain and the bench - print them,
+   write the brief, and append one record of them to the warehouse for `settle` to grade.
 
 `make now DRY=--dry-run` shows the decision without acting on it.
 

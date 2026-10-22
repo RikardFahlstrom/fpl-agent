@@ -4,7 +4,7 @@ self-inconsistent.
 
 A Stop hook. It fires when the assistant has finished replying, which is the last
 moment before the inconsistency becomes something you discover on the next
-`make deadline` instead of now.
+`make now` instead of now.
 
 Why this check and not a linter: every serious bug in this project was semantic -
 a projection graded against actuals that did not exist, a snapshot that reported

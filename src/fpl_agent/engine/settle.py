@@ -83,7 +83,7 @@ def settleable_gameweeks(conn: sqlite3.Connection,
     """Every gameweek this command would actually grade, oldest first.
 
     The one definition of "ready to settle", so that the scheduler, `status` and settle
-    itself cannot drift apart. They already did once: `deploy/fpl-cron.sh` asked its own
+    itself cannot drift apart. They already did once: the old shell entry point asked its own
     SQL for the highest gameweek with *any* finished fixture, which on the Saturday of
     gameweek 4 meant offering a round still being played, failing on it, and stepping
     over an ungraded gameweek 3 that then never got graded at all. Three statements of
@@ -344,7 +344,7 @@ def draft_learning(slices: dict[str, list[Slice]], gameweek: int,
     return path
 
 
-# Exit codes, because an unattended run is read by its status and not its log: 1 the
+# Exit codes, because a run is read by its status and not only its log: 1 the
 # gameweek is not gradeable, 5 the backfill lost too many players to trust it (the same
 # code snapshot returns for the same condition), 6 the round's actuals were never fetched.
 async def _run(args) -> int:
@@ -421,8 +421,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--list", action="store_true",
         help="print the gameweeks that are ready to grade, oldest first, and exit; "
-             "this is what deploy/fpl-cron.sh consumes so the schedule and the engine "
-             "cannot disagree about what is settleable")
+             "the schedule and the engine read the same rule, so they cannot "
+             "disagree about what is settleable")
     parser.add_argument("--model-version", default=MODEL_VERSION)
     parser.add_argument("--learn", action="store_true", help="draft a learning file")
     parser.add_argument("--learnings", type=Path, default=LEARNINGS_DIR)

@@ -1,14 +1,18 @@
 # fpl-agent
 
-A Fantasy Premier League decision engine. It captures the market daily, projects expected
-points for every player, ranks transfers against your own league's ownership, and grades
-its own projections once a gameweek finishes.
+A Fantasy Premier League decision engine. Run by hand before a deadline, it captures the
+market, projects expected points for every player, and produces one set of **Instructions**
+for the gameweek — the transfers to make (possibly several, possibly none), the chip to play
+or to hold, the captain and vice-captain, the starting eleven and the order of the bench —
+chosen for where you stand in your own league. After the gameweek it grades its projections
+and its Instructions against what happened.
 
 **No AI subscription is required to run it.** The engine is plain Python and calls no
-language model: `make deadline`, `make settle` and the unattended cron jobs need no Claude
-subscription, no API key and no AI tool of any kind. The `.claude/skills/` directory adds
-judgement on top for anyone who runs it from Claude Code, and is the only part that needs
-one.
+language model: `make now`, `make settle` and `make record` need no Claude subscription, no
+API key and no AI tool of any kind. The `.claude/skills/` directory adds judgement on top
+for anyone who runs it from Claude Code, and is the only part that needs one.
+
+Nothing here ever executes a transfer. The agent tells you what to do; you do it.
 
 ## Install
 
@@ -19,37 +23,12 @@ which owns the virtualenv and the lockfile:
 curl -LsSf https://astral.sh/uv/install.sh | sh    # installs uv to ~/.local/bin
 ```
 
-Debian 11 and Ubuntu 20.04 ship Python 3.9, which `uv sync` refuses. `uv python install 3.12`
-fetches a newer interpreter without touching the system one.
-
 ```bash
 git clone git@github.com:RikardFahlstrom/fpl-agent.git
 cd fpl-agent
 uv sync                                    # creates .venv, which the Makefile expects
 uv run playwright install chromium         # only for the first credential login
 ```
-
-On a server, clone over HTTPS instead — `https://github.com/RikardFahlstrom/fpl-agent.git`.
-A scheduled `git pull` cannot answer a passphrase prompt, so SSH there means a key with no
-passphrase or an agent that has to survive reboots. The server only ever reads this repo.
-The crontab examples below assume it is checked out at `/srv/fpl-agent`; anywhere the
-service user can write is fine, as long as the paths match.
-
-On a Linux box, one system package first: `flock`, from `util-linux`, which serialises
-the scheduled jobs. The scheduled jobs do not need the `sqlite3` *command* — python's
-`sqlite3` module is a different thing, and is what the warehouse is read with. The
-scheduler used to require the CLI and refuse to start without it, long after the queries
-that needed it had moved into the engine. Install it anyway if you want the backup
-recipe in `docs/SCHEDULING.md` or the comparison harness in `tools/`; nothing that runs
-unattended does.
-
-```bash
-sudo apt install util-linux
-uv run playwright install-deps chromium    # needs root; Chromium's shared libraries
-```
-
-`install-deps` is the step most often missed on a fresh server: without it Chromium fails
-to start with a loader error rather than anything that names the cause.
 
 ## Configure
 
@@ -65,184 +44,118 @@ email = you@example.com
 password = ...
 
 [rivals]
-leagues = 920863          ; measure ownership against these leagues only
+leagues = 920863          ; measure ownership against these leagues only; the first one
+                          ; is the league your stance (Protect or Chase) is set from
                           ; leave empty to use every private league you are in
-
-[notify]
-ntfy_topic =              ; a long random string; see "Run it on a server"
 ```
 
 Every setting is also an environment variable (`FPL_AUTO_LOGIN`, `FPL_EMAIL`, …) and
-**the environment wins**, so a scheduled run can override the file. `*.ini` is gitignored.
-After the first login a token is cached in `~/.config/fpl-agent/session.json`, and
-credentials are no longer needed.
+**the environment wins**. `*.ini` is gitignored. After the first login a token is cached in
+`~/.config/fpl-agent/session.json`, and credentials are no longer needed.
 
-## Run
-
-```bash
-make now             # do whatever is due today; DRY=--dry-run to see it decide first
-make status          # read-only: does the warehouse agree with itself, and what is next?
-make deadline        # the deadline half: re-capture and rank, if one is near
-make settle GW=3     # after a gameweek: grade projections, draft a learning
-make brief           # write logs/gwNN.md: what changed and what needs you
-make test
-```
-
-**Reading the brief.** `logs/gwNN.md` opens with the same lines every run — Move,
-Ownership, Captain, Chips, Availability, Deadline, Push, Learnings, Data — each saying
-"none" or "not evaluated" when there is nothing, so you look at the same line every time.
-Chips are valued week by week to the set's expiry (`project --chips` projects that far)
-and suggested only when this week clears the chip's bar *and* is the best remaining week
-within a noise band; the `## Chips` section shows the working. Ownership is
-how many of the rivals in your leagues hold each player, and is withheld (with the reason)
-when the rival picks are older than the last finished gameweek. The Push line uses three
-words that are not interchangeable: *did not fire*, *sent <when>*, and *fired, not
-delivered* — the last is a problem and the Data line repeats it.
-
-Gameweek references include deadline dates in Stockholm time. Each evaluated chip
-names its provisional best projected week, even if that week is below its activation
-bar. The previous-round line says whether it is settled; once settled, it summarises
-your rank movement, weekly points and gap to the leader in The inner from final saved
-standings. Missing final standings are reported rather than inferred from a live table.
-
-Free Hit and Wildcard rebuilds use a MILP solver to maximise the XI plus the existing
-discounted bench value under the budget, squad shape and club limit. This optimises
-the stored projections; it does not plan transfer sequences. A solve that cannot
-establish optimality within 30 seconds fails explicitly. To compare it with the previous
-greedy search on the same stored market and post-move squad, without writing to the
-warehouse, run `.venv/bin/python tools/benchmark-squad.py` (or pass `--db PATH`).
-
-**Start with `make now`.** It asks the warehouse what is due and runs only the steps that
-answer — capture and project, settle any gameweek that has finished and never been graded,
-and rank transfers if a deadline is close. It is safe to run on a day when the answer is nothing, which
-is most days, and `make now DRY=--dry-run` shows the decision without acting on it. The
-targets below it are the individual steps, for when you want one.
-
-`make deadline` runs the same half of the pipeline the hourly cron job runs, and asks the
-same question first: it does nothing when no deadline is near, and when one is it
-re-captures, projects, captures rivals, ranks, and ends by checking the state it claims to
-have left behind. The order matters — actuals feed the projection's rates, and rivals must
-exist before ownership means anything — and it is stated once, in `engine/schedule`.
-`settle` reads
-`finished` from the warehouse rather than the API, so a gameweek cannot be graded until a
-snapshot has refreshed its fixtures — which is one of the things `make now` gets right for
-you. Individual steps are `fpl-agent snapshot`, `fpl-agent project`, `fpl-agent rivals`,
-`fpl-agent recommend`, `fpl-agent settle` and `fpl-agent status` — run `fpl-agent` for
-the list. `make record` logs the move you actually made; nothing records for you.
-
-Snapshot daily. `bootstrap-static` serves current state only — prices, ownership and
-price forecasts are overwritten in place with no history endpoint — so a day not captured
-can never be recovered. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for the unattended
-setup: cron calls `deploy/fpl-cron.sh`, which takes a lock and asks the engine's
-schedule what is due.
-
-Snapshotting **refuses to run** if it cannot capture your squad, because selling prices,
-bank and free transfers exist in no public endpoint. Pass `--allow-partial` to take the
-market alone.
-
-## Run it on a server
-
-The intended deployment: cron, no human present, and **no automated transfers**. The agent
-captures, projects and recommends; you read the brief and make the move. There is no code
-path that executes a transfer, and that is the reason a bearer token can sit on a remote
-host at all.
-
-After Install and Configure above, on the server itself:
-
-**1. Pick an ntfy topic and treat it as a password.** ntfy has no accounts, so the topic
-*is* the address and the credential — anyone who guesses it reads your squad and your
-moves. Not `fpl`, not your name.
-
-```bash
-python3 -c "import secrets; print('fpl-' + secrets.token_urlsafe(24))"
-```
-
-Put it in `fpl-agent.ini` under `[notify] ntfy_topic`, then subscribe to that exact string
-in the ntfy phone app. Set `token_cache` to an absolute path on a persistent disk while
-you are there.
-
-**2. Log in once.** This is the only step that needs a browser. A server has no `DISPLAY`,
-so Chromium runs headless automatically:
+**Log in once.** This is the only step that needs a browser:
 
 ```bash
 .venv/bin/fpl-agent snapshot --force        # look for "Captured API token"
 ```
 
-After this the cached refresh token renews the session and Chromium is only a fallback.
-**Do not copy the token cache from another machine**: the account service rotates the
-refresh token on every exchange, so two hosts sharing one would fight and both lose.
+After this the cached refresh token renews the session and Chromium is only a fallback. **Do
+not copy the token cache from another machine**: the account service rotates the refresh
+token on every exchange, so two hosts sharing one would fight and both lose.
 
-**3. Check before scheduling anything.**
+## Run
 
 ```bash
-.venv/bin/fpl-agent status                  # exit 0, and read the token line
-.venv/bin/fpl-agent notify --dry-run        # what would reach your phone, and why not
-./deploy/fpl-cron.sh --dry-run daily
-./deploy/fpl-cron.sh --dry-run deadline
+make now             # the one to reach for: capture, settle, update every number, advise
+make now DRY=--dry-run   # see what it would do first
+make status          # read-only: does the warehouse agree with itself, and what is next?
+make record ARGS='--move 1 --captain Haaland --chip none'   # what you actually did
+make settle GW=3     # settle one gameweek by hand: grade, draft a learning
+make brief           # rewrite logs/gwNN.md without capturing again
+make test
 ```
 
-The dry runs are one read each and print what the job is due to do and why, which is what
-catches a misconfiguration before it becomes a week of jobs quietly doing nothing.
+**`make now` is the only entry point, and it runs one job.** Every run captures the market
+and your squad first (the snapshot is the one thing that can never be recovered), backfills
+actuals, projects, refreshes the rivals and the league table, settles any gameweek that has
+finished and never been graded, then works out the Instructions and writes the brief. It
+never waits for a deadline to be near: the hours to the deadline are a caveat — far out, it
+says the predicted lineups are not yet firm — not a condition. Once the deadline has passed
+it says the gameweek is **locked**, when FPL rolls over, and advises for nothing until a
+capture targets the next one. It holds a lock for its whole length, so two runs cannot both
+refresh the login. It is safe to run any number of times.
 
-**4. Schedule it.** Cron fires dumbly and often; the guards decide whether there is work.
+**The Instructions** open the terminal output and the brief, in a fixed order every run:
 
-```cron
-CRON_TZ=UTC
-MAILTO=you@example.com
-PATH=/usr/local/bin:/usr/bin:/bin:/home/YOU/.local/bin
+- **Stance** — Protect when you are first in your league (stay close to what the field
+  holds), otherwise Chase (prefer players few rivals hold, pulling harder the further
+  behind). One small weight, `stance.RANK_WEIGHT`, adjusts the moves, the captain and the
+  chip; it is uncalibrated, and at zero the advice is plain expected points. The line says
+  the mode, the gap, and what it changed. Stale or missing ownership is never used — the line
+  says so instead.
+- **Chip** — no chip, bench boost, triple captain, free hit and wildcard are compared as
+  whole alternatives, each with its own best moves, each scored as net expected points
+  against doing nothing. Each chip still has to clear its own bar and be the best remaining
+  week within a noise band; otherwise the answer is hold, with the margin to the best
+  alternative. A chip that is played, expired or not yet open is reported as it is and never
+  valued.
+- **Moves** — how many transfers to make over the 3-gameweek horizon, netting out 4-point
+  hits beyond your free transfers, with a default hit cap of 2 (a chip lifts it) and the club
+  limit. Beside it: doing nothing, and the best single swap, so the value of extra moves is
+  visible. With nothing worth doing it says *no move* and gives the margin. The solver
+  proves its answer optimal or says it did not; a partial answer is never presented as advice.
+- **Starting XI, Captain, Vice-captain, Bench** — the best legal eleven on the squad after
+  the moves, the captain with the why, a vice-captain, and the bench in the order the
+  automatic substitutions will use it, each with a short reason.
 
-30 2 * * *  /srv/fpl-agent/deploy/fpl-cron.sh daily
-7  * * * *  /srv/fpl-agent/deploy/fpl-cron.sh deadline
-```
+Each run appends one record of its Instructions to the warehouse, tagged with the model
+version and the capture it came from. `make settle` later grades the last one before the
+deadline in the points actually scored: the captain against the other starters, the XI and
+the bench order against the best possible, and the plan against doing nothing.
 
-Use UTC: the API speaks it, and British Summer Time moves the UK clock twice a season.
-Every job runs under `flock`, because the refresh token rotates and two concurrent jobs
-would leave one holding a dead credential. The jobs themselves need nothing on `PATH` —
-`fpl-cron.sh` cds into the checkout and calls `.venv/bin/fpl-agent` by relative path — but
-step 5 does, which is why the line is there.
+**Recording is a claim, not a step.** `make record` records exactly what it is told:
+`--move N` for each move of the plan you made (or `--all`, if you made all of it), `--captain
+NAME`, `--chip CHIP|none`. Captain and chip are stored beside the recommended ones so
+deviations can be graded. A bare `make record` records nothing.
 
-**5. Keep the checkout current, if you want that automatic.**
+**Reading the brief.** `logs/gwNN.md` opens with the Instructions block and then the same
+lines every run — Ownership, Chips, Availability, Deadline, Learnings, Data — each saying
+"none" or "not evaluated" when there is nothing, so you look at the same line every time.
+The sections beneath show the working. Chips are valued week by week to the set's expiry
+(`project --chips` projects that far); `## Chips` shows it. Ownership is how many of the
+rivals in your leagues hold each player, and is withheld (with the reason) when the rival
+picks are older than the last finished gameweek. Gameweek references include deadline dates
+in Stockholm time. The previous-round line says whether it is settled and, once settled,
+summarises your rank movement and gap to the leader from final saved standings.
 
-```cron
-25 2 * * *  cd /srv/fpl-agent && flock -n /tmp/fpl-agent.lock -c 'git checkout -- "logs/gw*.md" 2>/dev/null; git pull -q --ff-only && uv sync >/dev/null'
-```
+Free Hit, Wildcard and the transfer plan use a MILP solver over the stored projections,
+maximising the XI plus the existing discounted bench value under the budget, squad shape and
+club limit. A solve that cannot establish optimality within 30 seconds fails explicitly. To
+compare it with the previous greedy search, without writing to the warehouse, run
+`.venv/bin/python tools/benchmark-squad.py` (or pass `--db PATH`).
 
-Four things in that line are load-bearing. It takes **the same lock** as the jobs, so a
-pull cannot rewrite `.py` files under a run that is mid-snapshot; `-n` means it gives up
-rather than queueing, and tomorrow's run gets it. It discards the **brief** first, because
-`brief` rewrites the tracked `logs/gwNN.md` every run and `--ff-only` refuses a dirty tree
-— that discards nothing a server was keeping, since nothing commits it there, but see
-[docs/SCHEDULING.md](docs/SCHEDULING.md) if you want that record to survive. **`--ff-only`**
-fails loudly instead of quietly merging on a host nobody is watching. And **`uv sync`**
-follows, because a pull that moves `uv.lock` otherwise leaves `.venv` stale and the next
-run is the thing that discovers it. Quiet on success, or `MAILTO` gets "Already up to
-date." every morning until you stop reading it.
+The individual steps are `fpl-agent snapshot`, `project`, `rivals`, `recommend`, `settle`,
+`record`, `status` and `brief` — run `fpl-agent` for the list. The order matters: actuals
+feed the projection's rates, and rivals must exist before ownership means anything. It is
+stated once, in `engine/schedule`. `settle` reads `finished` from the warehouse rather than
+the API, so a gameweek cannot be graded until a snapshot has refreshed its fixtures — which
+is one of the things `make now` gets right for you.
 
-That `uv` has to be findable, and by default it is not. Cron runs with a minimal `PATH`,
-usually `/usr/bin:/bin`, while uv installs to `~/.local/bin` — so without the `PATH` line
-above, `git pull` succeeds and `uv sync` does not. The checkout moves to new code while
-`.venv` stays on the old lockfile, which is precisely the breakage the `uv sync` was added
-to prevent, and the next run is what discovers it. An absolute path to `uv` in the line
-works just as well.
-
-This makes `MODEL_VERSION` load-bearing rather than a nicety: the server starts projecting
-with new code the morning after you push, and the bump is the only thing that keeps what
-the model used to believe distinguishable from what it believes now. If that is not a
-trade you want, pull by hand — pushes to this repo are deliberate and infrequent.
-
-Anything non-zero gets mailed to you, and each exit code names one failure —
-`4` the squad was not captured, `7` the warehouse disagrees with itself, `8` a
-notification failed. The full table, the trigger set and the reasoning are in
-[docs/SCHEDULING.md](docs/SCHEDULING.md).
+Snapshot before every decision. `bootstrap-static` serves current state only — prices,
+ownership and price forecasts are overwritten in place with no history endpoint — so a day
+not captured can never be recovered. Snapshotting **refuses to run** if it cannot capture
+your squad, because selling prices, bank and free transfers exist in no public endpoint. Pass
+`--allow-partial` to take the market alone. See [docs/SCHEDULING.md](docs/SCHEDULING.md) for
+what a run does, its lock, and the exit codes.
 
 ## Use from Claude Code
 
 Optional. A session started in this checkout loads the skills in `.claude/skills/`: the
 `/fpl-*` ones — `/fpl-deadline`, `/fpl-settle`, `/fpl-learn`, `/fpl-verify` — wrap the
 `make` targets with what to check and when not to act (`/fpl-learn` walks the proposed
-learnings with you, in plain words, and applies or rejects each only on your say-so); `ls .claude/skills/` is the current list. The
-skills read the same warehouse and logs the commands write, so what Claude sees is what
-`make status` sees, not a second opinion.
+learnings with you, in plain words, and applies or rejects each only on your say-so); `ls
+.claude/skills/` is the current list. The skills read the same warehouse and logs the
+commands write, so what Claude sees is what `make status` sees, not a second opinion.
 
 ## How it works
 
@@ -250,9 +163,10 @@ skills read the same warehouse and logs the commands write, so what Claude sees 
 | --- | --- |
 | `snapshot` | Market, fixtures, scoring rules, your squad and predicted lineups into SQLite |
 | `projection` | Expected points per player over a 3-gameweek horizon, weights read from FPL's own `game_config` |
-| `rivals` | Rival squads from your leagues, for ownership relative to the people you actually play |
-| `recommend` | Ranks transfers on projected gain, price-window urgency and league ownership |
-| `settle` | Grades projections against actuals, slices the error, drafts a learning |
+| `rivals` | Rival squads and the league table from your leagues, for ownership and for your stance |
+| `instructions` | The XI, captain, vice-captain, bench, the transfer plan and the chip, as one value, stored per run |
+| `settle` | Grades projections against actuals, slices the error, drafts a learning, grades the Instructions |
+| `record` | Logs the moves, captain and chip you actually played |
 
 Projections carry a `model_version`, so a weight change is measured against the previous
 version on the same gameweeks rather than silently replacing it.
@@ -264,21 +178,19 @@ src/fpl_agent/
   api/               the FPL side of the wire: client, auth, headless_auth,
                      account; and rotowire_scraper, the one other source
   engine/            snapshot, actuals, lineups, projection, scoring, pricing,
-                     rivals, recommend, settle, status, brief, notify, storage
+                     rivals, recommend, moves, stance, instructions, grading,
+                     recording, settle, status, brief, schedule, storage
   config, cli        settings from fpl-agent.ini; the `fpl-agent` command
 .claude/skills/      /fpl-deadline, /fpl-settle, /fpl-learn, /fpl-verify,
                      /claude-md-review
-deploy/              fpl-cron.sh, the unattended entry point; a crontab names it by
-                     path, so it does not move
-tools/               the schedule comparison harness; run by hand, and nothing
-                     deployed depends on it
+tools/               one-off developer scripts; nothing depends on them
 docs/                PLAN.md, SCHEDULING.md, FACTS.md, adr/
 learnings/           what the model learned, as markdown with frontmatter
-logs/actions.jsonl   decisions taken, append-only
+logs/                the gameweek briefs, and actions.jsonl: decisions taken, append-only
 ```
 
-The last two are tracked but not yet present: `fpl-agent settle --learn` and
-`fpl-agent recommend --record` create them on first write.
+`logs/actions.jsonl` is created by the first `fpl-agent record` run and `learnings/` by the
+first `fpl-agent settle --learn`; both are tracked once they exist.
 
 `data/fpl.db` and `fpl-agent.ini` are gitignored. Conventions and invariants are in
 [CLAUDE.md](CLAUDE.md) and the roadmap in [docs/PLAN.md](docs/PLAN.md).

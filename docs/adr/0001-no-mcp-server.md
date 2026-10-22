@@ -1,7 +1,7 @@
 # No MCP server; Claude Code integrates through skills over `make`
 
 This repo began as a fork of an MCP server that browsed the live FPL API from Claude.
-By 2026-09 the engine (`make now`, the cron, the warehouse) was the whole point, the
+By 2026-09 the engine (`make now`, the warehouse) was the whole point, the
 engine never imported the server, and the server was registered on no machine. On
 2026-09-12 it was deleted rather than maintained: 32 tools over a live API drift the
 moment they stop being used, and every review kept flagging them as inherited debt.
