@@ -390,7 +390,7 @@ def check_decisions(conn: sqlite3.Connection) -> Check:
                   SUM(status = 'made') AS made FROM decision""").fetchone()
     if not row["n"]:
         return Check("decisions", OK,
-                     "none recorded - `recommend --record` is what writes them")
+                     "none recorded - `make record` is what writes them")
     return Check("decisions", OK,
                  f"{row['n']} recorded, {row['made'] or 0} made, latest {row['last']}")
 
