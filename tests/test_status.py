@@ -666,9 +666,9 @@ class NextActionTests(StatusTestCase):
                           (when, gameweek))
         self.conn.commit()
 
-    def test_nothing_due_when_nothing_grades_and_the_deadline_has_passed(self):
+    def test_a_locked_gameweek_is_named_when_nothing_grades(self):
         self._kickoff(3, -5)
-        self.assertIn("nothing due", status.next_action(self.conn))
+        self.assertIn("gameweek 3 is locked", status.next_action(self.conn))
 
     def test_a_far_deadline_is_still_named_because_a_run_always_ranks(self):
         self._kickoff(3, 24 * 7)

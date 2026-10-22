@@ -123,6 +123,10 @@ class Evaluation:
     learnings: list[settle.Learning]
     deadlines: dict[int, Optional[datetime]]
     previous: Optional[dict[str, Any]]
+    #: Why nothing is advised, when the target gameweek's deadline has passed; else None.
+    #: A locked gameweek is never evaluated: the move, the captain and the chips are not
+    #: read at all, so a stale ranking cannot be mistaken for advice.
+    locked: Optional[str] = None
 
 
 def plain_slice(name: str) -> str:
@@ -414,16 +418,20 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     # The held squad, read once: availability, the captain and the chips all take it.
     holding = held.read(conn, capture) if capture else None
     squad = squad_availability(conn, holding, gameweek) if holding else []
-    listing = ranked_transfers(conn, gameweek)
+    locked = (warehouse.locked_note(gameweek, deadline, now,
+                                    warehouse.last_kickoff(conn, gameweek))
+              if deadline is not None and deadline <= now else None)
+    listing = ({"moves": [], "reason": locked} if locked
+               else ranked_transfers(conn, gameweek))
     moves = listing["moves"]
     top = moves[0] if moves else None
     ownership, _ = recommend.ownership_source(conn)
     captain_picks = (chips.captain_picks(conn, gameweek, MODEL_VERSION, holding)
-                     if holding else [])
+                     if holding and not locked else [])
 
     # Valued on the squad after the recommended move, so this and the move advice agree.
     verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION, holding.with_move(top))
-                if holding else [])
+                if holding and not locked else [])
 
     return Evaluation(
         gameweek=gameweek, now=now, threshold=threshold,
@@ -437,7 +445,8 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
         learnings=settle.read_learnings(learnings_dir),
         deadlines={g.round: warehouse.deadline(conn, g.round)
                    for g in warehouse.gameweeks(conn, MODEL_VERSION).rounds},
-        previous=previous_round(conn, gameweek, holding))
+        previous=previous_round(conn, gameweek, holding),
+        locked=locked)
 
 
 # --------------------------------------------------------------------------
@@ -525,14 +534,20 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
 
     # Captain: the model's pick for the target gameweek from the captured XI.
     picks = evaluation.captain_picks
-    captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
-    why = chips.captain_why(picks)
-    if why:
-        captain += f". {why}"
+    if evaluation.locked:
+        captain = f"not evaluated - gameweek {evaluation.gameweek} is locked"
+    else:
+        captain = chips.captain_line(picks) if squad else "not evaluated - no squad captured"
+        why = chips.captain_why(picks)
+        if why:
+            captain += f". {why}"
 
     # Chips: one clause per chip, then the wall.
-    chip_line = (chips.chips_line(evaluation.chips, evaluation.gameweek) if squad
-                 else "not evaluated - no squad captured")
+    if evaluation.locked:
+        chip_line = f"not evaluated - gameweek {evaluation.gameweek} is locked"
+    else:
+        chip_line = (chips.chips_line(evaluation.chips, evaluation.gameweek) if squad
+                     else "not evaluated - no squad captured")
 
     # Availability.
     if not squad:
@@ -550,6 +565,8 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
         when = f"GW{evaluation.gameweek} passed {_hours(-remaining)} ago"
     else:
         when = f"GW{evaluation.gameweek}, {_hours(remaining)} away"
+        if remaining > timedelta(hours=warehouse.LINEUPS_FIRM_WITHIN_HOURS):
+            when += " (predicted lineups not yet firm)"
     when += "; Stockholm time"
     if state.get("known"):
         free = state["free_transfers"]
@@ -608,7 +625,9 @@ def render_brief(evaluation: Evaluation) -> str:
              ""]
 
     # The banner. First thing on the page, because it re-reads everything under it.
-    if state["chip"]:
+    if evaluation.locked:
+        lines += [f"> **GAMEWEEK {gameweek} LOCKED.** {evaluation.locked}", ""]
+    elif state["chip"]:
         lines += [f"> **{state['chip'].upper()} ACTIVE.** Transfers cost nothing this "
                   f"gameweek, so every move below is \"positive\" and the ranking means "
                   f"much less than usual. This tool ranks single like-for-like swaps; a "

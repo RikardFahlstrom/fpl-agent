@@ -148,6 +148,41 @@ def target(conn: sqlite3.Connection) -> Optional[Target]:
                   else deadline(conn, capture.gameweek))
 
 
+def last_kickoff(conn: sqlite3.Connection, gameweek: int) -> Optional[datetime]:
+    """When the gameweek's last fixture kicks off, or None with no kickoff recorded.
+
+    FPL rolls its `is_next` over to the following gameweek only after every fixture of the
+    round has been played, so this is the earliest the target can move on.
+    """
+    row = conn.execute("SELECT MAX(kickoff_time) AS last FROM fixture WHERE event = ?",
+                       (gameweek,)).fetchone()
+    return storage.parse_utc(row["last"] if row else None)
+
+
+#: Predicted lineups firm up through matchday, so a projection built further out than this
+#: is provisional. A caveat the run states, never a condition it waits on.
+LINEUPS_FIRM_WITHIN_HOURS = 26
+
+
+def locked_note(gameweek: int, deadline: datetime, now: datetime,
+                last_kickoff: Optional[datetime]) -> str:
+    """Why a gameweek whose deadline has passed is not advised for, and when that ends."""
+    gone = storage.hours_until(now, deadline)
+    ends = ("after its last fixture finishes" if last_kickoff is None else
+            f"after its last fixture (kick-off {last_kickoff:%a %d %b %H:%M} UTC) finishes")
+    return (f"gameweek {gameweek} is locked: its deadline passed {gone}h ago, so nothing "
+            f"is advised for it. FPL rolls over to gameweek {gameweek + 1} {ends} and its "
+            f"points are confirmed; capture again then and the run advises for that one.")
+
+
+def firm_caveat(hours: Optional[int]) -> Optional[str]:
+    """The caveat for a deadline too far off for lineups to be firm, else None."""
+    if hours is None or hours <= LINEUPS_FIRM_WITHIN_HOURS:
+        return None
+    return (f"{hours}h to the deadline: predicted lineups are not yet firm, so the "
+            f"advice below is provisional and can change as matchday nears.")
+
+
 NO_CAPTURE = "no snapshot captured yet; run `fpl-agent snapshot`"
 NO_TARGET = "no target gameweek on the latest snapshot; the season may be over"
 
