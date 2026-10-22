@@ -36,6 +36,9 @@ class Candidate:
     element_type: int       # 1-4
     cost: int               # tenths of a million, what buying him costs
     xp: float               # the objective: projected points over the caller's weeks
+    #: What this player scores *as a bench player* beyond the usual discount, in the same
+    #: weeks: a bench boost makes the bench count in full for the week it is played.
+    bench_xp: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -55,7 +58,7 @@ class Squad:
 
     @property
     def objective(self) -> float:
-        return self.xi_xp + BENCH_VALUE * sum(p.xp for p in self.bench)
+        return self.xi_xp + sum(BENCH_VALUE * p.xp + p.bench_xp for p in self.bench)
 
 
 def best_xi(players: Iterable[Candidate]) -> tuple[Candidate, ...]:
@@ -236,8 +239,9 @@ def best_squad(candidates: Iterable[Candidate], budget: int,
             constraint({i: 1}, 1, 1)
 
     xp = np.array([c.xp for c in pool])
+    bench_xp = np.array([c.bench_xp for c in pool])
     result = milp(
-        c=-np.concatenate((BENCH_VALUE * xp, (1 - BENCH_VALUE) * xp)),
+        c=-np.concatenate((BENCH_VALUE * xp + bench_xp, (1 - BENCH_VALUE) * xp - bench_xp)),
         integrality=np.ones(2 * n), bounds=Bounds(0, 1),
         constraints=LinearConstraint(matrix.tocsc(), lower, upper),
         options={"time_limit": 30.0, "mip_rel_gap": 0.0},

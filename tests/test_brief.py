@@ -314,8 +314,8 @@ class MovesRowTests(BriefTestCase):
         self.warehouse.wildcard()
         self.conn.commit()
         row = self.moves()
-        self.assertIn("no hit (wildcard active)", row)
-        self.assertIn("no hit cap while a chip is active", row)
+        self.assertIn("no hit (wildcard)", row)
+        self.assertIn("no hits while the wildcard is played", row)
 
     def test_no_horizon_projected_is_a_sentence_not_a_traceback(self):
         self.conn.execute("DELETE FROM projection WHERE gameweek > ?", (GAMEWEEK,))
@@ -443,8 +443,8 @@ class RenderBriefTests(BriefTestCase):
         text = self.render()
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
-        self.assertEqual(labels[:12], [
-            "- **Instructions", "- **Moves", "- **Starting XI", "- **Captain",
+        self.assertEqual(labels[:13], [
+            "- **Instructions", "- **Chip", "- **Moves", "- **Starting XI", "- **Captain",
             "- **Vice-captain", "- **Bench", "- **Ownership", "- **Chips",
             "- **Availability", "- **Deadline", "- **Learnings", "- **Data"])
         self.assertRegex(text, r"- \*\*Captain:\*\* P\d+ \(C\d+\), 1\.0 xP; next P\d+ 1\.0")

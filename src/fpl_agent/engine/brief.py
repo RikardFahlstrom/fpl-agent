@@ -430,10 +430,7 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
     instructions = instr.build(conn, gameweek, MODEL_VERSION, holding, capture=capture,
                                bar=threshold, locked=locked)
 
-    # Valued on the squad after the recommended move, so this and the move advice agree.
-    verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION,
-                               instr.after_moves(holding, instructions))
-                if holding and not locked else [])
+    verdicts = list(instructions.verdicts)
 
     return Evaluation(
         gameweek=gameweek, now=now, threshold=threshold,
@@ -736,7 +733,7 @@ def render_brief(evaluation: Evaluation) -> str:
                           f"(`project --chips`)")
             lines += ["",
                       f"Values are what the chip would add that week, on the squad after "
-                      f"the recommended move. Only the next gameweek has predicted "
+                      f"the moves with no chip. Only the next gameweek has predicted "
                       f"lineups; every later week is the player's rates against that "
                       f"week's fixtures, which is why this week tends to look best and "
                       f"why a chip also has to clear its bar (bench boost "

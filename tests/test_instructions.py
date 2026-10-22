@@ -240,6 +240,122 @@ class StoreTests(InstructionsTestCase):
         self.assertEqual(count(), 2)
 
 
+class ChipChoiceTests(InstructionsTestCase):
+    """Chips as whole alternatives: no chip, each chip with its own best moves."""
+
+    def setUp(self):
+        super().setUp()
+        import json
+        # The set's wall is GW5, every chip open and unplayed.
+        chips_json = json.dumps([
+            {"name": name, "chip_type": kind, "status_for_entry": "available",
+             "start_event": 1, "stop_event": GAMEWEEK + 2, "played_by_entry": []}
+            for name, kind in (("bboost", "team"), ("3xc", "team"),
+                               ("freehit", "transfer"), ("wildcard", "transfer"))])
+        self.w.state(chips=chips_json)
+        # Flat: everyone 1.0 a week, so nothing is worth a move or a chip until a test says.
+        self.conn.execute("UPDATE projection SET expected_points = 1.0")
+        self.conn.commit()
+
+    def flat_but(self, element_ids, xp, weeks=None):
+        for gw in weeks or (GAMEWEEK, GAMEWEEK + 1, GAMEWEEK + 2):
+            self.conn.execute(
+                "UPDATE projection SET expected_points = ? WHERE gameweek = ? "
+                "AND element_id IN (%s)" % ",".join("?" * len(element_ids)),
+                (xp, gw, *element_ids))
+        self.conn.commit()
+
+    def build(self):
+        capture = warehouse.latest(self.conn)
+        return instructions.build(self.conn, GAMEWEEK, MODEL_VERSION, self.holding(),
+                                  capture=capture)
+
+    def test_a_flat_week_holds_and_names_the_best_alternative_with_its_margin(self):
+        built = self.build()
+        self.assertIsNone(built.chip)
+        self.assertTrue(built.chip_note.startswith("hold - the best alternative"))
+        self.assertIn("is not played", built.chip_note)
+        self.assertEqual([a.name for a in built.alternatives],
+                         ["no chip", "bench boost", "triple captain", "free hit",
+                          "wildcard"])
+
+    def test_every_alternative_is_scored_against_doing_nothing(self):
+        built = self.build()
+        none = built.alternatives[0]
+        self.assertEqual((none.name, none.total), ("no chip", 0.0))
+        text = instructions.chip_text(built)
+        for alternative in built.alternatives:
+            self.assertIn(f"{alternative.name} {alternative.total:+.1f}", text)
+
+    def test_a_strong_bench_plays_the_bench_boost(self):
+        # Everyone projects 4.5 this week: the bench alone is worth 18 against a 15 bar.
+        self.flat_but([e for e in SHAPED], 4.5, weeks=(GAMEWEEK,))
+        built = self.build()
+        self.assertEqual(built.chip, "bboost")
+        self.assertTrue(built.chip_note.startswith("play bench boost"))
+        self.assertIn("ahead of the best alternative", built.chip_note)
+
+    def test_a_big_enough_gap_in_the_market_plays_the_wildcard_with_its_rebuild_moves(self):
+        unowned = [23, 27, 31, 22, 26, 30, 20, 24]
+        self.flat_but(unowned, 6.0)
+        built = self.build()
+        self.assertEqual(built.chip, "wildcard")
+        self.assertEqual(built.plan.chip, "wildcard")
+        self.assertGreater(len(built.moves), 4)         # past what a capped plan would make
+        self.assertEqual(built.alternatives[0].plan.hit_cap, 2)
+
+    def test_the_moves_shown_are_the_chosen_alternatives_moves(self):
+        self.flat_but([23, 27, 31, 22, 26, 30, 20, 24], 6.0)
+        built = self.build()
+        chosen = next(a for a in built.alternatives if a.chip == built.chip)
+        self.assertEqual(built.plan, chosen.plan)
+        self.assertEqual(built.moves, chosen.plan.moves)
+
+    def test_a_chip_that_is_not_evaluable_is_reported_as_it_is_and_never_valued(self):
+        import json
+        self.w.state(chips=json.dumps([
+            {"name": "wildcard", "chip_type": "transfer", "status_for_entry": "played",
+             "start_event": 1, "stop_event": 19, "played_by_entry": [GAMEWEEK - 1]},
+            {"name": "bboost", "chip_type": "team", "status_for_entry": "available",
+             "start_event": 1, "stop_event": GAMEWEEK + 2, "played_by_entry": []}]))
+        self.conn.commit()
+        built = self.build()
+        self.assertEqual([a.name for a in built.alternatives], ["no chip", "bench boost"])
+        wildcard = next(v for v in built.verdicts if v.state.name == "wildcard")
+        self.assertFalse(wildcard.evaluated)
+        self.assertIn("played", wildcard.reason)
+
+    def test_a_chip_whose_moves_cannot_be_planned_is_not_played(self):
+        self.flat_but([e for e in SHAPED], 4.5, weeks=(GAMEWEEK,))
+        from fpl_agent.engine import moves as movesmod
+        real = movesmod.plan
+
+        def failing(conn, holding, capture, **kwargs):
+            if kwargs.get("bench_boost"):
+                raise movesmod.NotProven("time limit")
+            return real(conn, holding, capture, **kwargs)
+
+        with mock.patch.object(movesmod, "plan", failing):
+            built = self.build()
+        self.assertIsNone(built.chip)
+        bench = next(a for a in built.alternatives if a.chip == "bboost")
+        self.assertFalse(bench.playable)
+        self.assertIn("could not be planned", bench.reason)
+
+    def test_with_no_chips_captured_it_says_so_not_hold(self):
+        self.w.state(chips="[]")
+        self.conn.commit()
+        self.assertIn("no chips captured", self.build().chip_note)
+
+    def test_the_decision_is_stored_with_the_alternatives(self):
+        self.flat_but([e for e in SHAPED], 4.5, weeks=(GAMEWEEK,))
+        built = self.build()
+        again = instructions.Instructions.from_payload(built.to_payload())
+        self.assertEqual(again.chip, "bboost")
+        self.assertEqual(again.alternatives, built.alternatives)
+        self.assertEqual(again, built)
+
+
 class OneValueTests(InstructionsTestCase):
     """The terminal and the brief render the same rows from the same value."""
 
@@ -252,11 +368,11 @@ class OneValueTests(InstructionsTestCase):
         evaluation = self.evaluate()
         block = brief.render_block(evaluation, markdown=False)
         rows = instructions.rows(evaluation.instructions)
-        self.assertEqual([line.split(":")[0] for line in block[:6]],
+        self.assertEqual([line.split(":")[0] for line in block[:7]],
                          [label for label, _ in rows])
         self.assertEqual([label for label, _ in rows],
-                         ["Instructions", "Moves", "Starting XI", "Captain", "Vice-captain",
-                          "Bench"])
+                         ["Instructions", "Chip", "Moves", "Starting XI", "Captain",
+                          "Vice-captain", "Bench"])
 
     def test_the_terminal_text_carries_every_row_the_brief_does(self):
         evaluation = self.evaluate()
@@ -268,15 +384,15 @@ class OneValueTests(InstructionsTestCase):
             self.assertIn(f"- **{label}:** {text}", page.replace("GW3 (deadline 5 Sep 09:30)", "GW3"))
 
     def test_the_same_lines_open_the_block_whether_or_not_there_is_a_lineup(self):
-        with_lineup = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:6]]
+        with_lineup = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:7]]
         self.conn.execute("DELETE FROM projection WHERE element_id = 12")
         self.conn.commit()
-        without = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:6]]
+        without = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:7]]
         self.assertEqual(with_lineup, without)
 
     def test_a_lineup_that_cannot_be_built_still_names_every_row(self):
         text = instructions.render(instructions.Instructions(3, note="not evaluated - x"))
-        for label in ("Instructions", "Moves", "Starting XI", "Captain", "Vice-captain", "Bench"):
+        for label in ("Instructions", "Chip", "Moves", "Starting XI", "Captain", "Vice-captain", "Bench"):
             self.assertIn(label + ":", text)
 
     def test_the_command_prints_the_instructions_before_writing_the_brief(self):
