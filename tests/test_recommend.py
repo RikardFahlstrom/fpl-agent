@@ -1,8 +1,14 @@
 """Recommender tests: squad rules, budget, and the decision log."""
+import contextlib
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from fpl_agent import config
 
 from fpl_agent.engine import held, projection, recommend, storage
 from test_scoring import WEIGHTS
@@ -552,6 +558,16 @@ class DecisionLogTests(unittest.TestCase):
 
         self.assertEqual(len(second), 2)
         self.assertEqual(second[0], first[0], "the existing line must not be rewritten")
+
+
+class EmptyLeaguesSettingTests(unittest.TestCase):
+    def test_recommend_stops_naming_the_setting(self):
+        err = io.StringIO()
+        with mock.patch.dict(os.environ), mock.patch.object(config, "load"), \
+                contextlib.redirect_stderr(err):
+            os.environ.pop(config.RIVAL_LEAGUES_ENV, None)
+            self.assertEqual(recommend.main(["--db", "/nonexistent/none.db"]), 1)
+        self.assertIn("leagues", err.getvalue())
 
 
 if __name__ == "__main__":

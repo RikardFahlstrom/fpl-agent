@@ -1,6 +1,9 @@
 """Rival capture and league-relative ownership."""
+import os
 import unittest
+from unittest import mock
 
+from fpl_agent import config
 from fpl_agent.engine import rivals, storage
 from fpl_agent.api import account
 from fpl_agent.engine.recommend import (
@@ -300,6 +303,18 @@ class StandingsRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured, "2026-09-05T02:30:00+00:00")
         self.assertEqual(self.conn.execute("SELECT total_points FROM rival WHERE entry_id = 1")
                          .fetchone()[0], 188)
+
+
+class EmptyLeaguesSettingTests(unittest.TestCase):
+    """With no `leagues` set, "every rival" must not quietly mean every private league."""
+
+    def test_rivals_stops_naming_the_setting(self):
+        with mock.patch.dict(os.environ), mock.patch.object(config, "load"):
+            os.environ.pop(config.RIVAL_LEAGUES_ENV, None)
+            for argv in ([], ["--standings-only"]):
+                with self.assertLogs("fpl_rivals", level="ERROR") as logs:
+                    self.assertEqual(rivals.main(argv), 1)
+                self.assertIn("leagues", logs.output[0])
 
 
 if __name__ == "__main__":
