@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/dev-rikfah-mac/git/fpl-agent/.codex/hooks/test-before-commit.py'",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/dev-rikfah-mac/git/fpl-agent/.codex/hooks/status-after-turn.py'",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
