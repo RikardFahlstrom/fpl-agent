@@ -516,7 +516,7 @@ def stored_horizon(conn: sqlite3.Connection, snapshot_id: int, start_gameweek: i
     past writes rows nobody asked for, under whatever MODEL_VERSION the code is on
     today, so `projection` stops being the record of what was believed at decision
     time and "projections for gameweek N under model X" stops being a countable fact.
-    `make deadline` runs `project` before `recommend` for exactly this reason.
+    `make now` runs `project` before `recommend` for exactly this reason.
 
     Every gameweek in the range must be present. A missing one is not a blank - a
     blank gameweek still stores a row per player, with `fixture_count` 0 - it is a
@@ -538,7 +538,7 @@ def stored_horizon(conn: sqlite3.Connection, snapshot_id: int, start_gameweek: i
             f"no projections stored for gameweek{'s' if len(missing) > 1 else ''} "
             f"{', '.join(str(gw) for gw in missing)} on snapshot {snapshot_id} under "
             f"model {model_version}; run `fpl-agent project --horizon {weeks}` "
-            f"(or `make deadline`, which projects before it recommends) first")
+            f"(or `make now`, which projects before it recommends) first")
 
     totals: dict[int, float] = {}
     for row in conn.execute(

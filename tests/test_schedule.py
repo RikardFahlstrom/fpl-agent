@@ -1,4 +1,4 @@
-"""What each scheduled job plans, asserted as data.
+"""What `make now` plans, asserted as data.
 
 The whole point of the module under test is that "what would run tonight" stops being a
 dry run against a live warehouse and becomes an assertion. So nothing here runs a step,
@@ -26,7 +26,7 @@ from test_status import WarehouseBuilder
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 
 
-#: What every job that does anything ends on, once the tolerated tail is planned. With
+#: What every run ends on, once the tolerated tail is planned. With
 #: no topic configured - the default in these tests - `notify` is skipped rather than
 #: planned, so the tail is the brief alone.
 TAIL = ["brief"]
@@ -90,16 +90,16 @@ class ScheduleTestCase(unittest.TestCase):
         self.w.projections(snapshot_id, gameweek)
         self.conn.commit()
 
-    def due(self, job: str, *, now: datetime = NOW, conn=None) -> schedule.Plan:
+    def due(self, *, now: datetime = NOW, conn=None) -> schedule.Plan:
         warehouse = schedule.read(self.conn if conn is None else conn)
-        return schedule.due(job, now=now, warehouse=warehouse, settings=schedule.Settings())
+        return schedule.due(now=now, warehouse=warehouse, settings=schedule.Settings())
 
 
-class DailyTests(ScheduleTestCase):
-    """The overnight job: capture the market that no endpoint returns later, then grade."""
+class PipelineTests(ScheduleTestCase):
+    """The one job: capture the market that no endpoint returns later, then grade, rank."""
 
     def test_it_captures_with_the_backfill_and_projects_before_anything_else(self):
-        plan = self.due("daily")
+        plan = self.due()
         self.assertEqual(commands(plan)[:3], [
             "snapshot --force",
             "snapshot --backfill-only",
@@ -107,20 +107,20 @@ class DailyTests(ScheduleTestCase):
         ])
 
     def test_every_step_carries_a_reason(self):
-        plan = self.due("daily")
+        plan = self.due()
         self.assertTrue(all(step.reason for step in plan.steps))
 
     def test_it_grades_every_settleable_gameweek_oldest_first(self):
         self.settleable_gameweek(4)
         self.settleable_gameweek(5)
-        plan = self.due("daily")
+        plan = self.due()
         self.assertEqual(commands(plan)[3:], [
             "settle --gameweek 4 --learn",
             "settle --gameweek 5 --learn",
         ] + TAIL)
 
     def test_nothing_to_grade_is_a_skip_with_a_reason_rather_than_silence(self):
-        plan = self.due("daily")
+        plan = self.due()
         self.assertEqual(commands(plan), [
             "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips"] + TAIL)
         self.assertTrue(any("grad" in skip.reason for skip in plan.skipped),
@@ -128,13 +128,31 @@ class DailyTests(ScheduleTestCase):
 
     def test_an_unfinished_gameweek_is_never_planned_for_grading(self):
         # Gameweek 3 is projected from its own snapshot but is still being played.
-        plan = self.due("daily")
+        plan = self.due()
         self.assertNotIn("settle --gameweek 3 --learn", commands(plan))
 
-    def test_it_does_not_rank_however_close_the_deadline_is(self):
-        self.kickoff(2)
-        plan = self.due("daily")
-        self.assertNotIn("recommend", [step.command for step in plan.steps])
+    def test_one_run_captures_grades_and_ranks_against_a_single_capture(self):
+        self.settleable_gameweek(4)
+        self.w.snapshot(gameweek=5)     # the pipeline has moved on to 5, which is near
+        self.kickoff(5, gameweek=5)
+        self.assertEqual(commands(self.due()), [
+            "snapshot --force",
+            "snapshot --backfill-only",
+            "project --horizon 3 --chips",
+            "settle --gameweek 4 --learn",
+            "rivals",
+            "recommend",
+            "status",
+        ] + TAIL)
+
+    def test_it_ranks_however_far_off_the_deadline_is(self):
+        self.kickoff(80)
+        self.assertIn("recommend", commands(self.due()))
+
+    def test_it_ranks_ownership_once_the_capture_has_not_refreshed_it(self):
+        self.kickoff(5)
+        cmds = commands(self.due())
+        self.assertEqual(cmds[-len(TAIL) - 3:-len(TAIL)], ["rivals", "recommend", "status"])
 
 
 class TailTests(ScheduleTestCase):
@@ -142,7 +160,7 @@ class TailTests(ScheduleTestCase):
 
     def test_both_tolerate_failure(self):
         settings = schedule.Settings(notifications_configured=True)
-        plan = schedule.due("daily", now=NOW, warehouse=schedule.read(self.conn),
+        plan = schedule.due(now=NOW, warehouse=schedule.read(self.conn),
                             settings=settings)
         tail = [step for step in plan.steps if step.command in ("brief", "notify")]
         self.assertEqual([step.command for step in tail], ["notify", "brief"])
@@ -151,49 +169,52 @@ class TailTests(ScheduleTestCase):
     def test_they_come_last_so_they_describe_what_the_run_left_behind(self):
         # The push before the brief: the brief's Push line reads "sent <when>" from the
         # notification table, which only holds a row once notify has run.
-        plan = schedule.due("daily", now=NOW, warehouse=schedule.read(self.conn),
+        plan = schedule.due(now=NOW, warehouse=schedule.read(self.conn),
                             settings=schedule.Settings(notifications_configured=True))
         self.assertEqual(commands(plan)[-2:], ["notify", "brief"])
 
     def test_an_unconfigured_topic_skips_the_push_rather_than_failing_it(self):
-        # notify is opt-in: a host that has never set a topic must not be mailed an error
-        # every hour.
-        plan = self.due("daily")
+        # notify is opt-in: a host that has never set a topic must not be sent an error.
+        plan = self.due()
         self.assertNotIn("notify", [step.command for step in plan.steps])
         self.assertTrue(any(skip.what == "notify" for skip in plan.skipped), plan.skipped)
 
-    def test_a_job_with_nothing_due_writes_no_brief(self):
+    def test_every_run_writes_a_brief(self):
         self.kickoff(80)
-        self.assertEqual(self.due("deadline").steps, ())
+        self.assertEqual(commands(self.due())[-1], "brief")
 
 
 class DeadlineTests(ScheduleTestCase):
-    """The hourly job: cheap when idle, and a full re-capture inside the window."""
+    """The deadline decides whether there is a gameweek to rank for, never how far away it
+    is: the capture and the grading happen either way."""
 
-    def test_nothing_is_planned_when_the_deadline_is_far_out(self):
+    def ranks(self, plan: schedule.Plan) -> bool:
+        return "recommend" in [step.command for step in plan.steps]
+
+    def test_a_far_deadline_still_ranks(self):
         self.kickoff(80)
-        plan = self.due("deadline")
-        self.assertEqual(plan.steps, ())
-        self.assertEqual(plan.exit_code, 0)
-        self.assertTrue(any("78" in skip.reason for skip in plan.skipped), plan.skipped)
+        plan = self.due()
+        self.assertTrue(self.ranks(plan))
+        self.assertEqual(plan.hours_to_deadline, 78)
 
-    def test_nothing_is_planned_when_no_fixture_is_left_to_play(self):
+    def test_nothing_is_ranked_when_no_fixture_is_left_to_play(self):
         self.fixtures(3, finished=True)
-        plan = self.due("deadline")
-        self.assertEqual(plan.steps, ())
+        plan = self.due()
+        self.assertFalse(self.ranks(plan))
+        self.assertIn("snapshot --force", commands(plan))
         self.assertTrue(plan.skipped)
 
     def test_a_deadline_already_passed_is_not_a_deadline_to_rank_for(self):
         # A round played but not yet confirmed finished by FPL sits here for hours.
         self.kickoff(-5)
-        self.assertEqual(self.due("deadline").steps, ())
+        self.assertFalse(self.ranks(self.due()))
 
     def test_a_deadline_thirty_minutes_gone_is_already_gone(self):
-        # Truncating toward zero would call this "0h away", which is inside every window:
-        # a full re-capture and ranking for a deadline nobody can act on any more.
+        # Truncating toward zero would call this "0h away", and rank for a deadline
+        # nobody can act on any more.
         self.kickoff(1.0)   # kickoff in an hour, so the deadline went half an hour ago
-        plan = self.due("deadline")
-        self.assertEqual(plan.steps, ())
+        plan = self.due()
+        self.assertFalse(self.ranks(plan))
         self.assertTrue(any("passed" in skip.reason for skip in plan.skipped), plan.skipped)
 
     def test_a_gameweek_under_way_is_not_a_deadline_before_each_remaining_match(self):
@@ -208,8 +229,7 @@ class DeadlineTests(ScheduleTestCase):
         self.kickoff(24 * 5, gameweek=4)
         self.w.snapshot(gameweek=4)
         self.conn.commit()
-        plan = self.due("deadline")
-        self.assertEqual(plan.steps, ())
+        plan = self.due()
         self.assertEqual(plan.hours_to_deadline, 24 * 5 - 2)
         self.assertEqual(
             plan.hours_to_deadline,
@@ -219,90 +239,30 @@ class DeadlineTests(ScheduleTestCase):
         # Between the deadline and the next capture, the latest capture still targets
         # the round that has just locked. The skip is the intended answer, not an error.
         self.kickoff(-5)
-        plan = self.due("deadline")
-        self.assertEqual(plan.steps, ())
+        plan = self.due()
+        self.assertFalse(self.ranks(plan))
         self.assertIsNone(plan.problem)
         self.assertTrue(any("deadline passed 7h ago" in skip.reason
                             for skip in plan.skipped), plan.skipped)
 
-    def test_inside_the_window_it_recaptures_ranks_and_ends_on_status(self):
+    def test_the_same_warehouse_ranks_or_not_according_to_the_time_passed_in(self):
         self.kickoff(5)
-        plan = self.due("deadline")
-        self.assertEqual(commands(plan), [
-            "snapshot --force",
-            "project --horizon 3 --chips",
-            "rivals",
-            "recommend",
-            "status",
-        ] + TAIL)
-
-    def test_the_hourly_job_skips_the_backfill_and_says_why(self):
-        self.kickoff(5)
-        plan = self.due("deadline")
-        self.assertNotIn("snapshot --backfill-only", commands(plan))
-        self.assertTrue(any("backfill" in skip.what for skip in plan.skipped),
-                        plan.skipped)
-
-    def test_the_window_is_a_setting_not_a_number_buried_in_the_decision(self):
-        self.kickoff(20)
-        warehouse = schedule.read(self.conn)
-        narrow = schedule.due("deadline", now=NOW, warehouse=warehouse,
-                              settings=schedule.Settings(deadline_within_hours=4))
-        self.assertEqual(narrow.steps, ())
-        wide = schedule.due("deadline", now=NOW, warehouse=warehouse,
-                            settings=schedule.Settings(deadline_within_hours=26))
-        self.assertTrue(wide.steps)
-
-    def test_the_same_warehouse_is_due_or_not_according_to_the_time_passed_in(self):
-        self.kickoff(30)
-        self.assertEqual(self.due("deadline").steps, ())
-        later = self.due("deadline", now=NOW + timedelta(hours=10))
-        self.assertTrue(later.steps)
-
-
-class AutoTests(ScheduleTestCase):
-    """Both halves, for a person at a terminal who does not want to know which day it is."""
-
-    def test_both_halves_hang_off_a_single_capture(self):
-        self.settleable_gameweek(4)
-        self.w.snapshot(gameweek=5)     # the pipeline has moved on to 5, which is near
-        self.kickoff(5, gameweek=5)
-        plan = self.due("auto")
-        self.assertEqual(commands(plan), [
-            "snapshot --force",
-            "snapshot --backfill-only",
-            "project --horizon 3 --chips",
-            "settle --gameweek 4 --learn",
-            "rivals",
-            "recommend",
-            "status",
-        ] + TAIL)
-
-    def test_out_of_the_window_it_is_the_daily_job(self):
-        self.settleable_gameweek(4)
-        plan = self.due("auto")
-        self.assertEqual(commands(plan), [
-            "snapshot --force",
-            "snapshot --backfill-only",
-            "project --horizon 3 --chips",
-            "settle --gameweek 4 --learn",
-        ] + TAIL)
-        self.assertTrue(any("rank" in skip.what or "rank" in skip.reason
-                            for skip in plan.skipped), plan.skipped)
+        self.assertTrue(self.ranks(self.due()))
+        self.assertFalse(self.ranks(self.due(now=NOW + timedelta(hours=10))))
 
 
 class PicksTests(ScheduleTestCase):
-    """The rival picks are refreshed by the daily job once they fall behind.
+    """The rival picks are refreshed once they fall behind.
 
     Stale ownership - picks older than the last finished gameweek - is withheld from
-    the brief, so leaving the picks to the deadline window meant the Ownership line
-    read "not shown" from Tuesday to Friday every week.
+    the brief, so leaving them alone meant the Ownership line read "not shown" until
+    somebody remembered to refresh them.
     """
 
-    def test_picks_behind_the_last_finished_gameweek_are_refreshed_daily(self):
+    def test_picks_behind_the_last_finished_gameweek_are_refreshed(self):
         self.w.rivals(1)             # gameweeks 1 and 2 have finished; picks are from 1
         self.conn.commit()
-        plan = self.due("daily")
+        plan = self.due()
         self.assertEqual(commands(plan)[:5], [
             "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips",
             "rivals --standings-only", "rivals"])
@@ -313,7 +273,7 @@ class PicksTests(ScheduleTestCase):
     def test_current_picks_are_a_skip_that_says_ownership_is_fresh(self):
         self.w.rivals(2)
         self.conn.commit()
-        plan = self.due("daily")
+        plan = self.due()
         self.assertNotIn("rivals", commands(plan))
         self.assertTrue(any("ownership is fresh" in skip.reason for skip in plan.skipped),
                         plan.skipped)
@@ -322,19 +282,13 @@ class PicksTests(ScheduleTestCase):
         self.w.rivals(2)
         self.conn.execute("DELETE FROM rival_squad")
         self.conn.commit()
-        self.assertIn("rivals", commands(self.due("daily")))
+        self.assertIn("rivals", commands(self.due()))
 
-    def test_the_hourly_job_does_not_refresh_them_outside_the_window(self):
-        self.w.rivals(1)
-        self.conn.commit()
-        self.kickoff(80)
-        self.assertEqual(self.due("deadline").steps, ())
-
-    def test_auto_inside_the_window_captures_them_once(self):
+    def test_a_run_captures_them_once(self):
         self.w.rivals(1)
         self.conn.commit()
         self.kickoff(5)
-        cmds = commands(self.due("auto"))
+        cmds = commands(self.due())
         self.assertEqual(cmds.count("rivals"), 1)
         self.assertLess(cmds.index("rivals"), cmds.index("recommend"))
 
@@ -354,13 +308,13 @@ class PicksTests(ScheduleTestCase):
         self.w.rivals(2)
         self.conn.commit()
         with mock.patch.dict(os.environ, {"FPL_RIVAL_LEAGUES": "999"}):
-            plan = self.due("daily")
+            plan = self.due()
         self.assertIn("rivals", commands(plan))
 
 
     def test_no_finished_gameweek_means_nothing_to_capture_yet(self):
         # Pre-season with a known league: behind, but there are no picks to fetch.
-        plan = schedule.due("daily", now=NOW, settings=schedule.Settings(),
+        plan = schedule.due(now=NOW, settings=schedule.Settings(),
                             warehouse=schedule.Reading(league_known=True))
         self.assertNotIn("rivals", commands(plan))
         self.assertTrue(any("no gameweek has finished" in skip.reason
@@ -381,37 +335,31 @@ class StandingsTests(ScheduleTestCase):
         self.w.rivals(2)
         self.conn.commit()
 
-    def test_the_daily_capture_refreshes_the_table_after_projecting(self):
+    def test_the_capture_refreshes_the_table_after_projecting(self):
         self.known_league()
-        self.assertEqual(commands(self.due("daily"))[:4], [
+        self.assertEqual(commands(self.due())[:4], [
             "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips",
             self.STEP])
 
-    def test_the_hourly_recapture_refreshes_it_too(self):
+    def test_a_run_refreshes_it_once(self):
         self.known_league()
         self.kickoff(5)
-        self.assertEqual(commands(self.due("deadline"))[:3], [
-            "snapshot --force", "project --horizon 3 --chips", self.STEP])
-
-    def test_auto_refreshes_it_once(self):
-        self.known_league()
-        self.kickoff(5)
-        self.assertEqual(commands(self.due("auto")).count(self.STEP), 1)
+        self.assertEqual(commands(self.due()).count(self.STEP), 1)
 
     def test_it_is_not_tolerated_and_carries_a_reason(self):
         self.known_league()
-        step = [s for s in self.due("daily").steps if s.invocation == self.STEP][0]
+        step = [s for s in self.due().steps if s.invocation == self.STEP][0]
         self.assertFalse(step.tolerated)
         self.assertTrue(step.reason)
 
     def test_no_known_league_is_a_skip_that_says_what_records_one(self):
-        plan = self.due("daily")
+        plan = self.due()
         self.assertNotIn(self.STEP, commands(plan))
         skip = [s for s in plan.skipped if "standings" in s.what][0]
         self.assertIn("make rivals", skip.reason)
 
     def test_an_unreadable_warehouse_skips_it_with_the_warehouses_reason(self):
-        plan = schedule.due("daily", now=NOW, settings=schedule.Settings(),
+        plan = schedule.due(now=NOW, settings=schedule.Settings(),
                             warehouse=schedule.Reading(problem="no warehouse at x"))
         self.assertNotIn(self.STEP, commands(plan))
         skip = [s for s in plan.skipped if "standings" in s.what][0]
@@ -419,16 +367,16 @@ class StandingsTests(ScheduleTestCase):
 
     def test_the_summary_does_not_mention_it(self):
         self.known_league()
-        self.kickoff(24 * 7)
-        self.assertIn("nothing due", schedule.summarise(self.due("auto")))
+        self.kickoff(-5)        # locked, so no ranking either: nothing worth a line
+        self.assertIn("nothing due", schedule.summarise(self.due()))
 
     def test_its_failure_reports_after_the_snapshots_never_before(self):
         self.known_league()
         executor = RecordingExecutor({"snapshot": 3, "rivals": 1})
-        outcome = schedule.run(self.due("daily"), executor)
+        outcome = schedule.run(self.due(), executor)
         self.assertEqual(outcome.exit_code, 3)
         self.assertIn(self.STEP, executor.ran)
-        alone = schedule.run(self.due("daily"), RecordingExecutor({"rivals": 1}))
+        alone = schedule.run(self.due(), RecordingExecutor({"rivals": 1}))
         self.assertEqual(alone.exit_code, 1)
         self.assertEqual(alone.reported.step.invocation, self.STEP)
 
@@ -456,8 +404,7 @@ class ReadOnlyTests(ScheduleTestCase):
                 self.conn.backup(target)
             conn = storage.connect_readonly(path)
             self.addCleanup(conn.close)
-            for job in schedule.JOBS:
-                self.assertTrue(self.due(job, conn=conn).steps, job)
+            self.assertTrue(self.due(conn=conn).steps)
 
 
 class ReadingTests(unittest.TestCase):
@@ -467,41 +414,40 @@ class ReadingTests(unittest.TestCase):
     decision is a function of the answers, at the edges a builder makes awkward to reach.
     """
 
-    def due(self, job: str, *, now: datetime = NOW, **facts) -> schedule.Plan:
-        return schedule.due(job, now=now, warehouse=schedule.Reading(**facts),
+    def due(self, *, now: datetime = NOW, **facts) -> schedule.Plan:
+        return schedule.due(now=now, warehouse=schedule.Reading(**facts),
                             settings=schedule.Settings())
 
     def test_a_reading_with_nothing_in_it_is_a_readable_empty_warehouse(self):
-        plan = self.due("daily")
+        plan = self.due()
         self.assertIsNone(plan.problem)
         self.assertEqual(commands(plan), [
             "snapshot --force", "snapshot --backfill-only", "project --horizon 3 --chips"] + TAIL)
 
     def test_grading_is_the_readings_answer_in_the_readings_order(self):
-        plan = self.due("daily", settleable=(4, 5))
+        plan = self.due(settleable=(4, 5))
         self.assertEqual([step.gameweek for step in plan.steps if step.command == "settle"],
                          [4, 5])
 
-    def test_the_window_edge_is_decided_from_the_clock_passed_in(self):
-        deadline = NOW + timedelta(hours=26, minutes=30)
-        # 26h30 away floors to 26, which is inside a 26h window; asked an hour earlier,
-        # the same reading is 27h out and nothing is due. The reading did not change.
-        self.assertTrue(self.due("deadline", deadline=deadline).steps)
-        self.assertEqual(self.due("deadline", now=NOW - timedelta(hours=1),
-                                  deadline=deadline).steps, ())
+    def test_the_deadline_is_judged_from_the_clock_passed_in(self):
+        deadline = NOW + timedelta(hours=2)
+        # The reading did not change; only the clock did.
+        self.assertIn("recommend", commands(self.due(deadline=deadline)))
+        self.assertNotIn("recommend", commands(self.due(now=NOW + timedelta(hours=3),
+                                                        deadline=deadline)))
 
     def test_a_deadline_gone_by_a_minute_reads_as_gone(self):
-        plan = self.due("deadline", deadline=NOW - timedelta(minutes=1))
-        self.assertEqual(plan.steps, ())
+        plan = self.due(deadline=NOW - timedelta(minutes=1))
+        self.assertNotIn("recommend", commands(plan))
         self.assertTrue(any("passed 1h ago" in skip.reason for skip in plan.skipped),
                         plan.skipped)
 
     def test_the_hours_carried_on_the_plan_are_the_ones_it_decided_from(self):
-        plan = self.due("deadline", deadline=NOW + timedelta(hours=3, minutes=30))
+        plan = self.due(deadline=NOW + timedelta(hours=3, minutes=30))
         self.assertEqual(plan.hours_to_deadline, 3)
 
     def test_a_problem_makes_the_reading_unreadable_whatever_else_it_carries(self):
-        plan = self.due("daily", problem="x", settleable=(4,), league_known=True)
+        plan = self.due(problem="x", settleable=(4,), league_known=True)
         self.assertEqual(plan.problem, "x")
         self.assertNotIn("settle --gameweek 4 --learn", commands(plan))
         self.assertNotIn("rivals --standings-only", commands(plan))
@@ -515,30 +461,21 @@ class ColdStartTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "fpl.db"
 
-    def due(self, job: str) -> schedule.Plan:
-        return schedule.due(job, now=NOW,
+    def due(self) -> schedule.Plan:
+        return schedule.due(now=NOW,
                             warehouse=schedule.read_warehouse(self.path),
                             settings=schedule.Settings())
 
-    def test_daily_still_captures_and_marks_the_rest_skipped_with_that_reason(self):
-        plan = self.due("daily")
+    def test_it_still_captures_and_marks_the_rest_skipped_with_that_reason(self):
+        plan = self.due()
         self.assertEqual(commands(plan)[0], "snapshot --force")
         self.assertTrue(plan.skipped)
         self.assertIn(str(self.path),
                       [skip.reason for skip in plan.skipped if skip.what == "grading"][0])
-        self.assertEqual(plan.exit_code, 0)
-
-    def test_auto_captures_too(self):
-        self.assertIn("snapshot --force", commands(self.due("auto")))
-
-    def test_the_hourly_job_plans_nothing_and_exits_two(self):
-        plan = self.due("deadline")
-        self.assertEqual(plan.steps, ())
-        self.assertEqual(plan.exit_code, schedule.EXIT_UNREADABLE)
 
     def test_could_not_ask_never_renders_the_same_as_nothing_is_due(self):
-        unreadable = schedule.render(self.due("deadline"))
-        quiet = schedule.render(schedule.Plan(job="deadline", at=NOW, skipped=(
+        unreadable = schedule.render(self.due())
+        quiet = schedule.render(schedule.Plan(job="now", at=NOW, skipped=(
             schedule.Skipped("the ranking half", "no unfinished fixture"),)))
         self.assertNotEqual(unreadable, quiet)
         self.assertIn(str(self.path), unreadable)
@@ -547,7 +484,7 @@ class ColdStartTests(unittest.TestCase):
         # The one line is what a caller may print instead of the rest, so a plan made
         # without being able to read the warehouse cannot look like a complete one.
         self.assertIn("could not be read",
-                      schedule.render(self.due("daily"), one_line=True))
+                      schedule.render(self.due(), one_line=True))
 
     def test_a_file_that_is_not_a_warehouse_reads_as_unreadable_not_as_empty(self):
         self.path.write_text("this is not a database")
@@ -565,7 +502,7 @@ class RenderTests(ScheduleTestCase):
 
     def test_every_step_and_every_skip_appears_with_its_reason(self):
         self.kickoff(5)
-        plan = self.due("auto")
+        plan = self.due()
         text = schedule.render(plan)
         for step in plan.steps:
             self.assertIn(step.invocation, text)
@@ -574,19 +511,22 @@ class RenderTests(ScheduleTestCase):
             self.assertIn(skip.reason, text)
 
     def test_a_step_whose_failure_is_tolerated_says_so(self):
-        plan = schedule.Plan(job="daily", at=NOW, steps=(
+        plan = schedule.Plan(job="now", at=NOW, steps=(
             schedule.Step("brief", (), "the reasoning is worth keeping", tolerated=True),))
         self.assertIn("tolerated", schedule.render(plan))
 
     def test_one_line_is_the_first_line_of_the_whole_thing(self):
-        plan = self.due("daily")
+        plan = self.due()
         self.assertEqual(schedule.render(plan, one_line=True),
                          schedule.render(plan).splitlines()[0])
 
     def test_the_one_line_says_how_much_is_due(self):
         self.kickoff(80)
-        self.assertIn("nothing due", schedule.render(self.due("deadline"), one_line=True))
-        self.assertIn("4 steps due", schedule.render(self.due("daily"), one_line=True))
+        ranked = schedule.render(self.due(), one_line=True)
+        self.kickoff(-5)
+        locked = schedule.render(self.due(), one_line=True)
+        self.assertIn("now: 7 steps due", ranked)
+        self.assertIn("now: 4 steps due", locked)
 
 
 class RecordingExecutor:
@@ -611,24 +551,24 @@ class RunTests(ScheduleTestCase):
     """The precedence rule, pinned. It was a comment in a shell script and a live bug."""
 
     def plan(self, *steps: schedule.Step) -> schedule.Plan:
-        return schedule.Plan(job="daily", at=NOW, steps=steps)
+        return schedule.Plan(job="now", at=NOW, steps=steps)
 
     def test_every_step_runs_in_order(self):
         executor = RecordingExecutor()
-        outcome = schedule.run(self.due("daily"), executor)
+        outcome = schedule.run(self.due(), executor)
         self.assertEqual(executor.ran, commands(outcome.plan))
         self.assertEqual(outcome.exit_code, 0)
 
     def test_the_first_failure_is_reported_not_the_last(self):
         # The live bug: a snapshot with no session (3) followed by a project that failed
         # (1) reported 1 - the recoverable code for the irrecoverable failure.
-        outcome = schedule.run(self.due("daily"),
+        outcome = schedule.run(self.due(),
                                RecordingExecutor({"snapshot": 3, "project": 1}))
         self.assertEqual(outcome.exit_code, 3)
 
     def test_a_failing_step_does_not_stop_the_steps_after_it(self):
         executor = RecordingExecutor({"snapshot": 3})
-        outcome = schedule.run(self.due("daily"), executor)
+        outcome = schedule.run(self.due(), executor)
         self.assertEqual(executor.ran, commands(outcome.plan))
         self.assertIn("brief", executor.ran)
 
@@ -657,15 +597,16 @@ class RunTests(ScheduleTestCase):
             RecordingExecutor({"brief": 1, "settle": 6}))
         self.assertEqual(outcome.exit_code, 6)
 
-    def test_the_plans_own_code_stands_when_nothing_ran(self):
-        # The hourly job on a host whose warehouse will not open: 2, not 0.
-        plan = schedule.due("deadline", now=NOW,
-                            warehouse=schedule.Reading(problem="unreadable"),
-                            settings=schedule.Settings())
-        executor = RecordingExecutor()
-        outcome = schedule.run(plan, executor)
-        self.assertEqual(executor.ran, [])
-        self.assertEqual(outcome.exit_code, schedule.EXIT_UNREADABLE)
+    def test_a_run_with_nothing_to_run_exits_zero(self):
+        outcome = schedule.run(self.plan(), RecordingExecutor())
+        self.assertEqual(outcome.exit_code, 0)
+
+    def test_a_failed_capture_outranks_a_later_recoverable_failure(self):
+        # The capture is the irrecoverable step; the report must name it whatever else
+        # went wrong after it.
+        outcome = schedule.run(self.due(), RecordingExecutor({"snapshot": 3, "project": 1}))
+        self.assertEqual(outcome.exit_code, 3)
+        self.assertEqual(outcome.reported.step.command, "snapshot")
 
     def test_two_failures_sharing_a_code_are_not_confused_for_each_other(self):
         # Matching the reported code back to a step by its number named the wrong one:
@@ -721,15 +662,15 @@ class SummariseTests(ScheduleTestCase):
     """
 
     def summary(self, **kwargs) -> str:
-        return schedule.summarise(self.due("auto", **kwargs))
+        return schedule.summarise(self.due(**kwargs))
 
     def test_the_routine_capture_is_not_worth_a_line(self):
         # Every plan captures and projects. Saying so every time trains the reader to
         # skip the line, so what it names is what changes about today.
-        self.kickoff(24 * 7)
+        self.kickoff(-5)        # locked, so no ranking either: nothing worth a line
         self.assertIn("nothing due", self.summary())
 
-    def test_a_deadline_inside_the_window_is_named_with_its_hours(self):
+    def test_a_deadline_is_named_with_its_hours(self):
         self.kickoff(10)
         self.assertIn("deadline in 8h", self.summary())
 
@@ -749,7 +690,7 @@ class SummariseTests(ScheduleTestCase):
 
     def test_a_warehouse_that_could_not_be_read_never_reads_as_nothing_due(self):
         # The capture is planned either way, so an absent settle step proves nothing here.
-        plan = schedule.due("auto", now=NOW,
+        plan = schedule.due(now=NOW,
                             warehouse=schedule.Reading(problem="fpl.db is not a warehouse"),
                             settings=schedule.Settings())
         summary = schedule.summarise(plan)
@@ -758,7 +699,7 @@ class SummariseTests(ScheduleTestCase):
 
     def test_it_never_promises_work_the_plan_does_not_hold(self):
         self.kickoff(10)
-        plan = self.due("auto")
+        plan = self.due()
         summary = schedule.summarise(plan)
         if "ready to grade" in summary:
             self.assertTrue(any(step.command == "settle" for step in plan.steps))
@@ -799,16 +740,16 @@ class CommandTests(ScheduleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._db(tmp)
             before = path.stat().st_mtime_ns, path.stat().st_size
-            code, out, _ = self._run(["deadline", "--dry-run", "--db", str(path)])
+            code, out, _ = self._run(["--dry-run", "--db", str(path)])
             self.assertEqual((path.stat().st_mtime_ns, path.stat().st_size), before)
         self.assertEqual(code, 0)
         self.assertIn("recommend", out)
 
-    def test_the_hourly_job_on_a_host_with_no_warehouse_exits_two(self):
+    def test_a_dry_run_on_a_host_with_no_warehouse_still_plans_the_capture(self):
         with tempfile.TemporaryDirectory() as tmp:
-            code, _, _ = self._run(["deadline", "--dry-run",
-                                    "--db", str(Path(tmp) / "fpl.db")])
-        self.assertEqual(code, schedule.EXIT_UNREADABLE)
+            code, out, _ = self._run(["--dry-run", "--db", str(Path(tmp) / "fpl.db")])
+        self.assertEqual(code, 0)
+        self.assertIn("snapshot --force", out)
 
     def test_a_dry_run_never_reaches_the_executor(self):
         # Nothing in this file may run a step for real: the production executor launches
@@ -822,12 +763,37 @@ class CommandTests(ScheduleTestCase):
         schedule.SubprocessExecutor = Exploding
         self.addCleanup(setattr, schedule, "SubprocessExecutor", original)
         with tempfile.TemporaryDirectory() as tmp:
-            code, _, _ = self._run(["deadline", "--dry-run", "--db", str(self._db(tmp))])
+            code, _, _ = self._run(["--dry-run", "--db", str(self._db(tmp))])
         self.assertEqual(code, 0)
 
-    def test_an_unknown_job_is_a_usage_error(self):
-        with self.assertRaises(SystemExit):
-            self._run(["weekly", "--dry-run"])
+    def test_a_second_run_cannot_take_the_lock_while_the_first_holds_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fpl.lock"
+            with schedule.held(path) as first:
+                with schedule.held(path) as second:
+                    self.assertTrue(first)
+                    self.assertFalse(second)
+            with schedule.held(path) as again:
+                self.assertTrue(again)
+
+    def test_a_run_that_cannot_take_the_lock_runs_nothing_and_says_why(self):
+        self.kickoff(5)
+        with tempfile.TemporaryDirectory() as tmp:
+            db, lock = self._db(tmp), Path(tmp) / "fpl.lock"
+            with (schedule.held(lock), mock.patch.dict(os.environ, {"FPL_LOCK": str(lock)}),
+                  mock.patch.object(schedule, "SubprocessExecutor",
+                                    side_effect=AssertionError("ran a step"))):
+                code, _, err = self._run(["--db", str(db)])
+        self.assertEqual(code, schedule.EXIT_LOCKED)
+        self.assertIn("another run holds", err)
+
+    def test_a_dry_run_does_not_need_the_lock(self):
+        self.kickoff(5)
+        with tempfile.TemporaryDirectory() as tmp:
+            db, lock = self._db(tmp), Path(tmp) / "fpl.lock"
+            with schedule.held(lock), mock.patch.dict(os.environ, {"FPL_LOCK": str(lock)}):
+                code, _, _ = self._run(["--dry-run", "--db", str(db)])
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

@@ -111,7 +111,7 @@ class WarehouseBuilder:
 
 
 class StatusTestCase(unittest.TestCase):
-    """A warehouse in the state a healthy `make deadline` leaves behind.
+    """A warehouse in the state a healthy `make now` leaves behind.
 
     Gameweeks 1 and 2 played, backfilled and graded; a latest snapshot targeting gameweek
     3 with the squad captured, projections over a three-gameweek horizon under the current
@@ -666,9 +666,13 @@ class NextActionTests(StatusTestCase):
                           (when, gameweek))
         self.conn.commit()
 
-    def test_nothing_due_when_nothing_grades_and_no_deadline_is_close(self):
-        self._kickoff(3, 24 * 7)
+    def test_nothing_due_when_nothing_grades_and_the_deadline_has_passed(self):
+        self._kickoff(3, -5)
         self.assertIn("nothing due", status.next_action(self.conn))
+
+    def test_a_far_deadline_is_still_named_because_a_run_always_ranks(self):
+        self._kickoff(3, 24 * 7)
+        self.assertIn("deadline in", status.next_action(self.conn))
 
     def test_a_close_deadline_is_named_with_its_hours_and_the_command(self):
         self._kickoff(3, 10)

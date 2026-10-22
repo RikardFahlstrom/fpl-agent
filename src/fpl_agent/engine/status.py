@@ -508,12 +508,12 @@ def next_action(conn: sqlite3.Connection,
 
     # What is due is the schedule's question, and this is a reader of the answer. It used
     # to ask its own: its own settle query and its own deadline window, which made this
-    # the fourth statement of the pipeline. `make now` runs this same `auto` plan - bar
+    # the fourth statement of the pipeline. `make now` runs this same plan - bar
     # the notification step, which depends on configuration this command does not read
     # and which the summary never mentions - so the line cannot promise work the command
     # will not do.
     try:
-        plan = schedule.due("auto", now=datetime.now(timezone.utc),
+        plan = schedule.due(now=datetime.now(timezone.utc),
                             warehouse=schedule.read(conn),
                             settings=schedule.Settings())
     except sqlite3.Error:
