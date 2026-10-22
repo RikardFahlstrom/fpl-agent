@@ -271,6 +271,21 @@ CREATE TABLE IF NOT EXISTS decision (
     status        TEXT NOT NULL DEFAULT 'proposed'
 );
 
+-- One row per run that produced Instructions, never updated: each run appends, so the last
+-- one before a deadline is the one that was acted on and can be graded against the result.
+-- `snapshot_id` is the capture the run came from; `model_version` keeps two versions'
+-- advice side by side. `payload` is the Instructions as JSON (lineup, moves, chip).
+CREATE TABLE IF NOT EXISTS instructions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at    TEXT NOT NULL,
+    gameweek      INTEGER NOT NULL,
+    model_version TEXT NOT NULL,
+    snapshot_id   INTEGER NOT NULL REFERENCES snapshot(id),
+    payload       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_instructions_gw ON instructions(gameweek, model_version, id);
+
 -- Older warehouses also hold a `notification` table, from when a push to a phone existed.
 -- Nothing creates, reads or writes it any more, and it is never dropped: the warehouse is
 -- the one asset that cannot be re-fetched.
@@ -603,3 +618,14 @@ def record_my_team(conn: sqlite3.Connection, snapshot_id: int, entry_id: Optiona
          json.dumps(my_team.get("chips") or [], sort_keys=True)),
     )
     return len(picks)
+
+
+def record_instructions(conn: sqlite3.Connection, gameweek: int, model_version: str,
+                        snapshot_id: int, payload: dict, now: Optional[str] = None) -> int:
+    """Append one Instructions record and return its id. Never replaces a row."""
+    cursor = conn.execute(
+        "INSERT INTO instructions (created_at, gameweek, model_version, snapshot_id, payload) "
+        "VALUES (?,?,?,?,?)",
+        (now or _now(), gameweek, model_version, snapshot_id,
+         json.dumps(payload, sort_keys=True)))
+    return cursor.lastrowid

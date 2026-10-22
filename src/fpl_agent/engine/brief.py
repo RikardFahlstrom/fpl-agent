@@ -6,9 +6,11 @@ exactly two things - choosing to act on a recommendation, and accepting or rejec
 drafted learning - so the brief leads with the facts that need them and puts the tables
 underneath.
 
-Read-only, twice over, for the same reason `status` is: the connection is opened
-`mode=ro` and the only thing this command writes is one markdown file. A brief that
-could change the warehouse would be a brief you could not trust to describe it.
+Everything is read through a connection opened `mode=ro`, for the same reason `status`
+is: a brief that could change the warehouse would be a brief you could not trust to
+describe it. Two things are written, both after the page is rendered and never by
+`--dry-run`: the markdown file, and one appended Instructions record, through a separate
+connection, so the advice that was given can be graded later (`instructions.store`).
 
 `evaluate` reads everything the page prints, once, into an `Evaluation`; `render_brief`
 and `render_block` take that value and nothing else - no connection, no clock, no
@@ -855,6 +857,22 @@ EXIT_OK = 0
 EXIT_UNREADABLE = 2
 
 
+def record_instructions(db: Path, evaluation: Evaluation) -> str:
+    """Append this run's Instructions to the warehouse and say what happened."""
+    conn = storage.connect(db)
+    try:
+        record_id, why = instr.store(
+            conn, evaluation.instructions, model_version=MODEL_VERSION,
+            snapshot_id=evaluation.capture.id if evaluation.capture else None)
+        conn.commit()
+    finally:
+        conn.close()
+    if record_id is None:
+        return f"not recorded: {why}"
+    return (f"recorded Instructions #{record_id} for GW{evaluation.gameweek} "
+            f"(model {MODEL_VERSION})")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Write the gameweek brief from the warehouse. Read-only.")
@@ -895,6 +913,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return EXIT_OK
         print(instr.render(evaluation.instructions))
         print(f"\nwrote {write_brief(evaluation, args.logs)}")
+        print(record_instructions(args.db, evaluation))
         return EXIT_OK
     finally:
         conn.close()
