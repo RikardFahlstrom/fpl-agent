@@ -8,6 +8,7 @@ import itertools
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -144,6 +145,99 @@ class NoLineupTests(InstructionsTestCase):
         found = self.build(locked="locked")
         self.assertIsNone(found.lineup)
         self.assertIn("gameweek 3 is locked", found.note)
+
+
+class StoreTests(InstructionsTestCase):
+    """One record per run, appended, tagged and never changed."""
+
+    def store(self, **kwargs):
+        kwargs.setdefault("snapshot_id", warehouse.latest(self.conn).id)
+        kwargs.setdefault("model_version", MODEL_VERSION)
+        return instructions.store(self.conn, self.build(), **kwargs)
+
+    def test_a_run_adds_a_record_and_a_second_run_adds_another(self):
+        first, _ = self.store()
+        second, _ = self.store()
+        self.assertNotEqual(first, second)
+        found = instructions.records(self.conn, GAMEWEEK, MODEL_VERSION)
+        self.assertEqual([r.id for r in found], [first, second])
+
+    def test_the_record_round_trips_and_has_room_for_moves_and_chip(self):
+        self.store()
+        [record] = instructions.records(self.conn, GAMEWEEK, MODEL_VERSION)
+        self.assertEqual(record.instructions, self.build())
+        payload = self.build().to_payload()
+        self.assertEqual(payload["moves"], [])
+        self.assertIsNone(payload["chip"])
+        self.assertEqual(record.snapshot_id, warehouse.latest(self.conn).id)
+
+    def test_the_last_record_before_the_deadline_is_identifiable(self):
+        # The deadline is 07:30 UTC on 5 September.
+        self.store(now=datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc))
+        before, _ = self.store(now=datetime(2026, 9, 5, 7, 0, tzinfo=timezone.utc))
+        self.store(now=datetime(2026, 9, 5, 9, 0, tzinfo=timezone.utc))   # after the lock
+        found = instructions.last_before_deadline(self.conn, GAMEWEEK, MODEL_VERSION)
+        self.assertEqual(found.id, before)
+
+    def test_no_record_means_none_not_a_made_up_one(self):
+        self.assertIsNone(instructions.last_before_deadline(self.conn, GAMEWEEK, MODEL_VERSION))
+
+    def test_a_finished_gameweek_gets_no_new_record_and_keeps_its_old_ones(self):
+        before, _ = self.store()
+        self.conn.execute("UPDATE fixture SET finished = 1 WHERE event = ?", (GAMEWEEK,))
+        self.conn.commit()
+        again, why = self.store()
+        self.assertIsNone(again)
+        self.assertIn("has finished", why)
+        self.assertEqual([r.id for r in instructions.records(
+            self.conn, GAMEWEEK, MODEL_VERSION)], [before])
+
+    def test_two_model_versions_sit_side_by_side(self):
+        self.store()
+        self.store(model_version="0.0.0-other")
+        self.assertEqual(len(instructions.records(self.conn, GAMEWEEK, MODEL_VERSION)), 1)
+        self.assertEqual(len(instructions.records(self.conn, GAMEWEEK, "0.0.0-other")), 1)
+
+    def test_nothing_is_stored_when_there_is_no_lineup(self):
+        record, why = instructions.store(
+            self.conn, instructions.Instructions(GAMEWEEK, note="not evaluated - x"),
+            snapshot_id=1, model_version=MODEL_VERSION)
+        self.assertIsNone(record)
+        self.assertIn("nothing to record", why)
+
+    def test_the_command_records_each_run_and_a_dry_run_records_nothing(self):
+        import io
+        from contextlib import redirect_stdout
+        disk = Path(self.tmp.name) / "fpl.db"
+        copy = storage.connect(disk)
+        self.conn.backup(copy)
+        copy.close()
+
+        real = brief.evaluate
+
+        def at_now(conn, gameweek, **kwargs):
+            return real(conn, gameweek, now=NOW,
+                        learnings_dir=Path(self.tmp.name) / "learnings")
+
+        def run(*extra):
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch.object(brief, "evaluate", at_now):
+                brief.main(["--db", str(disk), "--logs", str(Path(self.tmp.name) / "logs"),
+                            *extra])
+            return out.getvalue()
+
+        def count():
+            conn = storage.connect(disk)
+            try:
+                return conn.execute("SELECT COUNT(*) FROM instructions").fetchone()[0]
+            finally:
+                conn.close()
+
+        run("--dry-run")
+        self.assertEqual(count(), 0)
+        self.assertIn("recorded Instructions #1", run())
+        run()
+        self.assertEqual(count(), 2)
 
 
 class OneValueTests(InstructionsTestCase):

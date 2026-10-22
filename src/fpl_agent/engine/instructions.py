@@ -14,11 +14,13 @@ Pure over stored rows: the projections of the squad's own capture, read through
 `chips.captain_picks`, the same record `recommend` and the chip values read.
 """
 
+import json
 import sqlite3
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import Any, Optional
 
-from . import chips
+from . import chips, storage, warehouse
 from . import squad as squads
 from .held import HeldPlayer, HeldSquad
 
@@ -59,6 +61,32 @@ class Instructions:
     gameweek: int
     lineup: Optional[Lineup] = None
     note: str = "not evaluated"
+    #: Room for the slices still to come; stored with the record so it can be graded.
+    moves: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    chip: Optional[str] = None
+
+    def to_payload(self) -> dict[str, Any]:
+        """The stored form: plain JSON types, every key always present."""
+        return {"gameweek": self.gameweek, "note": self.note,
+                "lineup": None if self.lineup is None else asdict(self.lineup),
+                "moves": list(self.moves), "chip": self.chip}
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "Instructions":
+        raw = payload.get("lineup")
+        lineup = None
+        if raw is not None:
+            slot = lambda d: Slot(**d)
+            lineup = Lineup(
+                formation=raw["formation"], xi=tuple(slot(d) for d in raw["xi"]),
+                captain=slot(raw["captain"]), captain_line=raw["captain_line"],
+                captain_why=raw["captain_why"], vice=slot(raw["vice"]),
+                vice_reason=raw["vice_reason"],
+                bench=tuple(slot(d) for d in raw["bench"]),
+                bench_reasons=tuple(raw["bench_reasons"]))
+        return cls(gameweek=payload["gameweek"], lineup=lineup,
+                   note=payload.get("note", "not evaluated"),
+                   moves=tuple(payload.get("moves") or ()), chip=payload.get("chip"))
 
 
 def _slot(player: HeldPlayer, xp: float) -> Slot:
@@ -171,3 +199,61 @@ def render(instructions: Instructions) -> str:
     """The terminal text: the same rows, as plain lines."""
     width = max(len(label) for label, _ in rows(instructions)) + 1
     return "\n".join(f"{label + ':':<{width}} {text}" for label, text in rows(instructions))
+
+
+# --------------------------------------------------------------------------
+# Stored at decision time
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Record:
+    """One stored run: the Instructions as they were, and where they came from."""
+    id: int
+    created_at: datetime
+    gameweek: int
+    model_version: str
+    snapshot_id: int
+    instructions: Instructions
+
+
+def store(conn: sqlite3.Connection, instructions: Instructions, *, snapshot_id: int,
+          model_version: str, now: Optional[datetime] = None
+          ) -> tuple[Optional[int], str]:
+    """Append this run's Instructions; returns the record id, or None and why not.
+
+    Nothing is stored when there is no lineup to grade, and nothing is ever stored for a
+    gameweek that has finished: a record made after the result is not what the model
+    believed before it. Records are only ever appended, so an earlier one - including every
+    record of a settled gameweek - is never changed.
+    """
+    if instructions.lineup is None:
+        return None, f"nothing to record: {instructions.note}"
+    if warehouse.gameweeks(conn, model_version).get(instructions.gameweek).finished:
+        return None, (f"gameweek {instructions.gameweek} has finished; a record made after "
+                      f"the result is not a decision-time one")
+    stamp = None if now is None else now.isoformat()
+    return storage.record_instructions(conn, instructions.gameweek, model_version,
+                                       snapshot_id, instructions.to_payload(), stamp), ""
+
+
+def records(conn: sqlite3.Connection, gameweek: int, model_version: str) -> list[Record]:
+    """Every record for the gameweek under the version, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM instructions WHERE gameweek = ? AND model_version = ? ORDER BY id",
+        (gameweek, model_version)).fetchall()
+    return [Record(r["id"], storage.parse_utc(r["created_at"]), r["gameweek"],
+                   r["model_version"], r["snapshot_id"],
+                   Instructions.from_payload(json.loads(r["payload"]))) for r in rows]
+
+
+def last_before_deadline(conn: sqlite3.Connection, gameweek: int,
+                         model_version: str) -> Optional[Record]:
+    """The last record made before the gameweek's deadline: the one that was acted on.
+
+    With no deadline derivable it is the latest record. None when there is none, which a
+    caller says rather than inventing a grade.
+    """
+    deadline = warehouse.deadline(conn, gameweek)
+    found = [r for r in records(conn, gameweek, model_version)
+             if deadline is None or r.created_at <= deadline]
+    return found[-1] if found else None
