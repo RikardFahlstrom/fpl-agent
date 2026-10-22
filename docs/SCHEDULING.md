@@ -1,232 +1,112 @@
-# Running this unattended
+# How a run works
 
-The target is a Linux server running everything on cron with no human present, and
-**no automated transfers**. The agent captures, projects and recommends; a person
-reads the output and makes the move. No code path executes a transfer, and that is the
-reason a bearer token can sit on a remote host at all.
+`make now` is the one entry point. It is run by hand, at a terminal, and there are
+**no automated transfers**: the agent captures, projects and recommends; a person reads the
+output and makes the move. No code path executes a transfer.
 
-The organising principle is that **cron fires dumbly and often; the guards decide
-whether there is anything to do.** The FPL calendar cannot be written in a crontab -
-deadlines move, fixtures are postponed, double gameweeks exist, and a gameweek ends
-when its last fixture ends rather than on a weekday. Any crontab encoding that is
-wrong within weeks. `settle` already refuses a gameweek that has not finished, so
-attempting it every morning costs one process and answers correctly.
+`engine/schedule` is the decision layer and `fpl-agent schedule` is how it is reached.
+`make now` asks the warehouse what is due and does it, in one job:
 
-`engine/schedule` is that decision layer, and `fpl-agent schedule` is how it is reached.
-`deploy/fpl-cron.sh` is what cron calls: a directory change, a `flock` re-exec, and one
-invocation of the schedule. It decides nothing, which is why it fits on one screen — the
-eight commits it took to get its three rules right are the reason those rules moved.
+1. capture the market and the squad, then the actuals backfill, then project;
+2. refresh the league table and, when they are behind, the rival picks;
+3. settle every gameweek that is gradable, oldest first;
+4. rank, then check the state the run left behind with `status`;
+5. write the brief.
 
-## What runs, and how often
-
-| Job | Cadence (UTC) | Why that cadence |
-| --- | --- | --- |
-| `daily` | once, 02:30 | Prices resolve around 01:30 UK. A missed day is price and ownership movement that no endpoint can return - this is the irrecoverable one. |
-| `deadline` | hourly | Cheap when idle: it reads one row and exits. Inside 26 hours of a deadline it re-captures and re-ranks, because predicted lineups firm up on matchday and a projection built 24 hours out is a different answer from one built 3 hours out. |
-| `auto` | never, by cron | Both of the above in one pass, for a person at a terminal. `make now` runs it. Not for the crontab: the two halves want different clocks, and running them together hourly would snapshot far more than the market changes. |
-
-`auto` exists because the split that is right for cron is wrong for a human. Somebody
-about to make a transfer wants "do whatever is due" without first working out whether
-today is a settling day or a deadline day. It captures once and then asks both questions,
-so it costs one snapshot rather than the two that running `daily` and `deadline` back to
-back would. `deploy/fpl-cron.sh --dry-run auto` shows the decision without acting on it.
-
-`daily` also settles, on its own, with nobody logged in. It asks the warehouse for every
-gameweek that is gradable and ungraded, oldest first, and grades each one — so
-`make settle GW=n` is something you run by hand only if you want to, not something the
-season depends on you remembering.
-
-It does not decide that for itself. `fpl-agent settle --list` prints the answer and the
-script consumes it, so the rule lives in exactly one place — the per-gameweek ledger,
-`warehouse.GameweekLedger.settleable` — which `settle`, `status` and the scheduler all
-read. Three statements of one rule is how
-the scheduler and the engine came to disagree in the first place.
-
-"When is the next deadline" is now asked the same way. It was the script's own SQL, then
-`storage.next_deadline` - the earliest *unplayed* kickoff, which mid-round put a deadline
-before each remaining match while the brief showed the real one. It is now the *target
-gameweek*'s deadline, `warehouse.target`, which the schedule decides its window from and
-`status --hours-to-deadline` reports, because a scheduler and an engine that disagree
-about when to project will disagree quietly and on a matchday. The hours are rounded
-*down*, so a deadline half an hour gone reads as past rather than as "0h away" — which
-every window that tests `hours < 0` would have let through. The 26-hour cutoff is
-`schedule.DEADLINE_WITHIN_HOURS` — the schedule owns the window because the schedule is
-what acts on it — and `status`'s `next:` line reads it from there, so the two cannot come
-to disagree.
-
-That cutoff gates *ranking*, not projecting. Every capture is projected, in every job,
-because the alternative is what the warehouse used to hold between Tuesday and Friday: a
-snapshot with no projections, which `status` calls an inconsistency and exits 7 for, and
-which the brief pushed `status_failed` about every morning. Projecting is cheap and reads
-only what the capture just stored; the rival *picks* and `recommend` are the expensive half
-and the half that is actually deadline-shaped.
-
-The league table is not. `rivals` captures two things at different prices - the standings,
-one public request that is always current, and the picks, five calls that FPL hides until
-the gameweek starts - and the standings used to ride along behind the window that exists
-for the picks, which is how the table sat five days stale before a decision. Every capture
-now ends on `rivals --standings-only`, which needs no session, once the warehouse holds a
-league to refresh; until a first full `rivals` run has recorded one, the plan skips it and
-says so.
-
-The picks have one more gate, on the daily job only: once a gameweek finishes, the picks
-held for the previous one are *stale ownership*, which the brief withholds rather than
-shows. Left to the deadline window, the Ownership line read "not shown" from Tuesday to
-Friday every week. So `daily` (and `auto`) plans a full `rivals` whenever the picks are
-behind the last finished gameweek - the comparison `status` warns on and
-`warehouse.OwnershipSource` withholds on - and skips it, saying the ownership is fresh,
-otherwise. This one needs a session, which the daily snapshot has just used.
-
-A gameweek qualifies on three counts, and each was a bug before it was a condition:
-
-| Condition | What goes wrong without it |
-| --- | --- |
-| **every** fixture played | One Saturday lunchtime kickoff makes the round look finished. `settle` refuses it, correctly, and you get a mailed failure mid-gameweek. |
-| never graded | Absence from `outcome` — state, not a marker file, which can disagree with it. |
-| actually projectable | A projection made before the round, from a snapshot targeting it. Gameweeks that finished before this warehouse existed have none and never will, so they would refuse every morning for the rest of the season. |
-
-Oldest first, and all of them, because taking the highest skips. On the Saturday of
-gameweek 4 an ungraded gameweek 3 must still be what gets settled — taking the maximum
-passed it over for a gameweek 4 that had not finished, and gameweek 3 would never have
-been graded at all. A week the box was down catches up the same way.
-
-Both jobs end by notifying and then writing `logs/gwNN.md` - in that order, so the
-brief's Push line reports "sent <when>" from the notification table rather than promising
-it. The push carries only the few lines worth interrupting someone for; the brief is the
-rest of the reasoning, and `logs/` is tracked so that record survives. Note that this rewrites a tracked file, so a server's
-checkout will show it modified and `git pull` will refuse until those changes are
-committed or discarded.
+`make now DRY=--dry-run` shows the decision without acting on it.
 
 ## What is due, as data
 
-`engine/schedule.py` answers what a job is due to do. `due(job, now=..., warehouse=...,
-settings=...)` returns a **Plan**: the ordered **Step**s, why each one is due, and every
-**Skipped** item with the reason it was skipped. The warehouse arrives already read — a
-`Reading` from `schedule.read_warehouse(path)`: the target gameweek's deadline, what is
-settleable, whether a league is known, or the reason none of that could be read — so a Plan is a
-function of its arguments with no writes, no subprocesses, and no clock of its own, and a
-deadline window is testable without waiting for one or seeding a database.
+`due(now=..., warehouse=..., settings=...)` returns a **Plan**: the ordered **Step**s, why
+each one is due, and every **Skipped** item with the reason it was skipped. The warehouse
+arrives already read — a `Reading` from `schedule.read_warehouse(path)`: the target
+gameweek's deadline, what is settleable, whether a league is known, or the reason none of
+that could be read — so a Plan is a function of its arguments with no writes, no
+subprocesses, and no clock of its own.
 
-```sh
-fpl-agent schedule --dry-run auto      # what is due, and what is not, and why
-```
-
-A dry run writes nothing and exits 0. The one exception is the hourly job on a host with
-no readable warehouse: it plans nothing and exits 2, because *could not ask the question*
-and *nothing is due* must never render the same. `daily` and `auto` still plan the
-capture there — that capture is what creates the warehouse on a new host.
+A dry run writes nothing and exits 0. *Could not ask the question* and *nothing is due*
+never render the same: a warehouse that will not open still plans the capture, because the
+capture is what creates one, and the plan says why the rest was skipped.
 
 Without `--dry-run` the same command runs the Plan and reports **the first non-zero exit
-code**, not the last. The shell assigned each step's code unconditionally, so a `snapshot`
-exiting 3 (no session) followed by a `project` exiting 1 reported 1 — the recoverable code
-standing in for the irrecoverable failure, which is the precise outcome the guard in the
-`auto` job exists to prevent. A failing step still does not stop the ones after it.
+code**, not the last. A `snapshot` exiting 3 (no session) followed by a `project` exiting 1
+reports 3 — the capture is the irrecoverable step, and the recoverable code must never
+stand in for it. A failing step does not stop the ones after it. The brief is an ordinary
+Step carrying a tolerate-failure flag: a tolerated step's code is reported only when every
+other step succeeded.
 
-The brief and the notifier are ordinary Steps carrying a tolerate-failure flag, rather
-than two special cases in the entry point's tail. A tolerated step's code is reported only
-when every other step succeeded, which is the old hand-written masking as general policy:
-a dead ntfy server can turn a 0 into an 8 and can never turn a 3 into one. Whether a topic
-is configured at all is `notify.target_from_env` — the engine, not a regex over
-`fpl-agent.ini`.
+The schedule adds no exit code of its own beyond one: **9** means another run holds the
+lock (below). Otherwise it propagates the failing step's.
 
-The schedule adds no exit code of its own: it propagates the failing step's, and the table
-above is unchanged.
+### Which gameweek, and which deadline
 
-The two were diffed across the six states that can be enumerated before any of the shell's
-decision logic was deleted, and the harness still compares today's entry point against the
-old script taken out of git — see [schedule-equivalence.md](schedule-equivalence.md) for
-the result and `tools/schedule-equivalence.sh` to re-run it. Eleven of the eighteen
-comparisons agree exactly; the seven that do not are the deliberate behaviour changes,
-each written down with its reasoning.
+"When is the next deadline" is the *target gameweek*'s deadline, `warehouse.target`, which
+the schedule ranks against and `status --hours-to-deadline` reports. The hours are rounded
+*down*, so a deadline half an hour gone reads as past rather than as "0h away". Once it has
+passed, the target is locked: nothing is ranked until a capture targets the next gameweek.
+
+Every capture is projected: the alternative is a snapshot with no projections, which
+`status` calls an inconsistency and exits 7 for.
+
+The league table is refreshed on every run, once the warehouse holds a league: `rivals`
+captures the standings (one public request, always current) and the picks (five calls that
+FPL hides until the gameweek starts), and a table that sat five days stale before a
+decision is what splitting them cost. Until a first full `rivals` run has recorded a
+league, the plan skips it and says so.
+
+The picks are planned whenever they are behind the last finished gameweek — the comparison
+`status` warns on and `warehouse.OwnershipSource` withholds on — because stale ownership is
+withheld from the brief rather than shown. That one needs a session, which the snapshot has
+just used.
+
+A gameweek is settled when it qualifies on three counts, and each was a bug before it was a
+condition:
+
+| Condition | What goes wrong without it |
+| --- | --- |
+| **every** fixture played | One Saturday lunchtime kickoff makes the round look finished. `settle` refuses it, correctly. |
+| never graded | Absence from `outcome` — state, not a marker file, which can disagree with it. |
+| actually projectable | A projection made before the round, from a snapshot targeting it. Gameweeks that finished before this warehouse existed have none and never will. |
+
+Oldest first, and all of them, because taking the highest skips: on the Saturday of
+gameweek 4 an ungraded gameweek 3 must still be what gets settled. The rule lives in one
+place, the per-gameweek ledger (`warehouse.GameweekLedger.settleable`), which `settle`,
+`status` and the schedule all read.
+
 
 ## `status` is the last line of a run
 
 `fpl-agent status` reads the warehouse - read-only, `mode=ro`, no network, no token
 exchange - and answers in one block: is the latest snapshot complete, are projections
 attached to it under the current model, are the actuals current, which gameweek's
-lineups will `project` find, and will tonight's job need a browser. It fixes nothing.
+lineups will `project` find, and will the next run need a browser. It fixes nothing.
 
-It is the last step of the deadline plan that checks anything - only the brief and the
-push follow it - and `make deadline` runs that plan, so it is where a hand-run deadline
-job ends up too. Every command before it reports its own success; `status` is the one that
-checks the state they claim to have left behind - which is the whole lesson of this
-project's bug history. Adding it to the end of a `daily` job costs one process:
+It is the last step of the plan that checks anything - only the brief and the push follow
+it - and `make now` runs it. Every command before it reports its own success; `status` is
+the one that checks the state they claim to have left behind - which is the whole lesson of
+this project's bug history. `make status` runs it alone and exits 7 on an inconsistency.
 
-```sh
-"$AGENT" status || echo "warehouse check failed"   # exits 7 on an inconsistency
-```
-
-Run it by hand the same way. It is also the first of the four things the notifier pushes
+It is also the first of the four things the notifier pushes
 on: `status.gather()` returns the checks as data rather than as text, so the log line and
 the push message cannot disagree about what failed.
 
-**Use UTC, not UK time.** The API speaks UTC and British Summer Time moves the UK
-clock twice a season. 02:30 UTC is safely after the price change in both halves of
-the year.
-
-```cron
-CRON_TZ=UTC
-MAILTO=you@example.com
-
-30 2 * * *  /srv/fpl-agent/deploy/fpl-cron.sh daily
-7  * * * *  /srv/fpl-agent/deploy/fpl-cron.sh deadline
-```
-
-The odd minute on the hourly job is deliberate: it keeps the two off each other on
-the one night they would otherwise collide.
 
 ## Locking, and why it is about the credential
 
-Every job re-execs itself under `flock -n /tmp/fpl-agent.lock`. `-n` means a run
-already in progress wins and the new one exits rather than queueing; a backlog of
-snapshots helps nobody.
+A real run holds an exclusive lock on `${FPL_LOCK:-/tmp/fpl-agent.lock}` for its whole
+length (`schedule.held`, `flock(2)` underneath, so it works on macOS and is released when
+the process dies). A second run that cannot take it says so and exits 9 rather than
+queueing; a backlog of snapshots helps nobody. A dry run takes no lock.
 
 The lock exists because **the account service rotates the refresh token on every
-exchange** (verified against the live service, 2026-09-04). Each refresh returns a
-new refresh token and invalidates the old one. Two jobs refreshing concurrently both
-read the same cached token, one wins, and the loser is left holding a dead
-credential - which degrades to launching a browser, exactly what the refresh grant
-was added to avoid. Install `util-linux` if `flock` is missing; the script warns and
-continues without it rather than silently running unserialised.
+exchange** (verified against the live service, 2026-09-04). Each refresh returns a new
+refresh token and invalidates the old one. Two runs refreshing concurrently both read the
+same cached token, one wins, and the loser is left holding a dead credential — which
+degrades to launching a browser, exactly what the refresh grant was added to avoid.
 
 For the same reason: **do not copy the token cache between machines.** Two hosts
 refreshing the same token fight, and both lose.
 
-## Updating the checkout
-
-Nothing updates the code for you. If you want that scheduled, it is one line, and it
-takes the same lock as the jobs:
-
-```cron
-25 2 * * *  cd /srv/fpl-agent && flock -n /tmp/fpl-agent.lock -c 'git checkout -- "logs/gw*.md" 2>/dev/null; git pull -q --ff-only && uv sync >/dev/null'
-```
-
-Five minutes ahead of `daily`, so a run starts on the code the pull just landed rather
-than halfway through swapping it.
-
-The lock path is `${FPL_LOCK:-/tmp/fpl-agent.lock}`. If you set `FPL_LOCK` for the jobs,
-set it here too — a deploy holding a different lock file is not serialised against
-anything, and looks exactly like one that is.
-
-| Part | Why it is there |
-| --- | --- |
-| the same `flock` | A pull rewrites `.py` files. Doing that under a run that is mid-snapshot changes the code an already-imported process is executing, while it holds a rotating token. `-n` gives up rather than queueing. |
-| `git checkout -- "logs/gw*.md"` | `brief` rewrites a tracked file every run, so the server's tree is dirty by 02:31 and `--ff-only` refuses it. Scoped to the briefs on purpose: `logs/actions.jsonl` is written only by `recommend --record`, which no scheduled job runs, and discarding it would destroy the decision trail. |
-| `--ff-only` | Fails loudly rather than writing a merge commit, or stopping in a conflict, on a host nobody is looking at. |
-| `uv sync` | A pull that moves `uv.lock` leaves `.venv` stale. Without this the pull reports success and the *next* run is what discovers the breakage. |
-| quiet on success | `MAILTO` is set. "Already up to date." arriving every morning is how you learn to ignore the mail that eventually matters. |
-
-**The brief is not surviving on a server either way.** `logs/` is tracked so the record
-survives, but nothing on the server commits it, and `brief` overwrites it on the next run
-regardless — so discarding it before a pull loses nothing that was being kept. If you want
-that record, the server has to commit and push it, which is a different decision with a
-write credential attached.
-
-**This makes `MODEL_VERSION` load-bearing.** The server starts projecting with new code
-the morning after a push, unattended. The bump is the only thing keeping what the model
-believed last week distinguishable from what it believes now — the invariant stops being
-hygiene and becomes the thing the deployment rests on. Pulling by hand is the honest
-alternative; pushes here are deliberate and rare.
 
 ## Notifications
 
@@ -324,8 +204,7 @@ mailing a failure every hour — `notify.target_from_env` is what it asks.
 
 ## Exit codes
 
-Cron mails you anything non-zero. Each code names a distinct failure so the mail is
-actionable without opening the log:
+Each code names a distinct failure, so a run's exit is actionable without opening the log:
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
@@ -336,15 +215,14 @@ actionable without opening the log:
 | 4 | `snapshot`: the squad the preflight promised was not captured | Usually `my-team/` returning 403 during an FPL maintenance window. The market half was kept; re-run later. |
 | 5 | Backfill failed for more than 5% of players | Transient FPL trouble. Re-run; if it persists, the API shape may have changed. |
 | 6 | `settle`: the gameweek is finished but the actuals are not there to grade it | Run the backfill first. Never force this - grading against absent actuals is the bug this code exists to prevent. |
-| 7 | `status`: the warehouse disagrees with itself | Read the `FAIL` lines - each names what is wrong and what to run. Nothing is broken *by* status; it only reports. Reachable from the hourly job since the deadline plan began ending on `status`, so this can now arrive from cron rather than only from a hand-run check. |
+| 7 | `status`: the warehouse disagrees with itself | Read the `FAIL` lines - each names what is wrong and what to run. Nothing is broken *by* status; it only reports. |
 | 8 | `notify`: a push was not accepted by the server | The message was **not** recorded as sent, so the next run will try it again. If it persists, check the ntfy server and the topic. Never masks the job's own failure - see below. |
 
-Codes 3 and 4 are the two worth alerting on loudly. 4 in particular is the one that
+Codes 3 and 4 are the two worth acting on first. 4 in particular is the one that
 used to exit 0.
 
-Codes are not shared between commands, deliberately: a 7 in the subject line means
-`status` and nothing else, an 8 means `notify` and nothing else, so the mail is
-actionable before it is opened. Code 2 is the one exception, and it says the same thing
+Codes are not shared between commands, deliberately: a 7 means `status` and nothing else,
+an 8 means `notify` and nothing else. 9 is `schedule`'s own: another run holds the lock. Code 2 is the one exception, and it says the same thing
 in every command that returns it: the thing this needed was not configured, or could not
 be read at all.
 
@@ -355,13 +233,13 @@ The login is OAuth2 against a PingFederate service at
 login has to traverse the HTML form and that needs a real browser:
 
 ```bash
-uv run playwright install chromium     # once, on the server
+uv run playwright install chromium     # once
 FPL_AUTO_LOGIN=true .venv/bin/fpl-agent snapshot --force
 ```
 
 After that the cached refresh token renews the session, and Chromium is only a
-fallback. The access token lives 8 hours against a 24-hour schedule, so before the
-refresh grant was wired up every scheduled run launched a browser - the flakiest
+fallback. The access token lives 8 hours, so before the refresh grant was wired up
+nearly every run launched a browser - the flakiest
 component in the system, and the one most likely to trip "too many attempts".
 
 Watch the log for which path a run took:
@@ -373,36 +251,36 @@ Launching the FPL authentication browser        <- should be rare
 ```
 
 The refresh token's own lifetime is not published and has not been measured. Because
-it rotates on every use, a server that runs daily should keep itself alive
-indefinitely; a server that sits idle for a long stretch may need one manual login.
+it rotates on every use, a login used daily should keep itself alive indefinitely; one
+left idle for a long stretch may need a manual login.
 Keep Chromium installed unless image size genuinely matters - the fallback is the
 only thing standing between a dead token and a silent gap in the snapshot history.
 
 ## Configuration
 
 Every setting is an environment variable. `fpl-agent.ini` is an alternative way to
-populate them and **the environment always wins**, so a systemd drop-in or a secret
-store can override the file without editing it. See `fpl-agent.ini.example`.
+populate them and **the environment always wins**, so a one-off override needs no edit to
+the file. See `fpl-agent.ini.example`.
 
-For an unattended host:
+For a login that needs no browser at the prompt:
 
 ```ini
 [auth]
 auto_login = true
 email = you@example.com
 password = ...
-token_cache = /srv/fpl-agent/state/session.json
+token_cache = ~/.config/fpl-agent/session.json
 ```
 
 - `chmod 600 fpl-agent.ini`. It holds a plaintext password, and loading warns if the
   file is readable by anyone else.
 - Put `token_cache` somewhere persistent and backed up *as a location*, not as
   content - the file rotates constantly, so a restored old copy is a dead token.
-  The default is `~/.config/fpl-agent/session.json`, which is fine if the service user
-  has a stable home directory.
+  The default is `~/.config/fpl-agent/session.json`, which is fine with a stable home
+  directory.
 - The cached token is a bearer credential that could execute transfers on your account
-  if anything asked it to. Nothing here does, but on a remote host it is still the crown
-  jewel: treat the cache location like the password.
+  if anything asked it to. Nothing here does, but it is still the crown jewel: treat the
+  cache location like the password.
 - `FPL_TOKEN_ENDPOINT` and `FPL_OAUTH_CLIENT_ID` exist so a client-id rotation is a
   config change rather than a code change. Leave them unset unless the login breaks.
 
@@ -415,16 +293,15 @@ token_cache = /srv/fpl-agent/state/session.json
   or one targeted only before that column existed, falls back to 90 minutes before its
   first stored kickoff, which a postponed opening fixture would move.
 
-`deploy/fpl-cron.sh --dry-run daily` and `--dry-run deadline` print what
-each job would do without touching anything, which is the quickest way to see what
-the scheduler currently believes.
+`make now DRY=--dry-run` prints what a run would do without touching anything, which is
+the quickest way to see what the scheduler currently believes.
 
 ## What ends up in git
 
 | Path | Tracked | Why |
 | --- | --- | --- |
-| `src/`, `tests/`, `deploy/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
-| `tools/` | yes | the comparison harness in `docs/schedule-equivalence.md`, kept re-runnable rather than becoming a claim in a document; a developer runs it by hand and nothing deployed names it, which is why it is not in `deploy/` |
+| `src/`, `tests/`, `CLAUDE.md`, `Makefile` | yes | the system and how to run it |
+| `tools/` | yes | one-off developer scripts; nothing deployed names them |
 | `.claude/skills/`, `.claude/settings.json`, `.claude/hooks/` | yes | shared: the workflow, the command allowlist, and the pre-commit test hook |
 | `.claude/settings.local.json` | no | personal, and globally gitignored on this machine |
 | `learnings/*.md` | yes, once written | the reasoning, which is not re-derivable |

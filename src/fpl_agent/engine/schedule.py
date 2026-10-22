@@ -16,33 +16,34 @@ nothing else failed. Execution stays out of process - each command loads its own
 configuration and one of them may launch a browser - so the executor is the seam, not the
 process boundary.
 
-Three jobs, and each is a different question:
-
-    daily      capture the market that no endpoint returns later, then grade what has
-               finished. Runs overnight, whether or not a deadline is near.
-    deadline   only inside the window: re-capture and re-rank, because predicted lineups
-               firm up on matchday. Runs hourly, so out of the window it plans nothing
-               and costs one read.
-    auto       both halves against a single capture, for a person at a terminal who does
-               not want to work out whether today is a settling day or a deadline day.
+One job, run by hand as `make now`: capture the market that no endpoint returns later,
+grade what has finished, then rank. It was three (`daily`, `deadline`, `auto`) for a cron
+that was never installed; a person at a terminal wants "do whatever is due", and that is
+the only one left.
 
 Two states that must never render the same: *nothing is due* and *the question could not
 be asked*. A warehouse that will not open is the second, and the renderer says so.
 
-    fpl-agent schedule --dry-run daily      what is due, and why
-    fpl-agent schedule daily                run it, reporting the first failure
+    fpl-agent schedule --dry-run      what is due, and why
+    fpl-agent schedule                run it, reporting the first failure
+
+A real run holds a lock for its whole length. It is about the credential, not the
+database: the account service rotates the refresh token on every exchange, so two runs
+refreshing at once leave one of them holding a dead token. See `held`.
 """
 
 import argparse
+import fcntl
 import logging
 import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from .. import config
 
@@ -50,22 +51,15 @@ from . import storage
 from .projection import MODEL_VERSION
 from .warehouse import OwnershipSource, gameweeks, ownership, target
 
-JOBS = ("daily", "deadline", "auto")
-
-# The one statement of "the deadline is near enough to rank for". It was three - the
-# brief's, `status`'s, and the shell's own - and at 25 hours out they disagreed: cron
-# ranked transfers for a deadline the brief declined to mention. The schedule owns the
-# window now; `status` reads it from here.
-DEADLINE_WITHIN_HOURS = 26
+JOB = "now"
 
 # The horizon `project` is asked for, everywhere a scheduled job asks for it.
 PROJECTION_HORIZON = 3
 
-# The warehouse could not be read at all - the same meaning code 2 carries in `status`
-# and `notify`. Only the hourly job reports it: `daily` and `auto` have a capture to run
-# regardless, and that capture is what creates a warehouse on a new host.
 EXIT_OK = 0
-EXIT_UNREADABLE = 2
+# Another run holds the lock. Its own code, since 1-8 belong to other commands.
+EXIT_LOCKED = 9
+DEFAULT_LOCK = Path("/tmp/fpl-agent.lock")
 # Tables a Plan is decided from. A file without them is not this project's warehouse, and
 # saying so beats "no such table: projection" arriving from three lines deeper.
 REQUIRED_TABLES = ("snapshot", "projection", "outcome", "fixture", "league")
@@ -75,11 +69,9 @@ REQUIRED_TABLES = ("snapshot", "projection", "outcome", "fixture", "league")
 class Settings:
     """The knobs a Plan depends on, passed as a value rather than read from the process.
 
-    Injected for the same reason `now` is: a window is a decision worth testing at its
-    edges, and a test that has to set an environment variable to reach one is a test that
-    leaks into the next.
+    Injected for the same reason `now` is: a test that has to set an environment variable
+    to reach a decision is a test that leaks into the next.
     """
-    deadline_within_hours: int = DEADLINE_WITHIN_HOURS
     horizon: int = PROJECTION_HORIZON
     #: Whether a push target is configured. The engine decides this, not a regex over
     #: `fpl-agent.ini`: the shell grepped the file and so was a fourth place that could
@@ -156,18 +148,6 @@ class Plan:
     #: different answer - which is the whole failure this module was built out of.
     hours_to_deadline: Optional[int] = None
 
-    @property
-    def exit_code(self) -> int:
-        """0 unless the job had a question to ask and could not ask it.
-
-        A cold-start `daily` still has its capture to run, so it is not a failure; an
-        hourly `deadline` that cannot read the warehouse has nothing left to say and
-        must not report the same 0 it reports on a quiet Tuesday.
-        """
-        if self.problem and not self.steps:
-            return EXIT_UNREADABLE
-        return EXIT_OK
-
 
 @dataclass(frozen=True)
 class Reading:
@@ -192,7 +172,7 @@ class Reading:
     league_known: bool = False
     #: Which rival picks ownership is measured from, and whether they are fresh - the
     #: warehouse's answer, the one `recommend` withholds on. Picks that are not fresh
-    #: are stale ownership, which the brief withholds - so the daily job refreshes them.
+    #: are stale ownership, which the brief withholds - so the run refreshes them.
     rivals: OwnershipSource = OwnershipSource(None, None)
 
     @property
@@ -254,45 +234,40 @@ def read_warehouse(path: Path | str) -> Reading:
 # The steps, each named once
 # --------------------------------------------------------------------------
 
-def _capture(settings: Settings, warehouse: Reading, *,
-             backfill: bool) -> tuple[list[Step], list[Skipped]]:
-    """Snapshot, optionally backfill, project - and always project - then refresh the
-    league table.
+def _capture(settings: Settings, warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
+    """Snapshot, backfill, project, then refresh the league table and the rival picks.
 
     These used to be gated separately, so the ordinary state of the warehouse between
     Tuesday and Friday was a snapshot with no projections: the thing `status` calls an
     inconsistency and exits 7 for, produced nightly. Projecting is cheap and reads only
     what the capture just stored, so a capture is not finished until it has been
-    projected. The window below gates the rival *picks* and `recommend`, which is where
-    the cost and the decisions are.
+    projected.
 
     The standings are the other half of `rivals` and rode along behind that window,
     which is how the table sat five days stale before a decision (issue #49). They are
     one public request and never gated on a deadline, so they belong here - once a
     league is known to refresh, which the first full `rivals` run records.
     """
-    steps = [Step("snapshot", ("--force",),
-                  "prices, ownership and the squad are current-state only; a day not "
-                  "captured can never be recovered")]
-    if backfill:
-        # The hourly job skips this: it is refreshing a market, not learning a result.
-        steps.append(Step("snapshot", ("--backfill-only",),
-                          "actuals feed the projection's per-90 rates, so they have to "
-                          "land before it runs"))
-    steps.append(Step("project", ("--horizon", str(settings.horizon), "--chips"),
-                      "a capture with no projection is an inconsistency `status` exits "
-                      "7 for, and projecting is cheap; the chip window rides along so "
-                      "every week a chip could be played has a value"))
+    steps = [
+        Step("snapshot", ("--force",),
+             "prices, ownership and the squad are current-state only; a day not "
+             "captured can never be recovered"),
+        Step("snapshot", ("--backfill-only",),
+             "actuals feed the projection's per-90 rates, so they have to land before "
+             "it runs"),
+        Step("project", ("--horizon", str(settings.horizon), "--chips"),
+             "a capture with no projection is an inconsistency `status` exits 7 for, "
+             "and projecting is cheap; the chip window rides along so every week a "
+             "chip could be played has a value"),
+    ]
     standings, not_standings = _standings_or_skip(warehouse)
     steps += standings
     skipped = list(not_standings)
-    if backfill:
-        # The picks, on the job that learns from results: a finished gameweek makes the
-        # previous picks stale, and stale ownership is withheld from the brief, so
-        # between one deadline window and the next it would read "not shown" all week.
-        picks, not_picks = _picks_or_skip(warehouse)
-        steps += picks
-        skipped += not_picks
+    # A finished gameweek makes the previous picks stale, and stale ownership is withheld
+    # from the brief, so left alone it would read "not shown" until the next run.
+    picks, not_picks = _picks_or_skip(warehouse)
+    steps += picks
+    skipped += not_picks
     return steps, skipped
 
 
@@ -302,8 +277,8 @@ def _picks_or_skip(warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
     if not warehouse.league_known:
-        return [], [Skipped(what, "no league is known yet; a first `make rivals` inside "
-                                  "a deadline window records them")]
+        return [], [Skipped(what, "no league is known yet; a first `make rivals` "
+                                  "records them")]
     picks = warehouse.rivals
     if not warehouse.picks_behind:
         return [], [Skipped(what, f"rivals hold gameweek {picks.gameweek}, "
@@ -326,8 +301,8 @@ def _standings_or_skip(warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
     if not warehouse.league_known:
-        return [], [Skipped(what, "no league is known yet; a first `make rivals` inside "
-                                  "a deadline window records them")]
+        return [], [Skipped(what, "no league is known yet; a first `make rivals` "
+                                  "records them")]
     return [Step("rivals", ("--standings-only",),
                  "the league table is public and one request; a stale one is not stale "
                  "for want of a snapshot, it is stale because nothing asked")], []
@@ -355,25 +330,25 @@ def _grading(warehouse: Reading) -> tuple[list[Step], list[Skipped]]:
 
 
 def _ranking() -> list[Step]:
-    """The expensive half, and the only half that is actually deadline-shaped.
+    """The decision half: ownership, the ranking, and a check on what the run left behind.
 
     It ends on `status`, which the scheduled job never used to run. Every step before it
     reports its own success; this is the one that checks the state they claim to have left
     behind - which is the whole lesson of this project's bug history. It is not tolerated,
-    so its 7 is now reachable from an hourly cron mail, deliberately.
+    so its 7 is what the run reports, deliberately.
     """
     return [
         Step("rivals", (), "effective ownership has to exist before it can be judged; a "
                            "player in no rival squad is owned by 0%, not unknown"),
-        Step("recommend", (), "the deadline is near enough that a ranking is worth having"),
+        Step("recommend", (), "the ranking is what the run exists to produce"),
         Step("status", (), "the run ends by checking the state it claims to have left "
                            "behind, rather than that each command exited zero"),
     ]
 
 
-def _ranking_or_skip(warehouse: Reading, hours: Optional[int],
-                     settings: Settings) -> tuple[list[Step], list[Skipped]]:
-    """The ranking half if a deadline is near, else the reason it is not due."""
+def _ranking_or_skip(warehouse: Reading,
+                     hours: Optional[int]) -> tuple[list[Step], list[Skipped]]:
+    """The ranking half unless there is no open deadline to rank for, and why not."""
     what = "the ranking half"
     if not warehouse.readable:
         return [], [Skipped(what, warehouse.problem)]
@@ -383,10 +358,6 @@ def _ranking_or_skip(warehouse: Reading, hours: Optional[int],
     if hours < 0:
         return [], [Skipped(what, f"the last deadline passed {-hours}h ago and no capture "
                                   f"since has moved on to the next gameweek")]
-    if hours > settings.deadline_within_hours:
-        return [], [Skipped(what, f"the next deadline is {hours}h away, further out than "
-                                  f"{settings.deadline_within_hours}h; lineups are not "
-                                  f"firm enough to rank on")]
     return _ranking(), []
 
 
@@ -412,8 +383,7 @@ def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
     if settings.notifications_configured:
         steps.append(Step("notify", (),
                           "each trigger is pushed once; the fingerprints already sent "
-                          "live in the warehouse, which is what makes an hourly job safe "
-                          "to notify from",
+                          "live in the warehouse, which is what keeps a repeat run quiet",
                           tolerated=True))
     else:
         # Skipped, not failed: notify is opt-in, and a host that has never set a topic
@@ -431,60 +401,31 @@ def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
 # The jobs
 # --------------------------------------------------------------------------
 
-def due(job: str, *, now: datetime, warehouse: Reading,
-        settings: Settings = Settings()) -> Plan:
-    """What `job` would do at `now`, given this reading of the warehouse and these
+def due(*, now: datetime, warehouse: Reading, settings: Settings = Settings()) -> Plan:
+    """What `make now` would do at `now`, given this reading of the warehouse and these
     settings.
 
     A function of its arguments. The warehouse arrives already read, so nothing here can
-    write, query or run a subprocess, and a Plan is safe to produce anywhere - including
-    hourly on a host where the answer is nothing.
+    write, query or run a subprocess, and a Plan is safe to produce anywhere.
     """
-    if job not in JOBS:
-        raise ValueError(f"unknown job: {job} (expected one of {', '.join(JOBS)})")
-
-    steps: list[Step] = []
-    skipped: list[Skipped] = []
     hours = storage.hours_until(warehouse.deadline, now)
 
-    if job in ("daily", "auto"):
-        # The capture is due whatever the warehouse says - on a host that has none, it is
-        # what creates one, and refusing to bootstrap is how a new server stays empty.
-        captured, not_captured = _capture(settings, warehouse, backfill=True)
-        steps += captured
-        skipped += not_captured
-        graded, not_graded = _grading(warehouse)
-        steps += graded
-        skipped += not_graded
+    # The capture is due whatever the warehouse says - on a host that has none, it is
+    # what creates one, and refusing to bootstrap is how a new server stays empty.
+    steps, skipped = _capture(settings, warehouse)
+    graded, not_graded = _grading(warehouse)
+    ranking, not_ranking = _ranking_or_skip(warehouse, hours)
+    if any(s.command == "rivals" and s.args == () for s in steps):
+        # The capture above already refreshed the picks for the same gameweek.
+        ranking = [s for s in ranking if not (s.command == "rivals" and s.args == ())]
+    steps += graded + ranking
+    skipped += not_graded + not_ranking
 
-    if job in ("deadline", "auto"):
-        ranking, not_ranking = _ranking_or_skip(warehouse, hours, settings)
-        if job == "deadline" and ranking:
-            # The hourly job re-captures rather than ranking over a stale market:
-            # RotoWire firms predicted lineups up through matchday, so a projection built
-            # 24 hours out and one built 3 hours out are different answers.
-            captured, not_captured = _capture(settings, warehouse, backfill=False)
-            steps += captured
-            skipped += not_captured
-            skipped.append(Skipped(
-                "the backfill", "the hourly job refreshes a market, not a result; "
-                                "re-fetching a season of actuals twelve times a day "
-                                "buys nothing"))
-        if job == "auto" and any(s.command == "rivals" and s.args == () for s in steps):
-            # The capture above already refreshed the picks for the same gameweek.
-            ranking = [s for s in ranking if not (s.command == "rivals" and s.args == ())]
-        steps += ranking
-        skipped += not_ranking
+    tail, no_tail = _tail(settings)
+    steps += tail
+    skipped += no_tail
 
-    if steps:
-        # Only over a job that did something. The shell writes the brief and evaluates
-        # the triggers on every hourly wake-up, which over an idle Tuesday is 24 rewrites
-        # of a tracked file about a warehouse nothing touched.
-        tail, no_tail = _tail(settings)
-        steps += tail
-        skipped += no_tail
-
-    return Plan(job=job, at=now, steps=tuple(steps), skipped=tuple(skipped),
+    return Plan(job=JOB, at=now, steps=tuple(steps), skipped=tuple(skipped),
                 problem=warehouse.problem, hours_to_deadline=hours)
 
 
@@ -516,7 +457,7 @@ class Outcome:
     **The first failure wins.** The shell assigned each step's code unconditionally, so
     the *last* failure was reported: a `snapshot` exiting 3 (no session) followed by a
     `project` exiting 1 reported 1, and a lost snapshot - the irrecoverable one - arrived
-    in the cron mail wearing the code of something recoverable.
+    in the report wearing the code of something recoverable.
 
     A tolerated step's failure is reported only when nothing else failed. That is the
     shell's hand-written masking of `notify` behind the job's own code, generalised: the
@@ -545,11 +486,7 @@ class Outcome:
     @property
     def exit_code(self) -> int:
         reported = self.reported
-        if reported is not None:
-            return reported.code
-        # Nothing ran, or everything passed: the plan's own code still stands, which is
-        # how an hourly job that could not read the warehouse reports 2 rather than 0.
-        return self.plan.exit_code
+        return EXIT_OK if reported is None else reported.code
 
     @property
     def failures(self) -> tuple[Result, ...]:
@@ -584,7 +521,7 @@ class SubprocessExecutor:
     configuration, sets up its own logging, opens and closes its own connection, and one
     of them may launch a browser. It is also what preserves the per-command exit codes
     for free - the table in `docs/SCHEDULING.md` is a contract between the commands and
-    cron, not something this module invents.
+    whoever reads the run, not something this module invents.
 
     `--db` is appended only when it is not the default, so the ordinary deployment's
     invocation is exactly the one the shell makes today. The shell's own `FPL_DB` reached
@@ -696,8 +633,7 @@ def summarise(plan: Plan) -> str:
 def render_outcome(outcome: Outcome) -> str:
     """What ran, what it exited, and which code is being reported - and why.
 
-    A cron mail is read at 03:00 by somebody with no other context, so a masked failure
-    is named rather than dropped silently. "notify exited 8, masked by snapshot's 3" is
+    A masked failure is named rather than dropped silently. "notify exited 8, masked by snapshot's 3" is
     the line that stops an hour being spent on the wrong one.
     """
     lines = [f"{outcome.plan.job}: ran {len(outcome.results)} step(s)"]
@@ -711,8 +647,7 @@ def render_outcome(outcome: Outcome) -> str:
     code = outcome.exit_code
     reported = outcome.reported
     if reported is None:
-        lines.append("every step succeeded; exiting 0" if not code else
-                     f"nothing ran and the plan itself could not be made; exiting {code}")
+        lines.append("every step succeeded; exiting 0")
         return "\n".join(lines)
     lines.append(f"exiting {code}, from {reported.step.command} - the first failure, and "
                  f"the one worth acting on. See the exit-code table in "
@@ -723,11 +658,37 @@ def render_outcome(outcome: Outcome) -> str:
     return "\n".join(lines)
 
 
+def lock_path() -> Path:
+    return Path(os.environ.get("FPL_LOCK") or DEFAULT_LOCK)
+
+
+@contextmanager
+def held(path: Path) -> Iterator[bool]:
+    """Hold the run lock for the length of the block; yields whether it was taken.
+
+    The lock is about the credential, not the database. The token cache holds a refresh
+    token that the account service ROTATES on each exchange, so two runs refreshing
+    concurrently leave one of them holding a dead token and falling back to a browser
+    login. It is held by this process, not by anything inside a single command, because
+    nothing inside one command can serialise against another process.
+
+    Non-blocking: a run that is still going wins and this one reports it and stops rather
+    than queueing, since a backlog of snapshots helps nobody. `flock` is released when the
+    file closes, so a run that dies never leaves the lock behind.
+    """
+    with open(path, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="fpl-agent schedule",
-        description="Say what a scheduled job is due to do, and why.")
-    parser.add_argument("job", choices=JOBS)
+        description="Say what `make now` is due to do, and why, then do it.")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the plan and touch nothing")
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
@@ -740,16 +701,22 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Read and closed before anything runs: the steps open the warehouse themselves, and
     # each of them writes to it.
-    plan = due(args.job, now=datetime.now(timezone.utc), warehouse=read_warehouse(args.db),
+    plan = due(now=datetime.now(timezone.utc), warehouse=read_warehouse(args.db),
                settings=Settings.from_env())
 
     print(render(plan))
     if args.dry_run:
         print("\nnothing above was run.")
-        return plan.exit_code
+        return EXIT_OK
 
-    print()
-    outcome = run(plan, SubprocessExecutor(agent=agent_binary(), db=args.db))
+    with held(lock_path()) as taken:
+        if not taken:
+            print(f"\nanother run holds {lock_path()}; it wins, and this one did "
+                  f"nothing. Two runs refreshing the login at once leave one with a "
+                  f"dead token.", file=sys.stderr)
+            return EXIT_LOCKED
+        print()
+        outcome = run(plan, SubprocessExecutor(agent=agent_binary(), db=args.db))
     print(render_outcome(outcome))
     return outcome.exit_code
 

@@ -2,14 +2,14 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: now snapshot backfill project rivals recommend hedge record deadline settle status brief notify lint test
+.PHONY: now snapshot backfill project rivals recommend hedge record settle status brief notify lint test
 
 # The one to reach for when you do not want to think about which one to reach for.
 # Every other target here is a step; this asks the warehouse what is due and runs the
-# steps that answer. Safe on a day when the answer is nothing, which is most days.
-# `make now DRY=--dry-run` says what it would do without doing it.
-now:                 ## do whatever is due: capture, settle if ready, project if a deadline is near
-	./deploy/fpl-cron.sh $(DRY) auto
+# steps that answer. It takes the run lock, so two at once cannot refresh the login
+# together. `make now DRY=--dry-run` says what it would do without doing it.
+now:                 ## capture, settle what has finished, update every number, rank
+	$(AGENT) schedule $(DRY)
 
 # --force is deliberate. Bare `snapshot` skips when one already exists for today, which
 # is a guard for a hand-run repeat; every scheduled caller wants the opposite. Prices
@@ -35,27 +35,12 @@ hedge:               ## price selling 1-3 players to match the field: make hedge
 	$(AGENT) hedge $(ARGS)
 
 # Separate from `recommend` rather than a flag on it, because recording is a claim about
-# what you actually did. `make deadline` must never record on your behalf.
+# what you actually did. `make now` must never record on your behalf.
 record:              ## log the top-ranked transfer as a decision: make record
 	$(AGENT) recommend --record
 
 status:              ## check the warehouse agrees with itself (read-only; exits 7 if not)
 	$(AGENT) status
-
-# The deadline half of what cron runs, and the same one: this used to be its own list of
-# steps and drifted from the shell's in both directions - it ran the backfill the hourly
-# job deliberately skips, and ended on a `status` the shell never ran. The order, and
-# which steps belong to this half at all, are `engine/schedule`'s answer now, so changing
-# the pipeline is one edit rather than three. `make deadline DRY=--dry-run` says what it
-# would do. It does nothing when no deadline is near, which is the correct answer and the
-# one the hourly job gives.
-#
-# Through the entry point rather than the console script, so a hand-run takes the same
-# lock cron does - the refresh token rotates, and two runs refreshing at once leave one
-# holding a dead credential. The cost is that this exits silently while a scheduled run
-# is in progress, which `make now` has always done for the same reason.
-deadline:            ## re-capture and rank, if a deadline is near
-	./deploy/fpl-cron.sh $(DRY) deadline
 
 settle:              ## grade a finished gameweek and draft a learning: make settle GW=3
 	$(AGENT) settle --gameweek $(GW) --learn

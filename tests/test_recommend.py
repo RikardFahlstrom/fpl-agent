@@ -44,7 +44,7 @@ class SeedMixin:
         """A snapshot, and by default the horizon `project` would have written for it.
 
         `recommend` reads projections rather than running them, so the fixture has to
-        do what `make deadline` does: project, then recommend. Pass project=False to
+        do what `make now` does: project, then recommend. Pass project=False to
         exercise the horizon that was never run.
 
         `db` takes a path for callers that need a warehouse on disk - the MCP tool
