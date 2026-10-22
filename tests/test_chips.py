@@ -366,8 +366,9 @@ class ChipVerdictTests(unittest.TestCase):
         self.conn.commit()
 
     def evaluate(self):
+        # No move can clear this bar: these tests are about the chips on the squad as held.
         return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False,
-                              learnings_dir=Path(self.tmp.name))
+                              min_net_xp=1e9, learnings_dir=Path(self.tmp.name))
 
     def render(self, evaluation=None):
         return brief.render_brief(evaluation or self.evaluate())
@@ -391,24 +392,17 @@ class ChipVerdictTests(unittest.TestCase):
         text = self.render()
         self.assertIn("- **Chips:** bench boost PLAY NOW (+18.0, bar 15) "
                       "(best projected: GW3 (deadline 5 Sep 09:30), provisional)", text)
-        self.assertIn("triple captain hold (+2.0, bar 9) "
+        self.assertIn("triple captain hold (+1.0, bar 9) "
                       "(best projected: GW3 (deadline 5 Sep 09:30), provisional)", text)
         self.assertIn("wildcard played in GW3 (deadline 5 Sep 09:30)", text)
         self.assertIn("free hit not evaluated", text)
         self.assertIn("## Chips", text)
-        self.assertIn("| GW3 (deadline 5 Sep 09:30) * | +18.0 (P12, P13, P14, P15) | +2.0 (P17) |", text)
-        self.assertIn("| GW4 (deadline unknown) | +4.0 | +2.0 |", text)
+        self.assertIn("| GW3 (deadline 5 Sep 09:30) * | +18.0 (P12, P13, P14, P15) | +1.0 (P1) |", text)
+        self.assertIn("| GW4 (deadline unknown) | +4.0 | +1.0 |", text)
         self.assertIn("The set expires after GW19 (deadline unknown); weeks "
                       "GW6 (deadline unknown)-GW19 (deadline unknown) are not projected yet "
                       "(`project --chips`)", text)
         self.assertIn("Only the next gameweek has predicted lineups", text)
-
-    def test_values_are_summed_over_the_post_move_squad(self):
-        # The recommended move brings P17 (2.0) in for P1; P1 is in the XI, so the
-        # captain pick for triple captain moves with it.
-        evaluation = self.evaluate()
-        tc = next(v for v in evaluation.chips if v.state.name == "3xc")
-        self.assertEqual(tc.now.note, "P17")
 
     def test_recording_a_chip_writes_a_chip_decision_with_the_values(self):
         self.bench(4.5)
@@ -454,8 +448,10 @@ class RebuildTests(unittest.TestCase):
             (xp, element_id, gameweek, self.warehouse.snapshot_id))
         self.conn.commit()
 
-    def evaluate(self):
-        return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False)
+    def evaluate(self, min_net_xp=1e9):
+        # By default no move can clear the bar, so the chips are valued on the squad as held.
+        return brief.evaluate(self.conn, GAMEWEEK, now=NOW, include_token=False,
+                              min_net_xp=min_net_xp)
 
     def verdict(self, name):
         return next(v for v in self.evaluate().chips if v.state.name == name)
@@ -476,8 +472,21 @@ class RebuildTests(unittest.TestCase):
         self.assertIn("GW4 clears it", fh.reason)
         week = next(v for v in fh.values if v.gameweek == GAMEWEEK + 1)
         self.assertGreater(week.value, 8.0)
-        self.assertIn("P27", week.note)      # P23 is already in via the recommended move
+        self.assertIn("P27", week.note)
         self.assertEqual(len(week.squad), 15)
+
+    def test_values_are_summed_over_the_post_move_squad(self):
+        # The plan buys P23 (8.0 this week, a midfielder), so the triple captain is valued
+        # on a squad that holds him: he is the captain pick, though he is not held today.
+        self.project(GAMEWEEK, 23, 8.0)
+        held_ids = {p.element_id for p in held.read(
+            self.conn, warehouse.latest(self.conn)).players}
+        self.assertNotIn(23, held_ids)
+        as_held = next(v for v in self.evaluate().chips if v.state.name == "3xc")
+        after = next(v for v in self.evaluate(min_net_xp=2.0).chips
+                     if v.state.name == "3xc")
+        self.assertNotEqual(as_held.now.note, "P23")
+        self.assertEqual(after.now.note, "P23")
 
     def test_a_free_hit_that_clears_the_bar_this_week_fires_and_shows_the_squad(self):
         for e in (23, 27, 31):
@@ -501,7 +510,7 @@ class RebuildTests(unittest.TestCase):
         by_week = {v.gameweek: v.value for v in wc.values}
         self.assertGreater(by_week[3], by_week[5])       # three weeks of gain vs one
         text = brief.render_brief(brief.evaluate(
-            self.conn, GAMEWEEK, now=NOW, include_token=False,
+            self.conn, GAMEWEEK, now=NOW, include_token=False, min_net_xp=1e9,
             learnings_dir=Path(self.tmp.name)))
         self.assertIn("moot if you play the wildcard (see Chips)", text)
 

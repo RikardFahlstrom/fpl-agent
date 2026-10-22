@@ -275,37 +275,58 @@ class ThresholdTests(unittest.TestCase):
             self.assertEqual(brief.worth_making_threshold(), brief.WORTH_MAKING_NET_XP)
 
 
-class MoveLineTests(BriefTestCase):
-    """The opening block's Move line says whether the best move clears the bar."""
+class MovesRowTests(BriefTestCase):
+    """The opening block's Moves row: the plan, or no move with the margin."""
+
+    #: Two keepers, five defenders, five midfielders, three forwards.
+    SHAPED = [1, 5, 2, 6, 10, 14, 18, 3, 7, 11, 15, 19, 4, 8, 12]
 
     def setUp(self):
         super().setUp()
         self.warehouse.healthy()
+        self.conn.execute("DELETE FROM my_squad")
+        self.warehouse.squad(self.SHAPED)
+        self.conn.commit()
 
-    def block(self, **kwargs) -> str:
-        return "\n".join(brief.render_block(self.evaluate(**kwargs)))
+    def moves(self, **kwargs) -> str:
+        return [line for line in brief.render_block(self.evaluate(**kwargs))
+                if line.startswith("- **Moves:**")][0]
 
-    def test_a_move_over_the_bar_says_it_clears_it(self):
-        self.assertIn("clears the 2.0 bar", self.block())
+    def test_a_move_over_the_bar_is_recommended_with_its_net(self):
+        row = self.moves()
+        self.assertIn("1 transfer - P17 in for", row)
+        self.assertIn("net +3.0 no hit", row)
+        self.assertIn("Beside it: do nothing 0.0; best single swap P17 in for", row)
 
-    def test_topping_the_list_is_not_enough(self):
-        self.assertIn("under the 100.0 bar", self.block(min_net_xp=100))
+    def test_under_the_bar_it_says_no_move_and_the_margin(self):
+        row = self.moves(min_net_xp=100)
+        self.assertIn("no move - the best plan, P17 in for", row)
+        self.assertIn("97.0 under the 100.0 bar", row)
 
     def test_the_threshold_is_overridable_from_the_environment(self):
         with mock.patch.dict(os.environ, {brief.MIN_NET_XP_ENV: "100"}):
-            self.assertIn("under the 100.0 bar", self.block())
+            self.assertIn("under the 100.0 bar", self.moves())
 
-    def test_an_active_wildcard_is_said_beside_the_move(self):
+    def test_the_free_transfers_and_the_hit_cap_are_shown(self):
+        self.assertIn("(1 free transfer, hit cap 2)", self.moves())
+
+    def test_an_active_wildcard_lifts_the_cap_and_says_so(self):
         self.warehouse.wildcard()
         self.conn.commit()
-        self.assertIn("wildcard active: single swaps, not a rebuild", self.block())
+        row = self.moves()
+        self.assertIn("no hit (wildcard active)", row)
+        self.assertIn("no hit cap while a chip is active", row)
 
     def test_no_horizon_projected_is_a_sentence_not_a_traceback(self):
         self.conn.execute("DELETE FROM projection WHERE gameweek > ?", (GAMEWEEK,))
         self.conn.commit()
-        move = [line for line in brief.render_block(self.evaluate())
-                if line.startswith("- **Move:**")][0]
-        self.assertIn("none - ", move)
+        self.assertIn("not evaluated - the horizon is not projected", self.moves())
+
+    def test_a_squad_that_is_not_fpl_shaped_cannot_be_planned_and_says_so(self):
+        self.conn.execute("DELETE FROM my_squad")
+        self.warehouse.squad(list(range(1, 16)))        # four keepers
+        self.conn.commit()
+        self.assertIn("not FPL-shaped", self.moves())
 
 
 class LockedGameweekTests(BriefTestCase):
@@ -377,14 +398,14 @@ class RenderBriefTests(BriefTestCase):
         self.conn.commit()
         text = self.render()
         self.assertIn("WILDCARD ACTIVE", text)
-        self.assertLess(text.index("WILDCARD ACTIVE"), text.index("- **Move:**"))
+        self.assertLess(text.index("WILDCARD ACTIVE"), text.index("- **Moves:**"))
         self.assertLess(text.index("WILDCARD ACTIVE"), text.index("Transfers ranked"))
 
     def test_the_block_comes_before_the_tables(self):
         self.warehouse.healthy()
         text = self.render()
-        self.assertLess(text.index("- **Move:**"), text.index("## Transfers ranked"))
-        self.assertLess(text.index("- **Move:**"), text.index("## Warehouse"))
+        self.assertLess(text.index("- **Moves:**"), text.index("## Transfers ranked"))
+        self.assertLess(text.index("- **Moves:**"), text.index("## Warehouse"))
 
     def test_the_ranked_table_says_how_many_rivals_own_each_player(self):
         """Ownership is measured against the people you race, so the table shows the
@@ -423,9 +444,9 @@ class RenderBriefTests(BriefTestCase):
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
         self.assertEqual(labels[:12], [
-            "- **Instructions", "- **Starting XI", "- **Captain", "- **Vice-captain",
-            "- **Bench", "- **Move", "- **Ownership", "- **Chips", "- **Availability",
-            "- **Deadline", "- **Learnings", "- **Data"])
+            "- **Instructions", "- **Moves", "- **Starting XI", "- **Captain",
+            "- **Vice-captain", "- **Bench", "- **Ownership", "- **Chips",
+            "- **Availability", "- **Deadline", "- **Learnings", "- **Data"])
         self.assertRegex(text, r"- \*\*Captain:\*\* P\d+ \(C\d+\), 1\.0 xP; next P\d+ 1\.0")
         self.assertIn("- **Learnings:** none proposed", text)
 

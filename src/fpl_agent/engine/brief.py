@@ -426,13 +426,13 @@ def evaluate(conn: sqlite3.Connection, gameweek: int, *,
               if deadline is not None and deadline <= now else None)
     listing = ({"moves": [], "reason": locked} if locked
                else ranked_transfers(conn, gameweek))
-    moves = listing["moves"]
-    top = moves[0] if moves else None
     ownership, _ = recommend.ownership_source(conn)
-    instructions = instr.build(conn, gameweek, MODEL_VERSION, holding, locked=locked)
+    instructions = instr.build(conn, gameweek, MODEL_VERSION, holding, capture=capture,
+                               bar=threshold, locked=locked)
 
     # Valued on the squad after the recommended move, so this and the move advice agree.
-    verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION, holding.with_move(top))
+    verdicts = (chips.evaluate(conn, gameweek, MODEL_VERSION,
+                               instr.after_moves(holding, instructions))
                 if holding and not locked else [])
 
     return Evaluation(
@@ -509,21 +509,6 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     remaining = None if deadline is None else deadline - evaluation.now
     listing = evaluation.listing
     top = listing["moves"][0] if listing["moves"] else None
-    threshold = evaluation.threshold
-
-    # Move.
-    if top is None:
-        move = "none - " + (listing["reason"]
-                            or "no transfer improves the squad within budget")
-    else:
-        bar = ("clears" if top["net_xp_delta"] >= threshold else "under")
-        move = (f"{top['in']['name']} for {top['out']['name']}, net "
-                f"{top['net_xp_delta']:+.2f} xP over {top['horizon']} gameweeks - "
-                f"{bar} the {threshold:.1f} bar")
-        if state.get("chip"):
-            move += f" ({state['chip'].replace('freehit', 'free hit')} active: single swaps, not a rebuild)"
-        elif any(v.play_now and v.state.name == "wildcard" for v in evaluation.chips):
-            move += " - moot if you play the wildcard (see Chips)"
 
     # Ownership - of the move when there is one, of the rivals capture otherwise.
     if top is not None:
@@ -578,8 +563,12 @@ def render_block(evaluation: Evaluation, *, markdown: bool = True) -> list[str]:
     else:
         data = f"trustworthy - all {len(evaluation.checks)} checks agree"
 
-    rows = [*instr.rows(evaluation.instructions),
-            ("Move", move), ("Ownership", ownership),
+    lines = instr.rows(evaluation.instructions)
+    if any(v.play_now and v.state.name == "wildcard" for v in evaluation.chips):
+        lines = [(label, text + " - moot if you play the wildcard (see Chips)"
+                  if label == "Moves" else text) for label, text in lines]
+    rows = [*lines,
+            ("Ownership", ownership),
             ("Chips", chip_line),
             ("Availability", availability), ("Deadline", when),
             ("Learnings", pending), ("Data", data),
