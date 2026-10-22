@@ -443,8 +443,8 @@ class RenderBriefTests(BriefTestCase):
         text = self.render()
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
-        self.assertEqual(labels[:13], [
-            "- **Instructions", "- **Chip", "- **Moves", "- **Starting XI", "- **Captain",
+        self.assertEqual(labels[:14], [
+            "- **Instructions", "- **Stance", "- **Chip", "- **Moves", "- **Starting XI", "- **Captain",
             "- **Vice-captain", "- **Bench", "- **Ownership", "- **Chips",
             "- **Availability", "- **Deadline", "- **Learnings", "- **Data"])
         self.assertRegex(text, r"- \*\*Captain:\*\* P\d+ \(C\d+\), 1\.0 xP; next P\d+ 1\.0")

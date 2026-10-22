@@ -368,11 +368,11 @@ class OneValueTests(InstructionsTestCase):
         evaluation = self.evaluate()
         block = brief.render_block(evaluation, markdown=False)
         rows = instructions.rows(evaluation.instructions)
-        self.assertEqual([line.split(":")[0] for line in block[:7]],
+        self.assertEqual([line.split(":")[0] for line in block[:8]],
                          [label for label, _ in rows])
         self.assertEqual([label for label, _ in rows],
-                         ["Instructions", "Chip", "Moves", "Starting XI", "Captain",
-                          "Vice-captain", "Bench"])
+                         ["Instructions", "Stance", "Chip", "Moves", "Starting XI",
+                          "Captain", "Vice-captain", "Bench"])
 
     def test_the_terminal_text_carries_every_row_the_brief_does(self):
         evaluation = self.evaluate()
@@ -384,15 +384,15 @@ class OneValueTests(InstructionsTestCase):
             self.assertIn(f"- **{label}:** {text}", page.replace("GW3 (deadline 5 Sep 09:30)", "GW3"))
 
     def test_the_same_lines_open_the_block_whether_or_not_there_is_a_lineup(self):
-        with_lineup = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:7]]
+        with_lineup = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:8]]
         self.conn.execute("DELETE FROM projection WHERE element_id = 12")
         self.conn.commit()
-        without = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:7]]
+        without = [l.split(":")[0] for l in brief.render_block(self.evaluate())[:8]]
         self.assertEqual(with_lineup, without)
 
     def test_a_lineup_that_cannot_be_built_still_names_every_row(self):
         text = instructions.render(instructions.Instructions(3, note="not evaluated - x"))
-        for label in ("Instructions", "Chip", "Moves", "Starting XI", "Captain", "Vice-captain", "Bench"):
+        for label in ("Instructions", "Stance", "Chip", "Moves", "Starting XI", "Captain", "Vice-captain", "Bench"):
             self.assertIn(label + ":", text)
 
     def test_the_command_prints_the_instructions_before_writing_the_brief(self):

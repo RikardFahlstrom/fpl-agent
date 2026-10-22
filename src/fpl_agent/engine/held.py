@@ -191,8 +191,10 @@ class HeldSquad:
         out = next((p for p in self.players if p.element_id == out_id), None)
         if out is None:
             return self
+        # The slot comes with the swap; the armband does not.
         bought = replace(out, element_id=incoming["element_id"], name=incoming["name"],
-                         team_id=incoming["team_id"], selling_price=incoming["now_cost"])
+                         team_id=incoming["team_id"], selling_price=incoming["now_cost"],
+                         multiplier=None if out.multiplier is None else min(out.multiplier, 1))
         return replace(
             self, players=tuple(bought if p is out else p for p in self.players),
             bank=self.bank + out.selling_price - incoming["now_cost"])

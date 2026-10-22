@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from . import held, squad as squads
 from .projection import MODEL_VERSION, stored_horizon
+from .stance import Stance
 from .warehouse import Capture
 
 #: Paid transfers a plan may make beyond the free ones. A chip lifts it.
@@ -71,8 +72,9 @@ class Option:
     """One way to spend the transfers, scored the same way as every other."""
     transfers: int
     hit_cost: int           # points, for the transfers beyond the free ones
-    gross: float            # objective gain over the held squad, before hits
-    net: float              # gross less hit_cost
+    gross: float            # expected-points gain over the held squad, before hits
+    net: float              # gross less hit_cost: plain expected points
+    score: float            # what was maximised: net, plus the stance's adjustment
     moves: tuple[Move, ...]
 
     @property
@@ -95,13 +97,13 @@ class MovePlan:
     @property
     def recommended(self) -> bool:
         """Whether to move at all: only a plan that clears the bar over doing nothing."""
-        return self.chosen.transfers > 0 and self.chosen.net >= self.bar
+        return self.chosen.transfers > 0 and self.chosen.score >= self.bar
 
     @property
     def best_move(self) -> Optional[Option]:
         """The best option that makes any transfer, whether or not it clears the bar."""
         moving = [o for o in self.options if o.transfers]
-        return max(moving, key=lambda o: o.net) if moving else None
+        return max(moving, key=lambda o: o.score) if moving else None
 
     @property
     def moves(self) -> tuple[Move, ...]:
@@ -119,7 +121,7 @@ class MovePlan:
     def from_dict(cls, raw: dict[str, Any]) -> "MovePlan":
         def option(d: dict[str, Any]) -> Option:
             return Option(d["transfers"], d["hit_cost"], d["gross"], d["net"],
-                          tuple(Move(**m) for m in d["moves"]))
+                          d.get("score", d["net"]), tuple(Move(**m) for m in d["moves"]))
         return cls(raw["free_transfers"], raw["hit_price"], raw["hit_cap"], raw["bar"],
                    raw["weeks"], raw["chip"], tuple(option(o) for o in raw["options"]),
                    option(raw["chosen"]),
@@ -146,14 +148,18 @@ def _pair(held_out: list[squads.Candidate], bought: list[squads.Candidate]
 
 def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
          bar: float, weeks: int = 3, hit_cap: Optional[int] = HIT_CAP,
-         chip: Optional[str] = None, bench_boost: bool = False) -> MovePlan:
+         chip: Optional[str] = None, bench_boost: bool = False,
+         stance: Optional[Stance] = None) -> MovePlan:
     """The best transfer plan for the capture's gameweek.
 
     `hit_cap` None is no cap, for a plan made while a chip is being played. `chip` names a
     transfer chip being played in the plan (free hit, wildcard): hits are free and the
     squad is rebuilt without a limit on changes, as for one already active on the capture.
     `bench_boost` values the bench in full for the target gameweek, which is what a bench
-    boost does and why the best moves under it differ.
+    boost does and why the best moves under it differ. `stance` adds its adjustment to
+    every player's points, so the plan prefers differentials while chasing and the field's
+    players while protecting; the option's `net` stays plain expected points and `score` is
+    what the choice was made on.
 
     Raises `HorizonMissing` when the horizon was never projected, `LookupError` when a
     held player has no projection, and `NotProven` when the solver could not prove it.
@@ -185,18 +191,29 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
             "SELECT element_id, expected_points FROM projection WHERE snapshot_id = ? "
             "AND gameweek = ? AND model_version = ?",
             (capture.id, capture.gameweek, MODEL_VERSION))}
-    base = [squads.Candidate(p.element_id, p.name, p.team_id, p.element_type,
-                             p.selling_price, totals[p.element_id],
-                             this_week.get(p.element_id, 0.0) * (1 - held.BENCH_VALUE))
-            for p in holding.players]
-    pool = base + [squads.Candidate(r["element_id"], r["web_name"], r["team_id"],
-                                    r["element_type"], r["now_cost"],
-                                    totals[r["element_id"]],
-                                    this_week.get(r["element_id"], 0.0)
-                                    * (1 - held.BENCH_VALUE))
+    def candidate(element_id, name, team_id, element_type, cost, adjusted):
+        xp = totals[element_id] + (stance.bonus(element_id, weeks) if adjusted and stance
+                                   else 0.0)
+        return squads.Candidate(element_id, name, team_id, element_type, cost, xp,
+                                this_week.get(element_id, 0.0) * (1 - held.BENCH_VALUE))
+
+    def players(adjusted):
+        return ([candidate(p.element_id, p.name, p.team_id, p.element_type,
+                           p.selling_price, adjusted) for p in holding.players]
+                + [candidate(r["element_id"], r["web_name"], r["team_id"],
+                             r["element_type"], r["now_cost"], adjusted)
                    for r in rows if r["element_id"] not in owned
-                   and r["element_id"] in totals]
-    now = squads.Squad(tuple(base), squads.best_xi(base), sum(c.cost for c in base))
+                   and r["element_id"] in totals])
+
+    base = players(True)[:len(holding.players)]
+    pool = players(True)
+    plain = {c.element_id: c for c in players(False)}
+
+    def squad_of(chosen):
+        return squads.Squad(tuple(chosen), squads.best_xi(chosen), sum(c.cost for c in chosen))
+
+    now = squad_of(base)
+    now_plain = squad_of([plain[c.element_id] for c in base])
 
     free = holding.free_transfers or 0
     price = DEFAULT_HIT if holding.transfer_cost is None else int(holding.transfer_cost)
@@ -209,11 +226,15 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
             return None
         sold = [c for c in base if c.element_id not in {p.element_id for p in found.players}]
         paid = 0 if chip else max(0, len(bought) - free)
-        gross = found.objective - now.objective
-        if gross <= 1e-9:
+        adjusted = found.objective - now.objective
+        if adjusted <= 1e-9:
             return None         # a swap that changes nothing is not an option
+        gross = squad_of([plain[c.element_id] for c in found.players]).objective \
+            - now_plain.objective
         return Option(len(bought), paid * price, round(gross, 2),
-                      round(gross - paid * price, 2), _pair(sold, bought))
+                      round(gross - paid * price, 2), round(adjusted - paid * price, 2),
+                      _pair([plain[c.element_id] for c in sold],
+                            [plain[c.element_id] for c in bought]))
 
     found: dict[int, Option] = {}
     limits = [None] if chip else range(1, 16 if cap is None else min(15, free + cap) + 1)
@@ -225,11 +246,12 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
             raise NotProven(str(e)) from e
         if best is None:
             continue
-        candidate = option(best)
-        if candidate and (candidate.transfers not in found
-                          or candidate.gross > found[candidate.transfers].gross):
-            found[candidate.transfers] = candidate
-    options = (Option(0, 0, 0.0, 0.0, ()), *(found[k] for k in sorted(found)))
-    chosen = max(options, key=lambda o: (o.net, -o.transfers))
+        choice = option(best)
+        if choice and (choice.transfers not in found
+                       or choice.score + choice.hit_cost
+                       > found[choice.transfers].score + found[choice.transfers].hit_cost):
+            found[choice.transfers] = choice
+    options = (Option(0, 0, 0.0, 0.0, 0.0, ()), *(found[k] for k in sorted(found)))
+    chosen = max(options, key=lambda o: (o.score, -o.transfers))
     single = found.get(1)
     return MovePlan(free, price, cap, bar, weeks, chip, options, chosen, single)
