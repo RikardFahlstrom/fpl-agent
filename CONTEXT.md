@@ -231,6 +231,12 @@ line says instead which gameweek rivals were last captured for. Never captured i
 reported the same way. A number from two rounds ago is not a caveat, it is a wrong
 number at exactly the point the edge lives.
 
+Fresh also means *complete*: every rival the configured leagues' tables list has picks
+for that gameweek. Ownership over four of five rivals is not the field's ownership, so a
+missing rival makes the answer not fresh, the reason names them and says to run `make
+rivals`, and the scheduler counts that as behind so `make now` refetches. The
+Instructions are still produced, with ownership withheld.
+
 Whether the picks are fresh is one answer, `warehouse.ownership(conn, ledger,
 league_ids) -> OwnershipSource`: the gameweek the picks are for, how many rivals in
 the configured leagues (`config.rival_leagues`) hold them, and the ledger's last

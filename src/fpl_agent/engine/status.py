@@ -370,6 +370,8 @@ def check_rivals(conn: sqlite3.Connection, ledger: warehouse.GameweekLedger) -> 
     hours = _age_hours(table["captured_at"]) if table else None
     if hours is not None:
         detail += f"; table {hours:.1f}h old"
+    if source.missing:
+        return Check("rivals", WARN, detail + f" - {source.reason}")
     if not source.fresh:
         return Check("rivals", WARN,
                      detail + f" - behind the last finished gameweek "

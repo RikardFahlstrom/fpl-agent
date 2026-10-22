@@ -519,6 +519,14 @@ class RivalTests(StatusTestCase):
         self.assertIn("stale", rivals.detail)
         self.assertClean()
 
+    def test_a_missing_rival_warns_and_is_named(self):
+        self.conn.execute("DELETE FROM rival_squad WHERE entry_id = 5")
+        self.conn.commit()
+        rivals = self.by_label()["rivals"]
+        self.assertEqual(rivals.level, status.WARN)
+        self.assertIn("no picks for gameweek 2 from p", rivals.detail)
+        self.assertIn("make rivals", rivals.detail)
+
     def test_the_clean_line_counts_managers(self):
         self.assertIn("5 managers", self.by_label()["rivals"].detail)
 

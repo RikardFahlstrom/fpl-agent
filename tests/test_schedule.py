@@ -313,6 +313,20 @@ class PicksTests(ScheduleTestCase):
         self.assertEqual(cmds.count("rivals"), 1)
         self.assertLess(cmds.index("rivals"), cmds.index("recommend"))
 
+    def test_a_missing_rival_is_behind_and_named(self):
+        """Four of five rivals captured is not the field's ownership: the run refetches
+        and the answer names who is missing."""
+        self.w.rivals(2)
+        self.conn.execute("DELETE FROM rival_squad WHERE entry_id = 5")
+        self.conn.execute("UPDATE rival SET player_name = 'Dana' WHERE entry_id = 5")
+        self.conn.commit()
+        reading = schedule.read(self.conn)
+        self.assertEqual(reading.rivals.managers, 4)
+        self.assertEqual(reading.rivals.missing, ("Dana",))
+        self.assertIn("Dana", reading.rivals.reason)
+        self.assertTrue(reading.picks_behind)
+        self.assertIn("rivals", commands(self.due()))
+
     def test_the_reading_carries_the_warehouses_ownership_answer(self):
         self.w.rivals(1)
         self.conn.commit()

@@ -383,15 +383,19 @@ class OwnershipSource:
 
     `managers` counts the rivals in the leagues ownership is measured from; zero means
     those leagues were never captured, however many other rivals the table holds.
+    `missing` names the rivals the league tables list who have no picks at that
+    gameweek: ownership over four of five rivals is not the field's ownership, so it is
+    not fresh either.
     """
 
     gameweek: Optional[int]        # the rivals gameweek; None when never captured
     last_finished: Optional[int]   # the ledger's last finished gameweek; None if none
     managers: int = 0              # rivals in the measured leagues at that gameweek
+    missing: tuple[str, ...] = ()  # listed rivals with no picks at that gameweek
 
     @property
     def fresh(self) -> bool:
-        if self.gameweek is None or not self.managers:
+        if self.gameweek is None or not self.managers or self.missing:
             return False
         return self.last_finished is None or self.gameweek >= self.last_finished
 
@@ -402,12 +406,16 @@ class OwnershipSource:
             return None
         if self.gameweek is None or not self.managers:
             return "rivals have never been captured - run `make rivals`"
+        if self.missing:
+            return (f"no picks for gameweek {self.gameweek} from "
+                    f"{', '.join(self.missing)} - run `make rivals`")
         return (f"rivals were last captured for gameweek {self.gameweek} and gameweek "
                 f"{self.last_finished} has finished - run `make rivals`")
 
     def as_dict(self) -> dict[str, Any]:
         return {"gameweek": self.gameweek, "last_finished": self.last_finished,
-                "managers": self.managers, "fresh": self.fresh, "reason": self.reason}
+                "managers": self.managers, "missing": list(self.missing),
+                "fresh": self.fresh, "reason": self.reason}
 
 
 def ownership(conn: sqlite3.Connection, ledger: GameweekLedger,
@@ -425,7 +433,19 @@ def ownership(conn: sqlite3.Connection, ledger: GameweekLedger,
         f"""SELECT gameweek, COUNT(DISTINCT entry_id) AS managers FROM rival_squad{scope}
             GROUP BY gameweek ORDER BY gameweek DESC LIMIT 1""", params).fetchone()
     finished = ledger.finished()
+    gameweek = row["gameweek"] if row else None
+    missing: tuple[str, ...] = ()
+    if gameweek is not None:
+        listed_scope = (f" WHERE league_id IN ({','.join('?' * len(league_ids))})"
+                        if league_ids else "")
+        missing = tuple(r["name"] for r in conn.execute(
+            f"""SELECT COALESCE(MIN(player_name), MIN(entry_name), CAST(entry_id AS TEXT))
+                       AS name
+                FROM rival{listed_scope} GROUP BY entry_id
+                HAVING entry_id NOT IN (SELECT entry_id FROM rival_squad WHERE gameweek = ?)
+                ORDER BY entry_id""", [*params, gameweek]))
     return OwnershipSource(
-        gameweek=row["gameweek"] if row else None,
+        gameweek=gameweek,
         last_finished=finished[-1] if finished else None,
-        managers=row["managers"] if row else 0)
+        managers=row["managers"] if row else 0,
+        missing=missing)
