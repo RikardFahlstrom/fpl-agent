@@ -167,6 +167,18 @@ class LegalityTests(MovesTestCase):
             self.plan()
 
 
+class VersionTests(MovesTestCase):
+
+    def test_the_plan_reads_the_horizon_of_the_version_it_is_asked_for(self):
+        self.better(23, xp=3.0)
+        self.conn.execute("UPDATE projection SET model_version = '0.0.0-other'")
+        self.conn.commit()
+        from fpl_agent.engine.projection import HorizonMissing
+        with self.assertRaises(HorizonMissing):
+            self.plan()
+        self.assertTrue(self.plan(model_version="0.0.0-other").recommended)
+
+
 class ProofTests(MovesTestCase):
 
     def test_a_solver_that_does_not_prove_optimality_gives_no_plan(self):
