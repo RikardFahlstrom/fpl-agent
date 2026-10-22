@@ -13,11 +13,12 @@ a move that does not survive its own hit is not a recommendation.
 
 Decisions are written to the `decision` table and exported to logs/actions.jsonl, which
 is the version-controlled record. Appending there produces a pure-addition diff. The
-file and its directory are created by the first --record run; until one has happened
-there is nothing to commit, which is why neither is in the checkout.
+file and its directory are created by the first `record` run; until one has happened
+there is nothing to commit, which is why neither is in the checkout. Writing them is
+`engine/recording`'s job (`make record`), since a decision is a claim about what the owner
+did; this module only ranks, and owns the row format.
 
     fpl-agent recommend                 # show recommendations
-    fpl-agent recommend --record        # and log the top one as the transfer you made
 """
 
 import argparse
@@ -471,12 +472,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
     parser.add_argument("--weeks", type=int, default=HORIZON_GAMEWEEKS)
     parser.add_argument("--top", type=int, default=8)
-    parser.add_argument("--record", action="store_true",
-                        help="log the top recommendation as the transfer you made")
-    parser.add_argument("--chip", choices=("bboost", "3xc", "freehit", "wildcard"),
-                        help="with --record: log that you played this chip this "
-                             "gameweek instead of recording the transfer")
-    parser.add_argument("--actions-log", type=Path, default=ACTIONS_LOG)
     args = parser.parse_args(argv)
 
     config.load()
@@ -493,7 +488,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"\nCannot recommend: {missing}", file=sys.stderr)
             return 1
 
-        # The terminal opens with the brief's fixed block - the same seven lines a
+        # The terminal opens with the brief's fixed block - the fixed lines a
         # person reads on the page - and then the full ranked list under it. The block
         # is the brief's, not a copy: `brief` imports this module, so it is reached here
         # locally rather than at the top.
@@ -502,30 +497,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("\n".join(brief.render_block(evaluation, markdown=False)))
         print(brief.with_deadlines(render(context, recommendations, args.weeks), evaluation))
 
-        if args.record and args.chip:
-            from . import chips
-            holding = held.read(conn, target.capture)
-            verdicts = (chips.evaluate(conn, target.gameweek, MODEL_VERSION,
-                                       holding.with_move(recommendations[0]
-                                                         if recommendations else None))
-                        if holding else [])
-            verdict = next((v for v in verdicts if v.state.name == args.chip), None)
-            if verdict is None:
-                print(f"\n{args.chip} is not in the captured chips; nothing recorded",
-                      file=sys.stderr)
-                return 1
-            decision_id = record_chip(conn, verdict)
-            written = export_actions(conn, args.actions_log)
-            print(f"\nrecorded chip decision {decision_id} ({verdict.title}); "
-                  f"{written} decisions in {args.actions_log}")
-            return 0
-        if not recommendations:
-            return 0
-        if args.record:
-            decision_id = record_decision(conn, recommendations[0])
-            written = export_actions(conn, args.actions_log)
-            print(f"\nrecorded decision {decision_id}; "
-                  f"{written} decisions in {args.actions_log}")
         return 0
     finally:
         conn.close()

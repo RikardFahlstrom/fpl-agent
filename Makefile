@@ -36,8 +36,8 @@ hedge:               ## price selling 1-3 players to match the field: make hedge
 
 # Separate from `recommend` rather than a flag on it, because recording is a claim about
 # what you actually did. `make now` must never record on your behalf.
-record:              ## log the top-ranked transfer as a decision: make record
-	$(AGENT) recommend --record
+record:              ## log what you did: make record ARGS='--move 1 --captain Haaland --chip none'
+	$(AGENT) record $(ARGS)
 
 status:              ## check the warehouse agrees with itself (read-only; exits 7 if not)
 	$(AGENT) status
