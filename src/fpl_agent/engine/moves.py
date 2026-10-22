@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 from . import held, squad as squads
-from .projection import stored_horizon
+from .projection import MODEL_VERSION, stored_horizon
 from .warehouse import Capture
 
 #: Paid transfers a plan may make beyond the free ones. A chip lifts it.
@@ -145,8 +145,15 @@ def _pair(held_out: list[squads.Candidate], bought: list[squads.Candidate]
 
 
 def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
-         bar: float, weeks: int = 3, hit_cap: int = HIT_CAP) -> MovePlan:
+         bar: float, weeks: int = 3, hit_cap: Optional[int] = HIT_CAP,
+         chip: Optional[str] = None, bench_boost: bool = False) -> MovePlan:
     """The best transfer plan for the capture's gameweek.
+
+    `hit_cap` None is no cap, for a plan made while a chip is being played. `chip` names a
+    transfer chip being played in the plan (free hit, wildcard): hits are free and the
+    squad is rebuilt without a limit on changes, as for one already active on the capture.
+    `bench_boost` values the bench in full for the target gameweek, which is what a bench
+    boost does and why the best moves under it differ.
 
     Raises `HorizonMissing` when the horizon was never projected, `LookupError` when a
     held player has no projection, and `NotProven` when the solver could not prove it.
@@ -172,19 +179,28 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
         raise LookupError(f"no projection over the horizon for {', '.join(missing)}")
     # Held players cost what selling them returns; everyone else costs what the market
     # asks. A player the market no longer offers (injured, suspended) can still be kept.
+    this_week: dict[int, float] = {}
+    if bench_boost:
+        this_week = {r["element_id"]: r["expected_points"] for r in conn.execute(
+            "SELECT element_id, expected_points FROM projection WHERE snapshot_id = ? "
+            "AND gameweek = ? AND model_version = ?",
+            (capture.id, capture.gameweek, MODEL_VERSION))}
     base = [squads.Candidate(p.element_id, p.name, p.team_id, p.element_type,
-                             p.selling_price, totals[p.element_id])
+                             p.selling_price, totals[p.element_id],
+                             this_week.get(p.element_id, 0.0) * (1 - held.BENCH_VALUE))
             for p in holding.players]
     pool = base + [squads.Candidate(r["element_id"], r["web_name"], r["team_id"],
                                     r["element_type"], r["now_cost"],
-                                    totals[r["element_id"]])
+                                    totals[r["element_id"]],
+                                    this_week.get(r["element_id"], 0.0)
+                                    * (1 - held.BENCH_VALUE))
                    for r in rows if r["element_id"] not in owned
                    and r["element_id"] in totals]
     now = squads.Squad(tuple(base), squads.best_xi(base), sum(c.cost for c in base))
 
     free = holding.free_transfers or 0
     price = DEFAULT_HIT if holding.transfer_cost is None else int(holding.transfer_cost)
-    chip = holding.active_transfer_chip
+    chip = chip or holding.active_transfer_chip
     cap = None if chip else hit_cap
 
     def option(found: squads.Squad) -> Optional[Option]:
@@ -200,7 +216,7 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
                       round(gross - paid * price, 2), _pair(sold, bought))
 
     found: dict[int, Option] = {}
-    limits = [None] if chip else range(1, min(15, free + hit_cap) + 1)
+    limits = [None] if chip else range(1, 16 if cap is None else min(15, free + cap) + 1)
     for limit in limits:
         try:
             best = squads.best_squad(pool, holding.budget, holding.team_limit,

@@ -7,10 +7,16 @@ brief's opening block from the same function, so the two cannot disagree.
 The lineup is the starting eleven that maximises projected points under a legal
 formation, the captain with the existing why line, a vice-captain, and the bench in the
 order the automatic substitutions will use it. The moves are `moves.plan`: how many
-transfers to make, if any, beside doing nothing and the best single swap. The lineup is
-built on the squad *after* the recommended moves, since the transfers happen first. Later
-slices add the chip and the stance taken for the owner's position in the league; each
-extends `Instructions` and `rows`, and nothing else has to change shape.
+transfers to make, if any, beside doing nothing and the best single swap. The chip is
+chosen from *whole alternatives*: no chip, bench boost, triple captain, free hit and
+wildcard, each with its own best moves, each scored as net expected points against doing
+nothing, so a chip is compared with the moves it replaces rather than valued alone. The
+chip's own gates still decide whether it may be played (its bar, and being the best
+remaining week within the noise band); the highest-scoring alternative that passes them
+wins, else the answer is hold, with the margin to the best alternative. The lineup is
+built on the squad *after* the chosen moves, since the transfers happen first. A later
+slice adds the stance taken for the owner's position in the league; it extends
+`Instructions` and `rows`, and nothing else has to change shape.
 
 Pure over stored rows: the projections of the squad's own capture, read through
 `chips.captain_picks`, the same record `recommend` and the chip values read.
@@ -18,7 +24,7 @@ Pure over stored rows: the projections of the squad's own capture, read through
 
 import json
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
@@ -60,6 +66,28 @@ class Lineup:
 
 
 @dataclass(frozen=True)
+class Alternative:
+    """One whole way to play the gameweek, scored against doing nothing."""
+    name: str                       # "no chip", "bench boost", ...
+    chip: Optional[str]             # FPL's chip name; None for no chip
+    total: float                    # net xP: the chip's gain plus its moves, after hits
+    playable: bool                  # the chip clears its own gates; True for no chip
+    reason: str                     # the chip's verdict in the reader's words
+    plan: Optional[movesmod.MovePlan]   # its best moves, None where there are none
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "chip": self.chip, "total": self.total,
+                "playable": self.playable, "reason": self.reason,
+                "plan": None if self.plan is None else self.plan.to_dict()}
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "Alternative":
+        plan = raw.get("plan")
+        return cls(raw["name"], raw["chip"], raw["total"], raw["playable"], raw["reason"],
+                   None if plan is None else movesmod.MovePlan.from_dict(plan))
+
+
+@dataclass(frozen=True)
 class Instructions:
     """What to do for one gameweek. `note` says why there is no lineup, when there is not."""
     gameweek: int
@@ -68,8 +96,13 @@ class Instructions:
     #: The transfer plan with its alternatives, or None and `plan_note` saying why.
     plan: Optional[movesmod.MovePlan] = None
     plan_note: str = "not evaluated"
-    #: Room for the slice still to come; stored with the record so it can be graded.
+    #: The chip to play (FPL's name), or None to hold; the alternatives it was chosen from.
     chip: Optional[str] = None
+    chip_note: str = "not evaluated"
+    alternatives: tuple[Alternative, ...] = ()
+    #: Every chip's verdict on the squad after the no-chip moves: the working behind the
+    #: Chips line. Not stored; it is recomputed from the warehouse.
+    verdicts: tuple[chips.Verdict, ...] = field(default=(), compare=False)
 
     @property
     def moves(self) -> tuple[movesmod.Move, ...]:
@@ -82,7 +115,9 @@ class Instructions:
                 "lineup": None if self.lineup is None else asdict(self.lineup),
                 "moves": [asdict(m) for m in self.moves],
                 "plan": None if self.plan is None else self.plan.to_dict(),
-                "plan_note": self.plan_note, "chip": self.chip}
+                "plan_note": self.plan_note, "chip": self.chip,
+                "chip_note": self.chip_note,
+                "alternatives": [a.to_dict() for a in self.alternatives]}
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "Instructions":
@@ -102,7 +137,10 @@ class Instructions:
                    note=payload.get("note", "not evaluated"),
                    plan=None if plan is None else movesmod.MovePlan.from_dict(plan),
                    plan_note=payload.get("plan_note", "not evaluated"),
-                   chip=payload.get("chip"))
+                   chip=payload.get("chip"),
+                   chip_note=payload.get("chip_note", "not evaluated"),
+                   alternatives=tuple(Alternative.from_dict(a)
+                                      for a in payload.get("alternatives") or ()))
 
 
 def _slot(player: HeldPlayer, xp: float) -> Slot:
@@ -180,13 +218,14 @@ def after_moves(holding: HeldSquad, instructions: "Instructions") -> HeldSquad:
 
 
 def _plan(conn: sqlite3.Connection, holding: HeldSquad, capture: Optional[Capture],
-          gameweek: int, bar: float) -> tuple[Optional[movesmod.MovePlan], str]:
+          gameweek: int, bar: float, **options: Any
+          ) -> tuple[Optional[movesmod.MovePlan], str]:
     """The transfer plan, or None and why there is none."""
     if capture is None or capture.gameweek != gameweek:
         return None, (f"not planned - transfers are priced from the latest capture, which "
                       f"targets gameweek {capture.gameweek if capture else 'none'}")
     try:
-        return movesmod.plan(conn, holding, capture, bar=bar), ""
+        return movesmod.plan(conn, holding, capture, bar=bar, **options), ""
     except HorizonMissing as e:
         return None, f"not evaluated - the horizon is not projected: {e}"
     except LookupError as e:
@@ -194,6 +233,100 @@ def _plan(conn: sqlite3.Connection, holding: HeldSquad, capture: Optional[Captur
     except movesmod.NotProven as e:
         return None, (f"not evaluated - the solver did not prove its answer optimal, so "
                       f"there is no move advice ({e})")
+
+
+def _worth(plan: Optional[movesmod.MovePlan]) -> float:
+    """What a plan's moves are worth: its net when it clears its bar, else nothing."""
+    return plan.chosen.net if plan is not None and plan.recommended else 0.0
+
+
+def _wildcard_span(conn: sqlite3.Connection, holding: HeldSquad, capture: Capture,
+                   model_version: str) -> int:
+    """How many weeks a wildcard rebuild is valued over: its horizon, capped at the wall
+    of the chip's window and at what has been projected."""
+    wall = chips.window_end(list(holding.chips), capture.gameweek)
+    projected = conn.execute(
+        "SELECT MAX(gameweek) AS last FROM projection WHERE snapshot_id = ? "
+        "AND model_version = ?", (capture.id, model_version)).fetchone()["last"]
+    span = chips.WILDCARD_HORIZON
+    if wall:
+        span = min(span, wall - capture.gameweek + 1)
+    if projected:
+        span = min(span, projected - capture.gameweek + 1)
+    return max(1, span)
+
+
+def _verdict(verdicts: list[chips.Verdict], name: str) -> Optional[chips.Verdict]:
+    return next((v for v in verdicts if v.state.name == name), None)
+
+
+def _alternatives(conn: sqlite3.Connection, gameweek: int, model_version: str,
+                  holding: HeldSquad, capture: Capture, bar: float,
+                  none_plan: Optional[movesmod.MovePlan], none_verdicts: list[chips.Verdict]
+                  ) -> list[Alternative]:
+    """Every chip that can be valued, with its best moves, scored against doing nothing.
+
+    A chip that cannot be evaluated - played, not yet open, expired - has no alternative:
+    it is reported as it is by the Chips line and is never given a value.
+    """
+    base = _worth(none_plan)
+    found = [Alternative("no chip", None, round(base, 2), True,
+                         "moves alone" if none_plan is not None and none_plan.recommended
+                         else "no move worth making", none_plan)]
+    for verdict in none_verdicts:
+        if not verdict.evaluated:
+            continue
+        name = verdict.state.name
+        plan, own, why = none_plan, verdict, ""
+        if name == "bboost":
+            # With the bench counting in full this week the best moves differ, so they are
+            # searched again - and the chip's value is read on the squad they leave.
+            plan, why = _plan(conn, holding, capture, gameweek, bar, hit_cap=None,
+                              bench_boost=True)
+            if plan is not None:
+                after = chips.evaluate(conn, gameweek, model_version,
+                                       after_moves(holding, Instructions(gameweek, plan=plan)))
+                own = _verdict(after, name) or verdict
+            total = own.now.value + _worth(plan)
+        elif name == "3xc":
+            total = verdict.now.value + base
+        elif name in ("freehit", "wildcard"):
+            # A rebuild: hits are free and the moves are the rebuild itself. A free hit's
+            # squad is for this week only; a wildcard's is kept.
+            weeks = 1 if name == "freehit" else _wildcard_span(
+                conn, holding, capture, model_version)
+            plan, why = _plan(conn, holding, capture, gameweek, 0.0, weeks=weeks,
+                              hit_cap=None, chip=name)
+            total = verdict.now.value
+        else:
+            continue
+        playable = own.play_now and (plan is not None or name == "3xc")
+        reason = own.reason if plan is not None or name == "3xc" else (
+            f"its moves could not be planned: {why}")
+        found.append(Alternative(own.title, name, round(total, 2), playable, reason, plan))
+    return found
+
+
+def _choose(alternatives: list[Alternative]) -> tuple[Alternative, str]:
+    """The alternative to play, or no chip, and the sentence that says why."""
+    none = alternatives[0]
+    contenders = [a for a in alternatives[1:] if a.playable and a.total > none.total]
+    if contenders:
+        best = max(contenders, key=lambda a: a.total)
+        rivals = [a for a in alternatives if a is not best]
+        runner = max(rivals, key=lambda a: a.total)
+        return best, (f"play {best.name}: +{best.total:.1f} xP this week with its moves, "
+                      f"{best.total - runner.total:.1f} ahead of the best alternative "
+                      f"({runner.name}, +{runner.total:.1f}); {best.reason}")
+    chips_only = alternatives[1:]
+    if not chips_only:
+        return none, "hold - no chip can be valued this gameweek"
+    runner = max(chips_only, key=lambda a: a.total)
+    gap = runner.total - none.total
+    return none, (f"hold - the best alternative, {runner.name}, scores +{runner.total:.1f} "
+                  f"xP against +{none.total:.1f} with no chip ({abs(gap):.1f} "
+                  f"{'ahead' if gap > 0 else 'behind'}) but is not played: "
+                  f"{runner.reason.removeprefix('hold: ')}")
 
 
 def build(conn: sqlite3.Connection, gameweek: int, model_version: str,
@@ -205,22 +338,43 @@ def build(conn: sqlite3.Connection, gameweek: int, model_version: str,
     """
     if locked:
         why = f"not evaluated - gameweek {gameweek} is locked"
-        return Instructions(gameweek, note=why, plan_note=why)
+        return Instructions(gameweek, note=why, plan_note=why, chip_note=why)
     if holding is None:
         why = "not evaluated - no squad captured"
-        return Instructions(gameweek, note=why, plan_note=why)
-    plan, plan_note = _plan(conn, holding, capture, gameweek, bar)
-    planned = Instructions(gameweek, plan=plan, plan_note=plan_note)
+        return Instructions(gameweek, note=why, plan_note=why, chip_note=why)
+    none_plan, plan_note = _plan(conn, holding, capture, gameweek, bar)
+    alternatives: list[Alternative] = []
+    chosen = None
+    verdicts = chips.evaluate(conn, gameweek, model_version,
+                              after_moves(holding, Instructions(gameweek, plan=none_plan)))
+    if not verdicts:
+        chip_note = "not evaluated - no chips captured (an authenticated snapshot records them)"
+    elif none_plan is None:
+        # The chips can still be valued on the squad as held, but not compared with moves
+        # that could not be planned.
+        chip_note = f"not compared - {plan_note}; each chip is valued on the squad as held"
+    else:
+        alternatives = _alternatives(conn, gameweek, model_version, holding, capture,
+                                     bar, none_plan, verdicts)
+        chosen, chip_note = _choose(alternatives)
+    plan = none_plan if chosen is None else chosen.plan
+    chip = None if chosen is None else chosen.chip
+    planned = Instructions(gameweek, plan=plan, plan_note=plan_note, chip=chip,
+                           chip_note=chip_note, alternatives=tuple(alternatives),
+                           verdicts=tuple(verdicts))
     found, why = lineup(conn, gameweek, model_version, after_moves(holding, planned))
     if found is None:
         return Instructions(gameweek, note=f"not evaluated - {why}", plan=plan,
-                            plan_note=plan_note)
-    return Instructions(gameweek, found, plan=plan, plan_note=plan_note)
+                            plan_note=plan_note, chip=chip, chip_note=chip_note,
+                            alternatives=tuple(alternatives), verdicts=tuple(verdicts))
+    return Instructions(gameweek, found, plan=plan, plan_note=plan_note, chip=chip,
+                        chip_note=chip_note, alternatives=tuple(alternatives),
+                        verdicts=tuple(verdicts))
 
 
 def _hits(option: movesmod.Option, plan: movesmod.MovePlan) -> str:
     if plan.chip:
-        return f"no hit ({plan.chip} active)"
+        return f"no hit ({plan.chip})"
     paid = option.hit_cost // plan.hit_price if plan.hit_price else 0
     return ("no hit" if not paid else
             f"after {'a' if paid == 1 else paid} {plan.hit_price}-point "
@@ -233,12 +387,16 @@ def moves_text(instructions: "Instructions") -> str:
     if plan is None:
         return instructions.plan_note
     terms = (f"{plan.free_transfers} free transfer{'' if plan.free_transfers == 1 else 's'}, "
-             + ("no hit cap while a chip is active" if plan.hit_cap is None else
+             + (f"no hits while the {plan.chip} is played" if plan.chip else
+                "no hit cap while a chip is played" if plan.hit_cap is None else
                 f"hit cap {plan.hit_cap}"))
     if plan.recommended:
         o = plan.chosen
-        text = (f"{o.transfers} transfer{'' if o.transfers == 1 else 's'} - {o.text}: "
-                f"+{o.gross:.1f} xP over {plan.weeks} gameweeks, net {o.net:+.1f} "
+        weeks = "this gameweek" if plan.weeks == 1 else f"{plan.weeks} gameweeks"
+        lead = ("free hit squad for this gameweek only, reverting after it - "
+                if plan.chip == "freehit" else
+                f"{o.transfers} transfer{'' if o.transfers == 1 else 's'} - ")
+        text = (f"{lead}{o.text}: +{o.gross:.1f} xP over {weeks}, net {o.net:+.1f} "
                 f"{_hits(o, plan)} ({terms})")
         single = plan.single
         beside = ("best single swap "
@@ -253,6 +411,15 @@ def moves_text(instructions: "Instructions") -> str:
             f"({terms})")
 
 
+def chip_text(instructions: "Instructions") -> str:
+    """The Chip line: play one, or hold, and what it was compared with."""
+    text = instructions.chip_note
+    if instructions.alternatives:
+        compared = " · ".join(f"{a.name} {a.total:+.1f}" for a in instructions.alternatives)
+        text += f". Compared, as net xP against doing nothing: {compared}"
+    return text
+
+
 def rows(instructions: Instructions) -> list[tuple[str, str]]:
     """The labelled lines both outputs print, in their fixed order.
 
@@ -262,6 +429,7 @@ def rows(instructions: Instructions) -> list[tuple[str, str]]:
     found = instructions.lineup
     if found is None:
         return [("Instructions", f"for GW{instructions.gameweek}: {instructions.note}"),
+                ("Chip", chip_text(instructions)),
                 ("Moves", moves_text(instructions)),
                 ("Starting XI", instructions.note), ("Captain", instructions.note),
                 ("Vice-captain", instructions.note), ("Bench", instructions.note)]
@@ -271,6 +439,7 @@ def rows(instructions: Instructions) -> list[tuple[str, str]]:
     bench = "; ".join(f"{n}. {s.name} ({s.xp:.1f}) - {why}" for n, (s, why)
                       in enumerate(zip(found.bench, found.bench_reasons), start=1))
     return [("Instructions", f"for GW{instructions.gameweek}, play {found.formation}"),
+            ("Chip", chip_text(instructions)),
             ("Moves", moves_text(instructions)),
             ("Starting XI", f"{found.formation} - {xi}"),
             ("Captain", captain),
