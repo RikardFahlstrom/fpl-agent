@@ -140,6 +140,18 @@ class LegalityTests(MovesTestCase):
         self.assertLessEqual(max(after.club_counts().values()), holding.team_limit)
         self.assertEqual(len(after.players), 15)
 
+    def test_a_transfer_hands_over_the_slot_but_not_the_armband(self):
+        self.conn.execute("UPDATE my_squad SET multiplier = 2 WHERE element_id = 3")
+        self.conn.commit()
+        capture = warehouse.latest(self.conn)
+        holding = held.read(self.conn, capture)
+        swap = {"out": {"element_id": 3},
+                "in": {"element_id": 23, "name": "P23", "team_id": 4, "now_cost": 50}}
+        after = holding.with_move(swap)
+        bought = next(p for p in after.players if p.element_id == 23)
+        self.assertEqual((bought.position, bought.multiplier),
+                         (next(p for p in holding.players if p.element_id == 3).position, 1))
+
     def test_a_squad_that_is_not_fpl_shaped_is_refused_not_called_no_move(self):
         self.conn.execute("DELETE FROM my_squad")
         self.w.squad(list(range(1, 16)))

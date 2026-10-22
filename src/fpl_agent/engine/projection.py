@@ -31,7 +31,7 @@ from .scoring import DC_THRESHOLDS, POSITIONS, Scoring
 
 logger = logging.getLogger("fpl_projection")
 
-MODEL_VERSION = "0.5.2"
+MODEL_VERSION = "0.6.0"
 
 # Transfer value is judged over three gameweeks, so a good fixture run counts and a
 # single-week spike does not dominate the decision.
