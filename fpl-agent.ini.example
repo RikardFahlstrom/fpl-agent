@@ -24,7 +24,7 @@ password =
 
 [rivals]
 ; League ids to measure ownership against, comma-separated.
-; Leave empty to use every private league under the rival cap.
+; Required: `rivals` and `recommend` stop while this is empty.
 leagues =
 
 [brief]

@@ -477,6 +477,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     config.load()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
+    try:
+        config.require_rival_leagues()
+    except LookupError as e:
+        print(f"\nCannot recommend: {e}", file=sys.stderr)
+        return 1
     conn = storage.connect(args.db)
     try:
         target = warehouse.require_target(conn)

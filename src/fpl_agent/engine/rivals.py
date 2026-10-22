@@ -36,10 +36,6 @@ PRIVATE_LEAGUE_TYPE = "x"
 # rivals the ownership signal stops being about anyone you are actually racing.
 DEFAULT_MAX_RIVALS = 50
 RIVAL_CONCURRENCY = 6
-# Which leagues count as "your rivals". Comma-separated ids; unset means every private
-# league under the cap. Narrowing this to the one league you actually care about makes
-# the ownership numbers mean something specific rather than averaging across leagues you
-# are not really competing in.
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -273,6 +269,12 @@ async def _refresh_only(args) -> int:
 
 
 async def _run(args) -> int:
+    if not args.league:
+        try:
+            config.require_rival_leagues()
+        except LookupError as e:
+            logger.error("%s", e)
+            return 1
     if args.standings_only:
         return await _refresh_only(args)
     conn = storage.connect(args.db)
@@ -299,9 +301,8 @@ async def _run(args) -> int:
 
         leagues = capturable_leagues(
             await account.leagues(client), args.max_rivals, args.include_global)
-        wanted = args.league or config.rival_leagues()
-        if wanted:
-            leagues = [lg for lg in leagues if lg["id"] in set(wanted)]
+        wanted = set(args.league or config.require_rival_leagues())
+        leagues = [lg for lg in leagues if lg["id"] in wanted]
         if not leagues:
             logger.error("no capturable leagues; all are global or above the rival cap")
             return 1
@@ -324,7 +325,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--max-rivals", type=int, default=DEFAULT_MAX_RIVALS)
     parser.add_argument("--league", type=int, action="append",
                         help=f"restrict to these league ids "
-                             f"(default: ${config.RIVAL_LEAGUES_ENV}, else all capturable)")
+                             f"(default: ${config.RIVAL_LEAGUES_ENV})")
     parser.add_argument("--include-global", action="store_true",
                         help="also consider FPL's global leagues (usually far too large)")
     parser.add_argument("--standings-only", action="store_true",

@@ -46,7 +46,7 @@ password = ...
 [rivals]
 leagues = 920863          ; measure ownership against these leagues only; the first one
                           ; is the league your stance (Protect or Chase) is set from
-                          ; leave empty to use every private league you are in
+                          ; required: rivals and recommend stop while it is empty
 ```
 
 Every setting is also an environment variable (`FPL_AUTO_LOGIN`, `FPL_EMAIL`, …) and

@@ -42,7 +42,7 @@ RIVAL_LEAGUES_ENV = "FPL_RIVAL_LEAGUES"
 
 
 def rival_leagues() -> Optional[list[int]]:
-    """League ids from FPL_RIVAL_LEAGUES, or None to mean 'all capturable'.
+    """League ids from FPL_RIVAL_LEAGUES, or None when none are set.
 
     Every reader of ownership scopes to these - `rivals` when capturing, `warehouse`
     when saying whether the picks are fresh - so a league configured after a capture
@@ -61,6 +61,20 @@ def rival_leagues() -> Optional[list[int]]:
                 logger.warning("ignoring non-numeric league id %r in %s",
                                part, RIVAL_LEAGUES_ENV)
     return ids or None
+
+
+def require_rival_leagues() -> list[int]:
+    """The configured league ids, or a stop that names the setting.
+
+    Without them "every rival" would silently become every capturable private league
+    the account is in, a different field than the one the stance and ownership mean.
+    """
+    leagues = rival_leagues()
+    if not leagues:
+        raise LookupError(
+            f"no leagues configured: set `leagues` under [rivals] in fpl-agent.ini "
+            f"(or {RIVAL_LEAGUES_ENV}) to the league whose rivals you play")
+    return leagues
 
 
 def _warn_if_world_readable(path: Path) -> None:

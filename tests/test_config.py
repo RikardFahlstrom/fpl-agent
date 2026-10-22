@@ -137,9 +137,13 @@ class RivalLeaguesTests(unittest.TestCase):
     def _set(self, value):
         os.environ[config.RIVAL_LEAGUES_ENV] = value
 
-    def test_unset_means_every_capturable_league(self):
+    def test_unset_is_none_and_required_stops_naming_the_setting(self):
         os.environ.pop(config.RIVAL_LEAGUES_ENV, None)
         self.assertIsNone(config.rival_leagues())
+        with self.assertRaisesRegex(LookupError, "leagues"):
+            config.require_rival_leagues()
+        self._set("920863")
+        self.assertEqual(config.require_rival_leagues(), [920863])
 
     def test_single_and_multiple_ids(self):
         self._set("920863")
