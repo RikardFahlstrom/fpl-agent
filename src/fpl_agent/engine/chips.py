@@ -17,11 +17,11 @@ the held squad, free hit and wildcard from a rebuilt one).
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterable, Optional
 
 from . import squad as squads
 from . import warehouse
-from .held import BUYABLE, ChipState, HeldSquad, read as read_held
+from .held import BUYABLE, ChipState, HeldPlayer, HeldSquad, read as read_held
 
 
 def window_end(states: list[ChipState], gameweek: int) -> Optional[int]:
@@ -64,15 +64,16 @@ class Pick:
 
 
 def captain_picks(conn: sqlite3.Connection, gameweek: int, model_version: str,
-                  holding: HeldSquad) -> list[Pick]:
-    """The held XI ranked by projected points for the gameweek, best first.
+                  holding: HeldSquad, xi: Optional[Iterable[HeldPlayer]] = None) -> list[Pick]:
+    """The XI ranked by projected points for the gameweek, best first: the captured one
+    unless `xi` names the players the owner is being told to start.
 
     The captain is the model's, not the payload's: the `is_captain` flag rides along
     so the line can say when they differ. Reads the stored projection for the held
     squad's capture, which is the decision-time record; no projection means an empty
     list, and the caller says "not evaluated" rather than guessing.
     """
-    xi = holding.xi
+    xi = holding.xi if xi is None else tuple(xi)
     if not xi:
         return []
     snapshot_id = holding.snapshot_id
@@ -88,7 +89,7 @@ def captain_picks(conn: sqlite3.Connection, gameweek: int, model_version: str,
               AND pr.element_id IN ({placeholders})
             ORDER BY pr.expected_points DESC""",
         (snapshot_id, gameweek, model_version, *ids)).fetchall()
-    armband = {p.element_id for p in xi if (p.multiplier or 1) > 1}
+    armband = {p.element_id for p in holding.players if (p.multiplier or 1) > 1}
     opponents = _opponents(conn, gameweek)
     return [Pick(r["element_id"], r["web_name"], r["team"] or "?",
                  round(r["expected_points"], 2), r["fixture_count"] or 0,
@@ -114,9 +115,9 @@ def _opponents(conn: sqlite3.Connection, gameweek: int) -> dict[int, list[str]]:
     return out
 
 
-def captain_line(picks: list[Pick]) -> str:
+def captain_line(picks: list[Pick], armband: Optional[str] = None) -> str:
     """The `Captain:` line: the model's pick, the runner-up, and whether it is who
-    the armband is on."""
+    the armband is on. `armband` names the holder when he is not among `picks`."""
     if not picks:
         return "not evaluated - no projection for the XI"
     best = picks[0]
@@ -126,7 +127,9 @@ def captain_line(picks: list[Pick]) -> str:
     if len(picks) > 1:
         text += f"; next {picks[1].name} {picks[1].xp:.1f}"
     held = next((p for p in picks if p.is_captain), None)
-    if held is None:
+    if held is None and armband:
+        text += f" - armband is on {armband}, who is not in this XI"
+    elif held is None:
         text += " - no armband captured"
     elif held is best:
         text += " - armband already on him"

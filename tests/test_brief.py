@@ -322,7 +322,7 @@ class LockedGameweekTests(BriefTestCase):
         self.assertIn("is locked", evaluation.locked)
         self.assertEqual(evaluation.listing["moves"], [])
         self.assertEqual(evaluation.chips, [])
-        self.assertEqual(evaluation.captain_picks, [])
+        self.assertIsNone(evaluation.instructions.lineup)
         text = brief.render_brief(evaluation)
         self.assertIn("> **GAMEWEEK 3 LOCKED.**", text)
         self.assertIn("- **Captain:** not evaluated - gameweek 3 (deadline 5 Sep 09:30) is locked", text)
@@ -422,11 +422,11 @@ class RenderBriefTests(BriefTestCase):
         text = self.render()
         labels = [line.split(":**")[0] for line in text.splitlines()
                   if line.startswith("- **")]
-        self.assertEqual(labels[:8], ["- **Move", "- **Ownership", "- **Captain",
-                                      "- **Chips", "- **Availability", "- **Deadline",
-                                      "- **Learnings", "- **Data"])
-        self.assertIn("- **Captain:** P1 (C01), 1.0 xP; next P2 1.0 - no armband captured",
-                      text)
+        self.assertEqual(labels[:12], [
+            "- **Instructions", "- **Starting XI", "- **Captain", "- **Vice-captain",
+            "- **Bench", "- **Move", "- **Ownership", "- **Chips", "- **Availability",
+            "- **Deadline", "- **Learnings", "- **Data"])
+        self.assertRegex(text, r"- \*\*Captain:\*\* P\d+ \(C\d+\), 1\.0 xP; next P\d+ 1\.0")
         self.assertIn("- **Learnings:** none proposed", text)
 
     def test_the_learnings_line_groups_repeats_and_speaks_plainly(self):
