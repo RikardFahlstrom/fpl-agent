@@ -26,6 +26,7 @@ class StanceTestCase(InstructionsTestCase):
         os.environ["FPL_RIVAL_LEAGUES"] = str(LEAGUE)     # restored by the base class
         self.conn.execute("UPDATE projection SET expected_points = 1.0")
         self.conn.execute("DELETE FROM rival_squad")
+        self.w.fixtures(gameweek=2, finished=True)      # the last finished gameweek
         self.conn.execute("INSERT INTO league VALUES (?, 'Test league', 'x', 3, 't')", (LEAGUE,))
         for entry in (LEADER, 98):
             self.conn.execute("INSERT INTO rival VALUES (?, ?, 'p', 'e', 1, 0)",
@@ -39,6 +40,7 @@ class StanceTestCase(InstructionsTestCase):
                  leader_points if owner_rank != 1 else owner_points - 10, 1, "t")]
         if owner_rank == 1:
             rows[1] = (LEAGUE, 2, LEADER, 2, None, 0, owner_points - 10, 1, "t")
+        rows.append((LEAGUE, 2, 98, 3, None, 0, 0, 1, "t"))
         self.conn.executemany("INSERT INTO league_standing VALUES (?,?,?,?,?,?,?,?,?)", rows)
         self.conn.commit()
 
@@ -108,6 +110,35 @@ class OwnershipTests(StanceTestCase):
         self.assertFalse(st.applied)
         self.assertEqual(st.bonus(12, 3), 0.0)
         self.assertIn("not applied - ownership is not usable", st.line)
+
+    def test_a_missing_rival_in_the_standings_withholds_the_stance(self):
+        self.rivals_hold(12)
+        self.standings(owner_rank=2, owner_points=150)
+        self.conn.execute("DELETE FROM league_standing WHERE entry_id = 98")
+        self.conn.execute("UPDATE rival SET player_name = 'Dana' WHERE entry_id = 98")
+        self.conn.commit()
+        st = self.read()
+        self.assertEqual(st.mode, "none")
+        self.assertFalse(st.applied)
+        self.assertIn("Dana", st.line)
+        self.assertIn("make rivals", st.line)
+
+    def test_a_mid_round_table_is_stale(self):
+        self.rivals_hold(12)
+        self.standings(owner_rank=2, owner_points=150)
+        self.conn.execute("UPDATE league_standing SET finished = 0")
+        self.conn.commit()
+        self.assertEqual(self.read().mode, "none")
+
+    def test_standings_behind_the_last_finished_gameweek_name_the_one_last_captured(self):
+        self.rivals_hold(12)
+        self.standings(owner_rank=2, owner_points=150)
+        self.conn.execute("UPDATE league_standing SET gameweek = 1")
+        self.conn.commit()
+        st = self.read()
+        self.assertEqual(st.mode, "none")
+        self.assertIn("gameweek 1", st.line)
+        self.assertIn("gameweek 2 has finished", st.line)
 
     def test_missing_ownership_is_never_used_either(self):
         self.standings(owner_rank=2, owner_points=150)       # nobody's picks captured
@@ -230,14 +261,14 @@ class BriefTests(StanceTestCase):
         self.rivals_hold(23, captain=True)
         self.standings(owner_rank=2, owner_points=50, leader_points=400)
         row = self.stance_row()
-        self.assertIn("Chase - 2 of 2 in Test league, 350 points behind the leader", row)
+        self.assertIn("Chase - 2 of 3 in Test league, 350 points behind the leader", row)
         self.assertIn("Effect: on moves, without it the advice would be", row)
         self.assertIn("P23 in for", row)
 
     def test_leading_says_protect(self):
         self.rivals_hold(23)
         self.standings(owner_rank=1, owner_points=500)
-        self.assertIn("Protect - first (1 of 2 in Test league)", self.stance_row())
+        self.assertIn("Protect - first (1 of 3 in Test league)", self.stance_row())
 
     def test_unusable_ownership_is_stated_in_the_stance_line(self):
         self.standings(owner_rank=2, owner_points=150)

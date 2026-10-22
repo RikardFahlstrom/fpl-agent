@@ -363,6 +363,12 @@ expected points. Stale or missing ownership is never used: the brief says where 
 stands and that the stance was not applied, and why. The brief states the mode, the gap and
 what the stance changed.
 
+The standings follow the same rule as ownership, beside it: fresh only when every rival
+the league table lists has a *finished* row at the last finished gameweek (a mid-round
+table does not count). Otherwise the stance is withheld, with no Chase or Protect pull, and
+the line names the gameweek last captured and says to run `make rivals`; `status` warns.
+The Instructions are still produced. One answer, `stance.stale_standings`.
+
 ## retired terms
 
 Removed in the Instructions rework (October 2026), and not to be used again without a new

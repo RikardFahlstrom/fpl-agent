@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Optional
 
 from .. import config
-from . import schedule, storage, warehouse
+from . import schedule, stance, storage, warehouse
 from .projection import HORIZON_GAMEWEEKS, MODEL_VERSION
 from .snapshot import SQUAD_SIZE
 
@@ -372,6 +372,10 @@ def check_rivals(conn: sqlite3.Connection, ledger: warehouse.GameweekLedger) -> 
         detail += f"; table {hours:.1f}h old"
     if source.missing:
         return Check("rivals", WARN, detail + f" - {source.reason}")
+    leagues = config.rival_leagues()
+    stale = stance.stale_standings(conn, leagues[0]) if leagues else None
+    if stale and source.fresh:
+        return Check("rivals", WARN, detail + f" - stance withheld: {stale}")
     if not source.fresh:
         return Check("rivals", WARN,
                      detail + f" - behind the last finished gameweek "

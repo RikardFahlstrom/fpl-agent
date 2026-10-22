@@ -28,7 +28,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 from .. import config
-from . import recommend
+from . import recommend, warehouse
+from .projection import MODEL_VERSION
 from .held import HeldSquad
 
 #: Expected points per player per gameweek that full pull is worth. Uncalibrated.
@@ -96,6 +97,37 @@ class Stance:
 NONE = Stance("none", reason="not evaluated")
 
 
+def stale_standings(conn: sqlite3.Connection, league_id: int) -> Optional[str]:
+    """Why the league's table cannot set a stance, or None when it can.
+
+    Fresh means every rival the table lists has a finished row at the last finished
+    gameweek; a table captured mid-round is not finished and does not count. `status`
+    reads this same answer.
+    """
+    name = conn.execute("SELECT name FROM league WHERE id = ?", (league_id,)).fetchone()
+    finished = warehouse.gameweeks(conn, MODEL_VERSION).finished()
+    held_through = conn.execute(
+        "SELECT MAX(gameweek) AS gw FROM league_standing WHERE league_id = ? AND finished = 1",
+        (league_id,)).fetchone()["gw"]
+    if name is None or not finished or held_through is None:
+        return (f"no finished-round standings are held for league {league_id} - "
+                f"run `make rivals`")
+    gameweek = finished[-1]
+    if held_through != gameweek:
+        return (f"the standings of {name['name']} were last captured finished for gameweek "
+                f"{held_through} and gameweek {gameweek} has finished - run `make rivals`")
+    absent = [r["name"] for r in conn.execute(
+        "SELECT COALESCE(player_name, entry_name, CAST(entry_id AS TEXT)) AS name FROM rival "
+        "WHERE league_id = ? AND entry_id NOT IN "
+        "(SELECT entry_id FROM league_standing "
+        " WHERE league_id = ? AND gameweek = ? AND finished = 1) ORDER BY entry_id",
+        (league_id, league_id, gameweek))]
+    if absent:
+        return (f"the gameweek {gameweek} standings of {name['name']} have no row for "
+                f"{', '.join(absent)} - run `make rivals`")
+    return None
+
+
 def read(conn: sqlite3.Connection, holding: Optional[HeldSquad], *,
          weight: float = RANK_WEIGHT) -> Stance:
     """The owner's stance from the first configured league's latest finished standings."""
@@ -108,12 +140,10 @@ def read(conn: sqlite3.Connection, holding: Optional[HeldSquad], *,
         return Stance("none", weight, reason="no squad captured, so the owner's entry is "
                                              "not known")
     name = conn.execute("SELECT name FROM league WHERE id = ?", (league_id,)).fetchone()
-    gameweek = conn.execute(
-        "SELECT MAX(gameweek) AS gw FROM league_standing WHERE league_id = ? AND finished = 1",
-        (league_id,)).fetchone()["gw"]
-    if name is None or gameweek is None:
-        return Stance("none", weight, reason=f"no finished-round standings are held for "
-                                             f"league {league_id}")
+    stale = stale_standings(conn, league_id)
+    if stale:
+        return Stance("none", weight, reason=stale)
+    gameweek = warehouse.gameweeks(conn, MODEL_VERSION).finished()[-1]
     rows = conn.execute(
         "SELECT entry_id, rank, total_points FROM league_standing "
         "WHERE league_id = ? AND gameweek = ? AND finished = 1 ORDER BY rank",
