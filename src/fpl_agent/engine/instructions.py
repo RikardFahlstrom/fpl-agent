@@ -247,14 +247,15 @@ def after_moves(holding: HeldSquad, instructions: "Instructions") -> HeldSquad:
 
 
 def _plan(conn: sqlite3.Connection, holding: HeldSquad, capture: Optional[Capture],
-          gameweek: int, bar: float, **options: Any
+          gameweek: int, bar: float, model_version: str, **options: Any
           ) -> tuple[Optional[movesmod.MovePlan], str]:
     """The transfer plan, or None and why there is none."""
     if capture is None or capture.gameweek != gameweek:
         return None, (f"not planned - transfers are priced from the latest capture, which "
                       f"targets gameweek {capture.gameweek if capture else 'none'}")
     try:
-        return movesmod.plan(conn, holding, capture, bar=bar, **options), ""
+        return movesmod.plan(conn, holding, capture, bar=bar, model_version=model_version,
+                             **options), ""
     except HorizonMissing as e:
         return None, f"not evaluated - the horizon is not projected: {e}"
     except LookupError as e:
@@ -310,7 +311,7 @@ def _alternatives(conn: sqlite3.Connection, gameweek: int, model_version: str,
         if name == "bboost":
             # With the bench counting in full this week the best moves differ, so they are
             # searched again - and the chip's value is read on the squad they leave.
-            plan, why = _plan(conn, holding, capture, gameweek, bar, hit_cap=None,
+            plan, why = _plan(conn, holding, capture, gameweek, bar, model_version, hit_cap=None,
                               bench_boost=True, stance=stance)
             if plan is not None:
                 after = chips.evaluate(conn, gameweek, model_version,
@@ -328,7 +329,7 @@ def _alternatives(conn: sqlite3.Connection, gameweek: int, model_version: str,
             # squad is for this week only; a wildcard's is kept.
             weeks = 1 if name == "freehit" else _wildcard_span(
                 conn, holding, capture, model_version)
-            plan, why = _plan(conn, holding, capture, gameweek, 0.0, weeks=weeks,
+            plan, why = _plan(conn, holding, capture, gameweek, 0.0, model_version, weeks=weeks,
                               hit_cap=None, chip=name, stance=stance)
             total = verdict.now.value
         else:
@@ -363,7 +364,7 @@ def _choose(alternatives: list[Alternative]) -> tuple[Alternative, str]:
 
 
 def _effect(conn: sqlite3.Connection, holding: HeldSquad, capture: Optional[Capture],
-            gameweek: int, bar: float, stance: Stance, with_stance: Optional[movesmod.MovePlan],
+            gameweek: int, bar: float, model_version: str, stance: Stance, with_stance: Optional[movesmod.MovePlan],
             lineup_found: Optional[Lineup]) -> str:
     """What the stance did to this gameweek's advice, in plain English.
 
@@ -372,7 +373,7 @@ def _effect(conn: sqlite3.Connection, holding: HeldSquad, capture: Optional[Capt
     """
     if not (stance.applied and stance.weight and with_stance is not None):
         return ""
-    plain, _ = _plan(conn, holding, capture, gameweek, bar,
+    plain, _ = _plan(conn, holding, capture, gameweek, bar, model_version,
                      stance=Stance("none", stance.weight, applied=False))
     parts = []
     if plain is not None and {m.in_id for m in plain.moves} != {m.in_id for m in with_stance.moves}:
@@ -402,7 +403,8 @@ def build(conn: sqlite3.Connection, gameweek: int, model_version: str,
         return Instructions(gameweek, note=why, plan_note=why, chip_note=why)
     if stance is None:
         stance = stancemod.read(conn, holding)
-    none_plan, plan_note = _plan(conn, holding, capture, gameweek, bar, stance=stance)
+    none_plan, plan_note = _plan(conn, holding, capture, gameweek, bar, model_version,
+                                 stance=stance)
     alternatives: list[Alternative] = []
     chosen = None
     verdicts = chips.evaluate(conn, gameweek, model_version,
@@ -426,7 +428,8 @@ def build(conn: sqlite3.Connection, gameweek: int, model_version: str,
     return Instructions(
         gameweek, found, note="not evaluated" if found else f"not evaluated - {why}",
         plan=plan, plan_note=plan_note, stance=stance,
-        effect=_effect(conn, holding, capture, gameweek, bar, stance, none_plan, found),
+        effect=_effect(conn, holding, capture, gameweek, bar, model_version, stance,
+                       none_plan, found),
         chip=chip, chip_note=chip_note, alternatives=tuple(alternatives),
         verdicts=tuple(verdicts))
 

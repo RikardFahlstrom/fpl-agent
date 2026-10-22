@@ -149,7 +149,7 @@ def _pair(held_out: list[squads.Candidate], bought: list[squads.Candidate]
 def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
          bar: float, weeks: int = 3, hit_cap: Optional[int] = HIT_CAP,
          chip: Optional[str] = None, bench_boost: bool = False,
-         stance: Optional[Stance] = None) -> MovePlan:
+         stance: Optional[Stance] = None, model_version: str = MODEL_VERSION) -> MovePlan:
     """The best transfer plan for the capture's gameweek.
 
     `hit_cap` None is no cap, for a plan made while a chip is being played. `chip` names a
@@ -164,7 +164,7 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
     Raises `HorizonMissing` when the horizon was never projected, `LookupError` when a
     held player has no projection, and `NotProven` when the solver could not prove it.
     """
-    totals = stored_horizon(conn, capture.id, capture.gameweek, weeks)
+    totals = stored_horizon(conn, capture.id, capture.gameweek, weeks, model_version)
     rows = conn.execute(
         f"""SELECT ps.element_id, ps.now_cost, p.web_name, p.element_type, p.team_id
             FROM player_snapshot ps JOIN player p ON p.element_id = ps.element_id
@@ -190,7 +190,7 @@ def plan(conn: sqlite3.Connection, holding: held.HeldSquad, capture: Capture, *,
         this_week = {r["element_id"]: r["expected_points"] for r in conn.execute(
             "SELECT element_id, expected_points FROM projection WHERE snapshot_id = ? "
             "AND gameweek = ? AND model_version = ?",
-            (capture.id, capture.gameweek, MODEL_VERSION))}
+            (capture.id, capture.gameweek, model_version))}
     def candidate(element_id, name, team_id, element_type, cost, adjusted):
         xp = totals[element_id] + (stance.bonus(element_id, weeks) if adjusted and stance
                                    else 0.0)

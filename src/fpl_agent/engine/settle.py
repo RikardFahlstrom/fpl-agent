@@ -398,6 +398,12 @@ async def _run(args) -> int:
                 print(f"{group:22} {s.name:22} {s.n:>5} {s.predicted:>7.2f} "
                       f"{s.actual:>7.2f} {s.bias:>+7.2f} {s.mae:>6.2f}")
 
+        # The advice that was acted on, graded in the points actually scored. Read-only:
+        # the record that was graded is exactly as it was.
+        from . import grading
+        print(grading.render(args.gameweek, args.model_version,
+                             grading.grade(conn, args.gameweek, args.model_version)))
+
         if args.learn:
             path = draft_learning(slices, args.gameweek, args.model_version, args.learnings)
             if path:
