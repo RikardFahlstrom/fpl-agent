@@ -14,9 +14,8 @@ nothing, so a chip is compared with the moves it replaces rather than valued alo
 chip's own gates still decide whether it may be played (its bar, and being the best
 remaining week within the noise band); the highest-scoring alternative that passes them
 wins, else the answer is hold, with the margin to the best alternative. The lineup is
-built on the squad *after* the chosen moves, since the transfers happen first. A later
-slice adds the stance taken for the owner's position in the league; it extends
-`Instructions` and `rows`, and nothing else has to change shape.
+built on the squad *after* the chosen moves, since the transfers happen first. All of it is chosen
+under a *stance* (`engine/stance`): Protect or Chase, from the owner's league position.
 
 Pure over stored rows: the projections of the squad's own capture, read through
 `chips.captain_picks`, the same record `recommend` and the chip values read.
