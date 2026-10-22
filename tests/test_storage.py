@@ -1,7 +1,10 @@
 """Tests for the SQLite warehouse. All local: nothing here touches the FPL API."""
 import json
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fpl_agent.engine import storage
 
@@ -264,6 +267,35 @@ class ParseUtcTests(unittest.TestCase):
     def test_nothing_or_nonsense_is_none_rather_than_a_raise(self):
         for stamp in (None, "", "whenever"):
             self.assertIsNone(storage.parse_utc(stamp))
+
+
+class LegacyNotificationTableTests(unittest.TestCase):
+    """The push is gone, but warehouses that ran it hold a `notification` table."""
+
+    def _tables(self, conn):
+        return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    def test_a_new_warehouse_does_not_create_it(self):
+        conn = storage.connect(":memory:")
+        self.addCleanup(conn.close)
+        self.assertNotIn("notification", self._tables(conn))
+
+    def test_an_existing_warehouse_with_one_still_opens_and_keeps_its_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fpl.db"
+            old = sqlite3.connect(path)
+            old.execute("CREATE TABLE notification (fingerprint TEXT PRIMARY KEY, "
+                        "trigger_name TEXT NOT NULL, gameweek INTEGER, headline TEXT NOT NULL, "
+                        "channel TEXT NOT NULL, sent_at TEXT NOT NULL)")
+            old.execute("INSERT INTO notification VALUES ('f','t',3,'h','ntfy','2026-09-01')")
+            old.commit()
+            old.close()
+            conn = storage.connect(path)
+            try:
+                self.assertEqual(
+                    conn.execute("SELECT COUNT(*) FROM notification").fetchone()[0], 1)
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

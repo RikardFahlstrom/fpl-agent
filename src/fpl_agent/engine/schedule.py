@@ -73,23 +73,6 @@ class Settings:
     to reach a decision is a test that leaks into the next.
     """
     horizon: int = PROJECTION_HORIZON
-    #: Whether a push target is configured. The engine decides this, not a regex over
-    #: `fpl-agent.ini`: the shell grepped the file and so was a fourth place that could
-    #: get it wrong - it saw neither `FPL_NTFY_TOPIC` in the environment nor a topic set
-    #: any other way `notify` accepts.
-    notifications_configured: bool = False
-
-    @classmethod
-    def from_env(cls) -> "Settings":
-        """Settings for the process this is running in.
-
-        The one place the schedule looks at process state, called from `main` and never
-        from `due`, so a Plan stays a function of its arguments. `notify` owns the
-        question of whether it is configured, so it is asked rather than re-answered;
-        the import is local because `notify` reaches `status`, which reads this module.
-        """
-        from . import notify
-        return cls(notifications_configured=notify.target_from_env() is not None)
 
 
 @dataclass(frozen=True)
@@ -98,7 +81,7 @@ class Step:
 
     `tolerated` says whether a failure here may be dropped rather than failing the run:
     reported only when nothing untolerated failed, and logged and dropped otherwise. The
-    brief and the notification carry it, and nothing else does - every other step is
+    brief carries it, and nothing else does - every other step is
     either the capture, which is the irrecoverable one, or a decision made from it. The
     rule lives in `Outcome` and reads the flag from the Plan rather than holding its own
     list of which commands are which.
@@ -361,40 +344,17 @@ def _ranking_or_skip(warehouse: Reading,
     return _ranking(), []
 
 
-def _tail(settings: Settings) -> tuple[list[Step], list[Skipped]]:
-    """Push what is worth interrupting a person for, then write the brief.
+def _tail() -> list[Step]:
+    """Write the brief.
 
-    Both tolerate failure, which is the whole reason they are marked rather than
-    special-cased: the snapshot is the irrecoverable asset and neither of these is. A
-    dead ntfy server must never make a run that captured the market look like one that
-    lost it, and a formatting problem in the brief must not mask a healthy capture.
-
-    The push goes first so that the brief's Push line is read from the `notification`
-    table - "sent Tue 15 Sep 11:30" - rather than promised. A brief written before the
-    push could only say "will be sent", which is the shape of claim CLAUDE.md opens
-    with. The two evaluate the same warehouse, so nothing the brief describes changes
-    between them.
-
-    They were the shell's tail, outside the job dispatch, with the masking rule written
-    by hand around them. Here they are ordinary Steps and the rule is `Outcome`'s.
+    It tolerates failure: the snapshot is the irrecoverable asset and the brief is not, so a
+    formatting problem in it must not mask a healthy capture. The rule is `Outcome`'s, and
+    the flag on the Step is all that says which commands it applies to.
     """
-    steps: list[Step] = []
-    skipped: list[Skipped] = []
-    if settings.notifications_configured:
-        steps.append(Step("notify", (),
-                          "each trigger is pushed once; the fingerprints already sent "
-                          "live in the warehouse, which is what keeps a repeat run quiet",
-                          tolerated=True))
-    else:
-        # Skipped, not failed: notify is opt-in, and a host that has never set a topic
-        # should not be mailed an error every hour.
-        skipped.append(Skipped("notify", "no ntfy topic is configured; notification is "
-                                         "opt-in - see docs/SCHEDULING.md"))
-    steps.append(Step("brief", (),
-                      "the push carries only what is worth a phone buzzing; the brief is "
-                      "the rest of the reasoning, and `logs/` is tracked so it survives",
-                      tolerated=True))
-    return steps, skipped
+    return [Step("brief", (),
+                 "the brief is the reasoning behind the run, and `logs/` is tracked so it "
+                 "survives",
+                 tolerated=True)]
 
 
 # --------------------------------------------------------------------------
@@ -421,9 +381,7 @@ def due(*, now: datetime, warehouse: Reading, settings: Settings = Settings()) -
     steps += graded + ranking
     skipped += not_graded + not_ranking
 
-    tail, no_tail = _tail(settings)
-    steps += tail
-    skipped += no_tail
+    steps += _tail()
 
     return Plan(job=JOB, at=now, steps=tuple(steps), skipped=tuple(skipped),
                 problem=warehouse.problem, hours_to_deadline=hours)
@@ -459,10 +417,9 @@ class Outcome:
     `project` exiting 1 reported 1, and a lost snapshot - the irrecoverable one - arrived
     in the report wearing the code of something recoverable.
 
-    A tolerated step's failure is reported only when nothing else failed. That is the
-    shell's hand-written masking of `notify` behind the job's own code, generalised: the
-    snapshot is the irrecoverable asset and a push is not, so a dead ntfy server can turn
-    a 0 into an 8 and can never turn a 3 into one.
+    A tolerated step's failure is reported only when nothing else failed: the snapshot is
+    the irrecoverable asset and the brief is not, so a broken brief can turn a 0 into its
+    own code and can never turn a 3 into one.
     """
     plan: Plan
     results: tuple[Result, ...] = ()
@@ -633,8 +590,8 @@ def summarise(plan: Plan) -> str:
 def render_outcome(outcome: Outcome) -> str:
     """What ran, what it exited, and which code is being reported - and why.
 
-    A masked failure is named rather than dropped silently. "notify exited 8, masked by snapshot's 3" is
-    the line that stops an hour being spent on the wrong one.
+    A masked failure is named rather than dropped silently. "brief exited 1, masked by
+    snapshot's 3" is the line that stops an hour being spent on the wrong one.
     """
     lines = [f"{outcome.plan.job}: ran {len(outcome.results)} step(s)"]
     width = max((len(r.step.invocation) for r in outcome.results), default=0)
@@ -694,15 +651,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--db", type=Path, default=storage.DEFAULT_DB_PATH)
     args = parser.parse_args(argv)
 
-    # Before the settings are read, since the ini is how a topic is usually configured
-    # and whether one is decides whether `notify` is a Step at all.
     config.load()
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
 
     # Read and closed before anything runs: the steps open the warehouse themselves, and
     # each of them writes to it.
     plan = due(now=datetime.now(timezone.utc), warehouse=read_warehouse(args.db),
-               settings=Settings.from_env())
+               settings=Settings())
 
     print(render(plan))
     if args.dry_run:

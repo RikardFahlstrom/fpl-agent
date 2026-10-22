@@ -2,7 +2,7 @@
 # The console script is installed by `uv sync`; PYTHONPATH is no longer needed.
 AGENT := .venv/bin/fpl-agent
 
-.PHONY: now snapshot backfill project rivals recommend hedge record settle status brief notify lint test
+.PHONY: now snapshot backfill project rivals recommend hedge record settle status brief lint test
 
 # The one to reach for when you do not want to think about which one to reach for.
 # Every other target here is a step; this asks the warehouse what is due and runs the
@@ -45,18 +45,10 @@ status:              ## check the warehouse agrees with itself (read-only; exits
 settle:              ## grade a finished gameweek and draft a learning: make settle GW=3
 	$(AGENT) settle --gameweek $(GW) --learn
 
-# Read-only, and writes exactly one file: logs/gwNN.md, which is tracked. Separate from
-# `deadline` because the brief is what a person reads, and a person is not always there
-# when the cron runs - the notifier decides when to push, this decides what to say.
+# Read-only, and writes exactly one file: logs/gwNN.md, which is tracked. `make now`
+# writes it as its last step; this is for rewriting it without capturing again.
 brief:               ## write the gameweek brief: make brief
 	$(AGENT) brief
-
-# The only target that both writes to the warehouse and talks to a third party. It
-# records a fingerprint per message so the hourly `deadline` job says each thing once;
-# `notify DRY_RUN=--dry-run` shows what would go out and what is being suppressed as
-# already sent, without sending or recording either. Exits 8 if a send failed.
-notify:              ## push the fired triggers to ntfy: make notify
-	$(AGENT) notify $(DRY_RUN)
 
 # Pyflakes rules only: unused imports, unused locals, undefined names. Deliberately not
 # the style rules - `Optional[x]` -> `x | None` and friends would rewrite hundreds of lines

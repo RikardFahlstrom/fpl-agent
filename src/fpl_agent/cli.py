@@ -20,7 +20,6 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "status": ("fpl_agent.engine.status", "Report whether the warehouse is trustworthy"),
     "schedule": ("fpl_agent.engine.schedule", "Say what a scheduled job is due to do"),
     "brief": ("fpl_agent.engine.brief", "Write the gameweek brief to logs/gwNN.md"),
-    "notify": ("fpl_agent.engine.notify", "Push the brief's triggers to ntfy, once each"),
 }
 
 
