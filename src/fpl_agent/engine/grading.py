@@ -201,13 +201,6 @@ def _bench(found: Lineup, got: dict[int, Actual]) -> BenchGrade:
     return BenchGrade(came_on, sum(p for _, _, p in came_on), max(best_gain, 0), best_order)
 
 
-def _capture_of(conn: sqlite3.Connection, snapshot_id: int) -> Optional[warehouse.Capture]:
-    row = conn.execute("SELECT id, gameweek, captured_at, kind FROM snapshot WHERE id = ?",
-                       (snapshot_id,)).fetchone()
-    return None if row is None else warehouse.Capture(
-        row["id"], row["gameweek"], row["captured_at"], row["kind"])
-
-
 def _plan(conn: sqlite3.Connection, record: instructions.Record, model_version: str,
           got: dict[int, Actual]) -> tuple[Optional[PlanGrade], str]:
     """The recommended moves and lineup against doing nothing, in points actually scored."""
@@ -216,7 +209,7 @@ def _plan(conn: sqlite3.Connection, record: instructions.Record, model_version: 
         return None, "no lineup was recommended"
     plan = given.plan
     taken = given.moves
-    capture = _capture_of(conn, record.snapshot_id)
+    capture = warehouse.capture(conn, record.snapshot_id)
     holding = None if capture is None else held.read(conn, capture)
     if holding is None:
         return None, "the squad the advice was made for is not in the warehouse"

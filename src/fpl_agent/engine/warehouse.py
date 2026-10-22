@@ -73,6 +73,11 @@ def _capture(conn: sqlite3.Connection, where: str, params: tuple = ()) -> Option
                    captured_at=row["captured_at"], kind=row["kind"])
 
 
+def capture(conn: sqlite3.Connection, snapshot_id: int) -> Optional[Capture]:
+    """The capture with this id, or None if the warehouse has no such snapshot."""
+    return _capture(conn, "id = ?", (snapshot_id,))
+
+
 def latest(conn: sqlite3.Connection) -> Optional[Capture]:
     """The most recent capture, or None if the warehouse has never been captured."""
     return _capture(conn, "1 = 1")
