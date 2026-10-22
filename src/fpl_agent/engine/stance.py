@@ -97,15 +97,17 @@ class Stance:
 NONE = Stance("none", reason="not evaluated")
 
 
-def stale_standings(conn: sqlite3.Connection, league_id: int) -> Optional[str]:
+def stale_standings(conn: sqlite3.Connection, league_id: int,
+                    ledger: Optional[warehouse.GameweekLedger] = None) -> Optional[str]:
     """Why the league's table cannot set a stance, or None when it can.
 
     Fresh means every rival the table lists has a finished row at the last finished
     gameweek; a table captured mid-round is not finished and does not count. `status`
-    reads this same answer.
+    reads this same answer, passing the ledger it already holds.
     """
     name = conn.execute("SELECT name FROM league WHERE id = ?", (league_id,)).fetchone()
-    finished = warehouse.gameweeks(conn, MODEL_VERSION).finished()
+    ledger = ledger or warehouse.gameweeks(conn, MODEL_VERSION)
+    finished = ledger.finished()
     held_through = conn.execute(
         "SELECT MAX(gameweek) AS gw FROM league_standing WHERE league_id = ? AND finished = 1",
         (league_id,)).fetchone()["gw"]
@@ -140,10 +142,11 @@ def read(conn: sqlite3.Connection, holding: Optional[HeldSquad], *,
         return Stance("none", weight, reason="no squad captured, so the owner's entry is "
                                              "not known")
     name = conn.execute("SELECT name FROM league WHERE id = ?", (league_id,)).fetchone()
-    stale = stale_standings(conn, league_id)
+    ledger = warehouse.gameweeks(conn, MODEL_VERSION)
+    stale = stale_standings(conn, league_id, ledger)
     if stale:
         return Stance("none", weight, reason=stale)
-    gameweek = warehouse.gameweeks(conn, MODEL_VERSION).finished()[-1]
+    gameweek = ledger.finished()[-1]
     rows = conn.execute(
         "SELECT entry_id, rank, total_points FROM league_standing "
         "WHERE league_id = ? AND gameweek = ? AND finished = 1 ORDER BY rank",

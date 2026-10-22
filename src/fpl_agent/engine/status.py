@@ -372,14 +372,14 @@ def check_rivals(conn: sqlite3.Connection, ledger: warehouse.GameweekLedger) -> 
         detail += f"; table {hours:.1f}h old"
     if source.missing:
         return Check("rivals", WARN, detail + f" - {source.reason}")
-    leagues = config.rival_leagues()
-    stale = stance.stale_standings(conn, leagues[0]) if leagues else None
-    if stale and source.fresh:
-        return Check("rivals", WARN, detail + f" - stance withheld: {stale}")
     if not source.fresh:
         return Check("rivals", WARN,
                      detail + f" - behind the last finished gameweek "
                               f"({source.last_finished}), so effective ownership is stale")
+    leagues = config.rival_leagues()
+    stale = stance.stale_standings(conn, leagues[0], ledger) if leagues else None
+    if stale:
+        return Check("rivals", WARN, detail + f" - stance withheld: {stale}")
     if hours is not None and hours > STALE_AFTER_HOURS:
         return Check("rivals", WARN,
                      detail + " - the league standings are over a day and a half old; "

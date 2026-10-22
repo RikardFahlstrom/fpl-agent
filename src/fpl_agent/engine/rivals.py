@@ -269,12 +269,11 @@ async def _refresh_only(args) -> int:
 
 
 async def _run(args) -> int:
-    if not args.league:
-        try:
-            config.require_rival_leagues()
-        except LookupError as e:
-            logger.error("%s", e)
-            return 1
+    try:
+        wanted = set(args.league or config.require_rival_leagues())
+    except LookupError as e:
+        logger.error("%s", e)
+        return 1
     if args.standings_only:
         return await _refresh_only(args)
     conn = storage.connect(args.db)
@@ -301,7 +300,6 @@ async def _run(args) -> int:
 
         leagues = capturable_leagues(
             await account.leagues(client), args.max_rivals, args.include_global)
-        wanted = set(args.league or config.require_rival_leagues())
         leagues = [lg for lg in leagues if lg["id"] in wanted]
         if not leagues:
             logger.error("no capturable leagues; all are global or above the rival cap")
