@@ -308,6 +308,37 @@ class MoveLineTests(BriefTestCase):
         self.assertIn("none - ", move)
 
 
+class LockedGameweekTests(BriefTestCase):
+    """After the deadline nothing is advised, and the page says why and until when."""
+
+    LATE = datetime(2026, 9, 5, 14, 0, tzinfo=timezone.utc)    # deadline was 07:30
+
+    def setUp(self):
+        super().setUp()
+        self.warehouse.healthy()
+
+    def test_nothing_is_evaluated_and_the_block_says_so(self):
+        evaluation = self.evaluate(now=self.LATE)
+        self.assertIn("is locked", evaluation.locked)
+        self.assertEqual(evaluation.listing["moves"], [])
+        self.assertEqual(evaluation.chips, [])
+        self.assertEqual(evaluation.captain_picks, [])
+        text = brief.render_brief(evaluation)
+        self.assertIn("> **GAMEWEEK 3 LOCKED.**", text)
+        self.assertIn("- **Captain:** not evaluated - gameweek 3 (deadline 5 Sep 09:30) is locked", text)
+        self.assertIn("- **Chips:** not evaluated - gameweek 3 (deadline 5 Sep 09:30) is locked", text)
+        self.assertIn("rolls over to gameweek 4", text)
+
+    def test_before_the_deadline_it_is_not_locked(self):
+        self.assertIsNone(self.evaluate().locked)
+
+    def test_a_far_deadline_says_lineups_are_not_yet_firm(self):
+        text = brief.render_brief(self.evaluate(
+            now=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)))
+        self.assertIn("predicted lineups not yet firm", text)
+        self.assertNotIn("predicted lineups not yet firm", brief.render_brief(self.evaluate()))
+
+
 class AnotherGameweekTests(BriefTestCase):
     """`brief --gameweek N` for N other than the target: transfers are not priced.
 

@@ -49,7 +49,8 @@ from .. import config
 
 from . import storage
 from .projection import MODEL_VERSION
-from .warehouse import OwnershipSource, gameweeks, ownership, target
+from .warehouse import (OwnershipSource, firm_caveat, gameweeks, last_kickoff,
+                        locked_note, ownership, target)
 
 JOB = "now"
 
@@ -130,6 +131,11 @@ class Plan:
     #: summarises a Plan should not have to ask the question a second time and risk a
     #: different answer - which is the whole failure this module was built out of.
     hours_to_deadline: Optional[int] = None
+    #: The target gameweek, where one is known.
+    gameweek: Optional[int] = None
+    #: What the reader must know before reading the steps: a gameweek that is locked, or a
+    #: deadline too far off for the lineups to be firm. Stated, never a condition.
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +154,10 @@ class Reading:
     problem: Optional[str] = None
     #: When the target gameweek locks - `warehouse.target`'s answer.
     deadline: Optional[datetime] = None
+    #: The target gameweek, and when its last fixture kicks off - the earliest FPL can roll
+    #: over to the next one.
+    gameweek: Optional[int] = None
+    last_kickoff: Optional[datetime] = None
     #: Every gameweek `settle` would grade, oldest first - the ledger's rule, answered.
     settleable: tuple[int, ...] = ()
     #: Whether a first full `rivals` run has recorded the league, so its table can be
@@ -176,8 +186,11 @@ def read(conn: sqlite3.Connection) -> Reading:
     """
     ledger = gameweeks(conn, MODEL_VERSION)
     reading = target(conn)
+    gameweek = None if reading is None else reading.gameweek
     return Reading(
         deadline=None if reading is None else reading.deadline,
+        gameweek=gameweek,
+        last_kickoff=None if gameweek is None else last_kickoff(conn, gameweek),
         settleable=tuple(ledger.settleable()),
         league_known=bool(conn.execute("SELECT COUNT(*) FROM league").fetchone()[0]),
         rivals=ownership(conn, ledger, config.rival_leagues()))
@@ -383,8 +396,16 @@ def due(*, now: datetime, warehouse: Reading, settings: Settings = Settings()) -
 
     steps += _tail()
 
+    notes = []
+    if hours is not None and hours < 0 and warehouse.gameweek is not None:
+        notes.append(locked_note(warehouse.gameweek, warehouse.deadline, now,
+                                 warehouse.last_kickoff))
+    elif caveat := firm_caveat(hours):
+        notes.append(caveat)
+
     return Plan(job=JOB, at=now, steps=tuple(steps), skipped=tuple(skipped),
-                problem=warehouse.problem, hours_to_deadline=hours)
+                problem=warehouse.problem, hours_to_deadline=hours,
+                gameweek=warehouse.gameweek, notes=tuple(notes))
 
 
 # --------------------------------------------------------------------------
@@ -536,7 +557,11 @@ def render(plan: Plan, *, one_line: bool = False) -> str:
         return headline
 
     at = plan.at.isoformat(timespec="seconds")
-    lines = [headline, "", f"fpl-agent schedule {plan.job}  planned at {at}"]
+    lines = [headline, ""]
+    lines += [f"note: {note}" for note in plan.notes]
+    if plan.notes:
+        lines.append("")
+    lines.append(f"fpl-agent schedule {plan.job}  planned at {at}")
     if plan.problem and plan.steps:
         lines += ["", f"the warehouse could not be read: {plan.problem}"]
     if plan.steps:
@@ -584,6 +609,9 @@ def summarise(plan: Plan) -> str:
         if plan.hours_to_deadline is None:
             return "a deadline is near - run `make now`"
         return f"deadline in {plan.hours_to_deadline}h - run `make now`"
+    if plan.hours_to_deadline is not None and plan.hours_to_deadline < 0:
+        return (f"gameweek {plan.gameweek} is locked - run `make now` once FPL has "
+                f"rolled over to the next")
     return "nothing due - `make now` is safe to run anyway and will say the same"
 
 

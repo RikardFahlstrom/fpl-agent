@@ -233,6 +233,39 @@ class DeadlineTests(ScheduleTestCase):
         self.assertTrue(any("deadline passed 7h ago" in skip.reason
                             for skip in plan.skipped), plan.skipped)
 
+    def test_far_from_the_deadline_the_lineups_are_said_not_to_be_firm(self):
+        self.kickoff(80)
+        [note] = self.due().notes
+        self.assertIn("78h to the deadline", note)
+        self.assertIn("not yet firm", note)
+
+    def test_near_the_deadline_there_is_no_caveat(self):
+        self.kickoff(5)
+        self.assertEqual(self.due().notes, ())
+
+    def test_after_the_deadline_the_plan_says_the_gameweek_is_locked_and_when_it_rolls(self):
+        self.kickoff(-5)
+        [note] = self.due().notes
+        self.assertIn("gameweek 3 is locked", note)
+        self.assertIn("rolls over to gameweek 4", note)
+        self.assertIn("last fixture (kick-off", note)
+
+    def test_the_notes_are_printed_ahead_of_the_steps(self):
+        self.kickoff(-5)
+        text = schedule.render(self.due())
+        self.assertLess(text.index("note: gameweek 3 is locked"), text.index("due:"))
+
+    def test_after_rollover_the_fresh_capture_is_the_one_evaluated(self):
+        self.kickoff(-5)
+        self.assertFalse(self.ranks(self.due()))
+        self.fixtures(4, finished=False, hours_from_now=24 * 5)
+        self.w.snapshot(gameweek=4)
+        self.conn.commit()
+        plan = self.due()
+        self.assertTrue(self.ranks(plan))
+        self.assertEqual(plan.gameweek, 4)
+        self.assertFalse(any("locked" in note for note in plan.notes))
+
     def test_the_same_warehouse_ranks_or_not_according_to_the_time_passed_in(self):
         self.kickoff(5)
         self.assertTrue(self.ranks(self.due()))
@@ -356,7 +389,7 @@ class StandingsTests(ScheduleTestCase):
     def test_the_summary_does_not_mention_it(self):
         self.known_league()
         self.kickoff(-5)        # locked, so no ranking either: nothing worth a line
-        self.assertIn("nothing due", schedule.summarise(self.due()))
+        self.assertNotIn("standings", schedule.summarise(self.due()))
 
     def test_its_failure_reports_after_the_snapshots_never_before(self):
         self.known_league()
@@ -656,7 +689,8 @@ class SummariseTests(ScheduleTestCase):
         # Every plan captures and projects. Saying so every time trains the reader to
         # skip the line, so what it names is what changes about today.
         self.kickoff(-5)        # locked, so no ranking either: nothing worth a line
-        self.assertIn("nothing due", self.summary())
+        self.assertIn("gameweek 3 is locked", self.summary())
+        self.assertNotIn("snapshot", self.summary())
 
     def test_a_deadline_is_named_with_its_hours(self):
         self.kickoff(10)
